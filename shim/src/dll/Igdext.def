@@ -1,0 +1,77 @@
+LIBRARY igdext64
+EXPORTS
+    D3D11CreateDeviceExtensionContext                          @1
+    D3D11CreateDeviceExtensionContext1                         @2
+    D3D11CreateDeviceExtensionContext2                         @3
+    D3D11D3D12CreateDeviceExtensionContext2                    @4
+    D3D11D3D12DestroyDeviceExtensionContext2                   @5
+    D3D11DestroyDeviceExtensionContext                         @6
+    D3D11EnumInternalExtensions                                @7
+    D3D11GetSupportedVersions                                  @8
+    D3D11GetSupportedVersions2                                 @9
+    D3D12CreateDeviceExtensionContext                          @10
+    D3D12CreateDeviceExtensionContext2                         @11
+    D3D12DestroyDeviceExtensionContext                         @12
+    D3D12EnumInternalExtensions                                @13
+    D3D12GetSupportedVersions                                  @14
+    D3D12GetSupportedVersions2                                 @15
+    _INTC_CreateDeviceExtensionContext                         @16
+    _INTC_CreateDeviceExtensionContext1                        @17
+    _INTC_D3D11_BeginUAVOverlap                                @18
+    _INTC_D3D11_CreateDeviceExtensionContext                   @20
+    _INTC_D3D11_CreateDeviceExtensionContext1                  @21
+    _INTC_D3D11_CreateTexture2D                                @22
+    _INTC_D3D11_EndUAVOverlap                                  @23
+    _INTC_D3D11_GetSupportedVersions                           @25
+    _INTC_D3D11_INT_CreateDeviceExtensionContext               @26
+    _INTC_D3D11_MultiDrawIndexedInstancedIndirect              @27
+    _INTC_D3D11_MultiDrawIndexedInstancedIndirectCountIndirect @28
+    _INTC_D3D11_MultiDrawInstancedIndirect                     @29
+    _INTC_D3D11_MultiDrawInstancedIndirectCountIndirect        @30
+    _INTC_D3D11_RegisterApplicationCallbacks                   @31
+    _INTC_D3D11_SetDepthBounds                                 @32
+    _INTC_D3D12_CreateDeviceExtensionContext                   @33
+    _INTC_D3D12_CreateDeviceExtensionContext1                  @34
+    _INTC_D3D12_CreateDeviceExtensionContext2                  @35
+    _INTC_D3D12_GetSupportedVersions                           @36
+    _INTC_D3D12_INT_CreateDeviceExtensionContext               @37
+    _INTC_D3D12_RegisterApplicationCallbacks                   @38
+    _INTC_DestroyDeviceExtensionContext                        @39
+    _INTC_INT_CreateDeviceExtensionContext                     @40
+    _INTC_D3D12_AddShaderBinariesPath
+    _INTC_D3D12_BuildRaytracingAccelerationStructure
+    _INTC_D3D12_BuildRaytracingAccelerationStructure_Host
+    _INTC_D3D12_CheckFeatureSupport
+    _INTC_D3D12_CopyRaytracingAccelerationStructure_Host
+    _INTC_D3D12_CreateCommandQueue
+    _INTC_D3D12_CreateCommittedResource
+    _INTC_D3D12_CreateCommittedResource1
+    _INTC_D3D12_CreateComputePipelineState
+    _INTC_D3D12_CreateHeap
+    _INTC_D3D12_CreateHostRTASResource
+    _INTC_D3D12_CreatePlacedResource
+    _INTC_D3D12_CreateReservedResource
+    _INTC_D3D12_CreateStateObject
+    _INTC_D3D12_EmitRaytracingAccelerationStructurePostbuildInfo_Host
+    _INTC_D3D12_GetCachedBlob
+    _INTC_D3D12_GetCommandListHandle
+    _INTC_D3D12_GetCurrentShaderHeapUsage
+    _INTC_D3D12_GetDisplayTelemetry
+    _INTC_D3D12_GetLatencyReductionStatus
+    _INTC_D3D12_GetRaytracingAccelerationStructurePrebuildInfo
+    _INTC_D3D12_GetRaytracingAccelerationStructurePrebuildInfo_Host
+    _INTC_D3D12_GetResourceAllocationInfo
+    _INTC_D3D12_LatencyReductionExt
+    _INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers
+    _INTC_D3D12_QueryCpuVisibleVidmem
+    _INTC_D3D12_RegisterApplicationCallbacks1
+    _INTC_D3D12_RemoveShaderBinariesPath
+    _INTC_D3D12_RenderSubmitStart
+    _INTC_D3D12_SetApplicationInfo
+    _INTC_D3D12_SetDeviceParams
+    _INTC_D3D12_SetDriverEventMetadata
+    _INTC_D3D12_SetEventMarker
+    _INTC_D3D12_SetFeatureSupport
+    _INTC_D3D12_SetNumGeneratedFrames
+    _INTC_D3D12_SetPresentSequenceNumber
+    _INTC_D3D12_TransferHostRTAS

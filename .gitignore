@@ -1,0 +1,10 @@
+# binaries and generated files are distributed as release archives, not in git
+lib/
+kernels/
+igdext64.dll
+run/
+release/
+build/
+shim/build/
+*.zip
+__pycache__/
