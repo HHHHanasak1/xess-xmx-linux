@@ -88,3 +88,33 @@
 87 146 7d1b5efe87b4dc6c cm_main_007 2 2 1 0
 88 151 87ad2c5082697db4 cm_main_013 2 1 1 0
 89 152 45b0e9b9d5c10f26 cm_main_013 2 1 1 0
+# added from a Forza Horizon 6 dump (same libxess.dll; auto-exposure and a second input/output variant)
+90 0 9a15b4d01dcd93a0 average 8 4 1 0
+91 1 ea65e4b869deda1c average_sum 8 4 1 0
+92 2 b74c520e38af1ccb input_processing 2 1 1 0
+93 62 8c866e6fe5b39735 output_filter 2 1 1 0
+# XeSS-FG 1.3.1.78 CM kernels as handed out to a SIMD16 context (seen when OptiScaler drives XeFG in Forza Horizon 6)
+94 247 d598116b1f48d408 cm_main_009 1 1 1 0
+95 248 49745c8417f4cf0c cm_main_010 1 1 1 0
+96 249 6cc5b648102cd131 cm_main_010 1 1 1 0
+97 250 eef21a84e61b169e cm_main_010 1 1 1 0
+98 251 f5b0cf7dcd088658 cm_main_010 1 1 1 0
+99 252 7b1ba52867678edf cm_main_010 1 1 1 0
+100 253 238f7f14aa82cf82 cm_main_010 1 1 1 0
+101 254 e4248b004d64c7bc cm_main_010 1 1 1 0
+102 255 3f88fc0f3d0666e8 cm_main_011 1 1 1 0
+103 256 a85055b127627f92 cm_main_015 1 1 1 0
+104 257 077624844b4574a1 cm_main_016 1 1 1 0
+105 258 bf6ef147fca6b4c2 cm_main_015 1 1 1 0
+106 259 c52bcbb96ba541a7 cm_main_017 1 1 1 0
+107 261 e5310491286a6bd4 cm_main_012 1 1 1 0
+108 262 7b8375e72655d2cf cm_main_008 1 1 1 0
+109 263 cb419edc6cc4e437 cm_main_010 1 1 1 0
+110 264 7768727fa674d69a cm_main_010 1 1 1 0
+111 265 1e1851783573b8c9 cm_main_010 1 1 1 0
+112 266 c6136a46a5259402 cm_main_010 1 1 1 0
+113 267 0fe5f0e32bf820cc cm_main_010 1 1 1 0
+114 268 227f1224b854fff7 cm_main_010 1 1 1 0
+115 269 bf130595985319cd cm_main_010 1 1 1 0
+116 270 ae8ff86a48db68f9 cm_main_011 1 1 1 0
+117 271 5825692b92db70d5 cm_main_015 1 1 1 0
