@@ -89,15 +89,19 @@ and generates frames through its non-CM path; measured throughput is identical, 
     tools/gen_all_dummies.py     regenerate the shim table from a map (needs fxc)
     tools/kernel_map_xess_2.0.2.68.txt   the map of the shipped set
 
-Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (114 kernels: 90 SR + 24 old XeFG),
-`igdext64.dll`. See THIRD_PARTY.md about the kernels.
+Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (142 kernels: 90 SR + 4 SR variants
+first seen in Forza Horizon 6 + 24 XeFG SIMD16 variants + 24 old XeFG), `igdext64.dll`. See THIRD_PARTY.md about the
+kernels.
 
 ## Another game or another XeSS version
 
 The kernel table is keyed by the kernel contents, not by the game. A game that ships the same `libxess.dll` (same
-version) works out of the box: run `enable.sh` with `XMX_APPID`/`XMX_PREFIX` pointing at its prefix and get the four
-variables into its environment. A different XeSS version means different kernels; unknown kernels currently run as
-no-ops and XeSS' output goes black, so rebuild the set:
+version) mostly works out of the box: run `enable.sh` with `XMX_APPID`/`XMX_PREFIX` pointing at its prefix and get the
+four variables into its environment. The same XeSS build can still hand out a few kernels another game never asked for
+(Forza Horizon 6, same libxess.dll as Wuthering Waves, needed 4 more: the auto-exposure `average`/`average_sum` pair and
+a second `input_processing`/`output_filter` variant - all four are in the shipped set now). Unknown kernels run as
+no-ops and part of XeSS' output turns into white noise, so when that happens, or with a different XeSS version, extend
+the set:
 
 1. Run the game once with `IGDEXT_TRACE=1` in its environment. The shim writes `C:\igdext_trace.log` and dumps every
    kernel as `C:\igdext_dump\cs_NNNN_type2.bin` + `cs_NNNN_options.txt` (inside the prefix's `drive_c`).
@@ -110,6 +114,33 @@ no-ops and XeSS' output goes black, so rebuild the set:
 
 Rebuilding ANV: clone Mesa at tag `mesa-26.1.2`, `git apply patches/anv_cm_injection.patch`, build with
 `-Dvulkan-drivers=intel`, take `libvulkan_intel.so`.
+
+### Frame generation in a game without XeSS-FG (OptiScaler)
+
+Forza Horizon 6 ships XeSS super resolution but no XeSS frame generation (its FG option is DLSS-G). OptiScaler can add
+XeFG on top of the game's own XeSS: put `OptiScaler.dll` as `dxgi.dll`, `libxess_fg.dll`, `libxell.dll`, `fakenvapi.dll`
+and `fakenvapi.ini` from the OptiScaler release into the game folder (not its `libxess.dll` - the game's own copy must
+stay so the kernel table matches), use this `OptiScaler.ini`:
+
+    [Upscalers]
+    Dx12Upscaler=xess
+    [FrameGen]
+    Enabled=true
+    FGInput=upscaler
+    FGOutput=xefg
+    [OptiFG]
+    HUDFix=true
+    [Inputs]
+    EnableXeSSInputs=true
+    EnableDlssInputs=false
+    [Spoofing]
+    Dxgi=false
+
+and add `export WINEDLLOVERRIDES="dxgi=n,b"` to the sourced config file. `Dxgi=false` matters: with the default NVIDIA
+spoof `libxess.dll` would see an NVIDIA adapter and take its DP4a path. XeFG driven this way asks the shim for CM
+kernels (a SIMD16 variant set of 24, ids 94-117 in the table, which the game-integrated XeFG of Wuthering Waves never
+requests). Verified on FH6: ~28 real fps -> ~56 presented at 2x, HUD stable; `[XeFG] InterpolationCount=2|3` gives
+3x / 4x.
 
 ## Debug switches
 
@@ -135,6 +166,7 @@ cap, which XeLL applies per displayed frame (30 fps until you open and close the
   Mesa needs a rebuilt driver from the patch.
 * Kernel sets are per XeSS version and per GPU generation (`ocloc -device`).
 * XeSS quality presets 1 and 3 verified; frame generation verified at 2x/3x/4x; a 10 minute continuous run without
-  GPU hangs; fast camera motion clean with the SIMD16 set.
+  GPU hangs; fast camera motion clean with the SIMD16 set. Games verified: Wuthering Waves, Forza Horizon 6 (SR only:
+  that game has no XeSS frame generation, its FG option is DLSS-G).
 * XeLL runs in software mode (the driver-side latency extension entry points are not implemented).
 * Unknown kernels become no-ops instead of a DP4a fallback.
