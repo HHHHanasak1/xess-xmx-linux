@@ -10,7 +10,7 @@
 #   XMX_PREFIX  Proton prefix (the folder that contains drive_c) for other launchers (Heroic, Lutris, Bottles ...)
 #   XMX_CONF    shell file sourced by your launch wrapper (default ~/.config/wuwa-opti.conf); if you have no wrapper,
 #               put the printed export lines into the game's launch options / environment yourself
-#   XMX_GAME    pgrep pattern of the game process (default Client-Win64-Shipping)
+#   XMX_GAME    process name of the game (matched against the first 15 characters, default Client-Win64-Shipping)
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APPID="${XMX_APPID:-${WUWA_APPID:-3513350}}"
@@ -24,7 +24,7 @@ for f in "$ROOT/igdext64.dll" "$ROOT/lib/libvulkan_intel.so"; do
 done
 [ -n "$(ls "$ROOT/kernels"/*.cmk 2>/dev/null)" ] || { echo "kernels/ is empty - download the release archive or build the kernel set (see README)"; exit 1; }
 mkdir -p "$PFX"
-pgrep -f "[${GAME:0:1}]${GAME:1}" >/dev/null && { echo "The game is running - close it first."; exit 1; }
+pgrep -i "^${GAME:0:15}" >/dev/null && { echo "The game is running - close it first."; exit 1; }
 
 # 1. shim DLL
 [ -f "$PFX/igdext64.dll.stock" ] || { [ -f "$PFX/igdext64.dll" ] && cp "$PFX/igdext64.dll" "$PFX/igdext64.dll.stock"; }

@@ -29,8 +29,9 @@ and these scripts) and unpack it anywhere, then:
 
 `enable.sh` writes four environment variables into a shell file that must be sourced before the game starts
 (default `~/.config/wuwa-opti.conf`, the file our Wuthering Waves launch wrapper sources; set `XMX_CONF` to your own).
-If you have no launch wrapper, put the printed `export` lines into the game's environment yourself, for example through
-a small wrapper script in the Steam launch options (`/path/to/wrapper.sh %command%`):
+If you have no launch wrapper, use the one in this package: set `XMX_CONF=~/.config/xess-xmx.conf` when running
+`enable.sh` and put `/path/to/xess-xmx-linux/xmx-launch.sh %command%` into the game's Steam launch options
+(`xmx-launch.sh` sources that file and starts the game). The variables are:
 
     export VK_DRIVER_FILES=<package>/run/intel_icd.json
     export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer
@@ -76,7 +77,7 @@ and generates frames through its non-CM path; measured throughput is identical, 
 
 ## Contents of this repository
 
-    enable.sh, disable.sh        install / remove for one Proton prefix
+    enable.sh, disable.sh        install / remove for one Proton prefix;  xmx-launch.sh: Steam launch wrapper
     patches/anv_cm_injection.patch   Mesa ANV patch (tag mesa-26.1.2); also adds the debug switches listed below
     shim/                        igdext64.dll source: dxvk-igdext plus src/dll/D3D12Api.cpp (feature answers, dummy
                                  pipelines, kernel dump), XellHook.cpp (XeLL 30 fps cap fix), FgHook.cpp, StackSample.cpp
