@@ -33,9 +33,15 @@ What `install.sh` does:
   game of the session; see "Performance" below);
 * puts the shim into every Proton that bundles an `igdext64.dll` (Proton Experimental copies it into each prefix at
   launch) and into every existing prefix, keeping the original as `.stock`;
-* enables a user path unit that puts the shim back after a Proton update.
+* enables a user path unit that puts the shim back after a Proton update;
+* enables `xess-xmx-check.service`, which loads the patched driver once before every graphical session. If a system
+  update broke one of its library dependencies (`libSPIRV-Tools.so`, glibc), the session is pointed back to the stock
+  drivers: XeSS runs as DP4a, everything else keeps working (instead of the whole session losing the Intel GPU).
+  Result in `~/.cache/xess-xmx/driver-status`.
 
-Run it again after a game created a new prefix. It supports the native Steam client (SteamOS, distribution packages);
+Run it again after a game created a new prefix. (XeSS would also accept the shim's folder through
+`INTC_ALT_DRIVER_EXTENSIONS_PATH`, which would make the per-prefix copies unnecessary, but GE-Proton sets that variable
+to `C:\Windows\System32` for every game, so the copies stay.) It supports the native Steam client (SteamOS, distribution packages);
 Flatpak Steam is not supported (its sandbox sees neither the environment file nor the package folder).
 
 **Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
@@ -61,7 +67,8 @@ OptiScaler and on a game without XeSS.
 | Symptom | Cause / fix |
 |---|---|
 | looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` (new prefix, Proton update without the watcher) |
-| noise or black patches in the image | a kernel failed to compile; the next launch falls back to DP4a by itself. See `$XDG_RUNTIME_DIR/xess-xmx-compile.log`, fix with `tools/get-igc.sh`, re-run `install.sh` |
+| noise or black patches in the image | a kernel failed to compile; the next launch retries it and falls back to DP4a if it still fails. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
+| XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer loads on the updated system: `~/.cache/xess-xmx/driver-status`; a release built for the new system fixes it |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
 | another GPU or 32-bit games lost Vulkan | installed with an older `install.sh`: re-run the current one, re-login |

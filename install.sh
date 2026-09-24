@@ -96,4 +96,24 @@ if [ -n "$watch" ]; then
   systemctl --user daemon-reload 2>/dev/null
   systemctl --user enable --now xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
 fi
+# 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
+#    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU
+if [ "${XMX_NO_ENV:-0}" != 1 ]; then
+  mkdir -p "$UNITD"
+  {
+    echo "[Unit]"
+    echo "Description=Check that the XeSS XMX Vulkan driver loads (falls back to the stock driver if not)"
+    echo "Before=graphical-session-pre.target gamescope-session.service steam-launcher.service plasma-workspace.target"
+    echo "[Service]"
+    echo "Type=oneshot"
+    echo "RemainAfterExit=yes"
+    echo "ExecStart=/bin/bash $PKG/tools/session-check.sh"
+    echo "[Install]"
+    echo "WantedBy=graphical-session-pre.target default.target"
+  } > "$UNITD/xess-xmx-check.service"
+  systemctl --user daemon-reload 2>/dev/null
+  systemctl --user enable xess-xmx-check.service >/dev/null 2>&1
+  bash "$PKG/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "== driver check: loads fine (xess-xmx-check.service enabled)" \
+    || echo "!! the patched driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
+fi
 echo "done. Reboot (or log out and in) once so Steam picks up the environment; then any game with XeSS runs on XMX."
