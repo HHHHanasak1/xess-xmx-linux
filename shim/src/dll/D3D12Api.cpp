@@ -262,6 +262,24 @@ HRESULT _INTC_D3D12_CreateCommandQueue(INTCExtensionContext* ctx, const INTC_D3D
     return dev->CreateCommandQueue(d->pD3D12Desc, riid, pp);
 }
 
+// true when XeSS frame generation (libxess_fg.dll, whoever loaded it: the game or OptiScaler) is on the call stack.
+// XeFG creates its extension context like XeSS SR does, so the context alone cannot tell the two apart.
+static bool CalledFromXeFG()
+{
+    void* frames[32];
+    const USHORT n = RtlCaptureStackBackTrace(1, 32, frames, nullptr);
+    for (USHORT i = 0; i < n; ++i)
+    {
+        HMODULE m = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)frames[i], &m) || !m) continue;
+        char path[MAX_PATH] = {};
+        if (!GetModuleFileNameA(m, path, MAX_PATH)) continue;
+        const char* base = strrchr(path, '\\'); base = base ? base + 1 : path;
+        if (_strnicmp(base, "libxess_fg", 10) == 0) return true;
+    }
+    return false;
+}
+
 HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FEATURES f, void* data, UINT size)
 {
     TraceF("CheckFeatureSupport feature=%d size=%u", (int)f, size);
@@ -281,8 +299,9 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
         // IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy> overrides the answer (experiment: which kernel variants XeSS then picks)
         // XeSS SR (extension context requested as HW level 3 / API 10): SIMD16Required=1 -> XeSS ships its SIMD16 + LSC-typed kernel
         // variant, the one Xe2/Xe3 can run natively (the SIMD8/legacy-typed variant produced the stippled motion ghost).
-        // XeSS-FG (HW level 5 / API 11): SIMD16Required=0 keeps its 24 CM kernels (with 1 it silently switches to a non-CM path).
-        const bool fgCtx = ctx && ctx->m_pD3D12ExtensionContext && ctx->m_pD3D12ExtensionContext->m_SupportedExtVersion.HWFeatureLevel >= 5;
+        // XeSS-FG: SIMD16Required=0 makes it use its CM (XMX) kernels; with 1 the game-integrated XeFG silently switches to a
+        // non-CM path that does not use XMX. Detected by libxess_fg.dll on the call stack (or an HW level 5 context).
+        const bool fgCtx = CalledFromXeFG() || (ctx && ctx->m_pD3D12ExtensionContext && ctx->m_pD3D12ExtensionContext->m_SupportedExtVersion.HWFeatureLevel >= 5);
         int simd16 = fgCtx ? 0 : 1, lsc = 1, legacy = 0;
         { char b[32]; if (GetEnvironmentVariableA(fgCtx ? "IGDEXT_OPTIONS2_FG" : "IGDEXT_OPTIONS2", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &simd16, &lsc, &legacy); }
         o->SIMD16Required = simd16 ? TRUE : FALSE; o->LSCSupported = lsc ? TRUE : FALSE; o->LegacyTranslationRequired = legacy ? TRUE : FALSE;
