@@ -65,57 +65,6 @@ static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, 
 static ID3D12Device* DevOf(INTCExtensionContext* c) { return (c && c->m_pD3D12ExtensionContext) ? c->m_pD3D12ExtensionContext->m_pAppDevice.Get() : nullptr; }
 
 
-// frame generation pacing hints (XeFG calls these every frame): IGDEXT_FGPACE_OK=1 answers S_OK instead of E_NOTIMPL, IGDEXT_FGPACE_LOG=1 logs the values to C:\igdext_fgpace.log
-static void FgPaceLog(const char* what, unsigned v)
-{
-    static int on = -1; static LONG n = 0;
-    if (on < 0) { char b[8]; on = GetEnvironmentVariableA("IGDEXT_FGPACE_LOG", b, sizeof(b)) > 0; }
-    static LONG zeros = 0;
-    if (!on) return;
-    if (v == 0 && InterlockedIncrement(&zeros) > 30) return;
-    if (InterlockedIncrement(&n) > 1500) return;
-    FILE* f = nullptr; if (fopen_s(&f, "C:\\igdext_fgpace.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] %s %u\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId(), what, v);
-    fclose(f);
-}
-static bool FgPaceOk() { static int ok = -1; if (ok < 0) { char b[8]; ok = GetEnvironmentVariableA("IGDEXT_FGPACE_OK", b, sizeof(b)) > 0; } return ok > 0; }
-
-// Software implementation of the Intel driver's frame generation pacing. XeFG issues numGenerated+1 presents per application frame, all tagged with the
-// same present sequence number (the application thread first, then the XeSS-FG thread for the generated ones) and expects the driver to space them evenly
-// over the frame interval. IGDEXT_FGPACE_SLEEP=1: the k-th present of a sequence waits until t0 + k * T / (numGenerated + 1).
-static bool FgPaceSleepOn() { static int on = -1; if (on < 0) { char b[8]; on = GetEnvironmentVariableA("IGDEXT_FGPACE_SLEEP", b, sizeof(b)) > 0 && atoi(b); } return on > 0; }
-static double NowMs() { static LARGE_INTEGER f; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return c.QuadPart * 1000.0 / f.QuadPart; }
-static CRITICAL_SECTION g_fgCs; static INIT_ONCE g_fgOnce = INIT_ONCE_STATIC_INIT;
-static BOOL CALLBACK FgInit(PINIT_ONCE, PVOID, PVOID*) { InitializeCriticalSection(&g_fgCs); return TRUE; }
-struct FgSeq { UINT seq; double t0; int k; };
-static FgSeq g_fgRing[8]; static UINT g_fgLast = 0; static double g_fgT = 0; static UINT g_fgNumGen = 0;
-static void FgPaceWait(UINT seq)
-{
-    InitOnceExecuteOnce(&g_fgOnce, FgInit, nullptr, nullptr);
-    double now = NowMs(); int k = 0; double t0 = now, T = 0; UINT ng = 0;
-    EnterCriticalSection(&g_fgCs);
-    FgSeq& e = g_fgRing[seq & 7];
-    if (e.seq != seq || e.t0 == 0) {
-        e.seq = seq; e.t0 = now; e.k = 0;
-        if (g_fgLast && seq == g_fgLast + 1) {
-            const FgSeq& p = g_fgRing[g_fgLast & 7];
-            double dt = now - p.t0;
-            if (p.seq == g_fgLast && dt > 3.0 && dt < 250.0) g_fgT = g_fgT > 0 ? 0.8 * g_fgT + 0.2 * dt : dt; else if (dt >= 250.0) g_fgT = 0;
-        } else g_fgT = 0;
-        g_fgLast = seq;
-    } else k = ++e.k;
-    t0 = e.t0; T = g_fgT; ng = g_fgNumGen;
-    LeaveCriticalSection(&g_fgCs);
-    if (k <= 0 || T <= 0 || ng == 0) return;
-    double target = t0 + k * T / (ng + 1);
-    for (;;) {
-        double rem = target - NowMs();
-        if (rem <= 0) break;
-        if (rem > 1.5) Sleep(1); else YieldProcessor();
-    }
-}
-
 extern "C" {
 
 void _INTC_D3D12_BuildRaytracingAccelerationStructure(INTCExtensionContext* pExtensionContext, ID3D12GraphicsCommandList* pCommandList, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC* pDesc, UINT NumPostbuildInfoDescs, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* pPostbuildInfoDescs, const INTC_D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_INSTANCE_COMPARISON_DATA* pComparisonDataDesc)
@@ -227,17 +176,13 @@ void _INTC_D3D12_SetEventMarker(INTCExtensionContext* pExtensionContext, ID3D12G
 HRESULT _INTC_D3D12_SetNumGeneratedFrames(INTCExtensionContext* pExtensionContext, UINT NumFrames)
 {
     TraceF("SetNumGeneratedFrames (not implemented)");
-    FgPaceLog("SetNumGeneratedFrames", NumFrames);
-    if (FgPaceSleepOn()) { g_fgNumGen = NumFrames; return S_OK; }
-    return FgPaceOk() ? S_OK : E_NOTIMPL;
+    return E_NOTIMPL;
 }
 
 HRESULT _INTC_D3D12_SetPresentSequenceNumber(INTCExtensionContext* pExtensionContext, UINT PresentSequenceNumber)
 {
     TraceF("SetPresentSequenceNumber (not implemented)");
-    FgPaceLog("SetPresentSequenceNumber", PresentSequenceNumber);
-    if (FgPaceSleepOn()) { FgPaceWait(PresentSequenceNumber); return S_OK; }
-    return FgPaceOk() ? S_OK : E_NOTIMPL;
+    return E_NOTIMPL;
 }
 
 void _INTC_D3D12_TransferHostRTAS(INTCExtensionContext* pExtensionContext, ID3D12GraphicsCommandList* pCommandList, D3D12_GPU_VIRTUAL_ADDRESS DestAccelerationStructureData, D3D12_GPU_VIRTUAL_ADDRESS SrcAccelerationStructureData, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode)

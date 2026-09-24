@@ -103,8 +103,8 @@ and generates frames through its non-CM path; measured throughput is identical, 
     enable.sh, disable.sh        install / remove for one Proton prefix;  xmx-launch.sh: Steam launch wrapper
     patches/anv_cm_injection.patch   Mesa ANV patch (tag mesa-26.1.2); also adds the debug switches listed below
     shim/                        igdext64.dll source: dxvk-igdext plus src/dll/D3D12Api.cpp (feature answers, dummy
-                                 pipelines, kernel dump), XellHook.cpp (XeLL 30 fps cap fix), FgHook.cpp, StackSample.cpp
-                                 (diagnostics), xess_dummies.inc (kernel table for XeSS 2.0.2.68 + XeFG 1.3.1.78);
+                                 pipelines, kernel dump), XellHook.cpp (XeLL 30 fps cap fix),
+                                 xess_dummies.inc (kernel table for XeSS 2.0.2.68 + XeFG 1.3.1.78);
                                  build with shim/build.bat (VS 2022 Build Tools) or the mingw toolchain file
     tools/s16_map.py             unique kernels of a dump -> id map (id dumpindex hash name lws)
     tools/build-kernels.sh       compile + pack a whole map (ocloc + IGC bundles)
@@ -195,8 +195,9 @@ kernel file, so a changed `.cmk` is otherwise served from the cache.
 
 Shim (game environment): `IGDEXT_TRACE=1` (trace log + kernel dump), `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>`,
 `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` (feature answers; default 1,1,0), `IGDEXT_GMD=<arch>,<release>`,
-`IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` (reported device), `IGDEXT_XELL_LOG=1` and the other
-`IGDEXT_XELL_*` / `IGDEXT_FG*` switches documented in `shim/src/dll/XellHook.cpp` and `FgHook.cpp`.
+`IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` (reported device), `IGDEXT_DYN_ONLY=1` (ignore the static
+kernel table, every kernel takes the run-time path), `IGDEXT_XELL_LOG=1` (`C:\igdext_xell.log`: what the game passes to
+XeLL and the real frame rate from `xellSleep` timing).
 
 The shim also fixes one game-side problem: right after enabling frame generation the game hands XeLL a 33333 us frame
 cap, which XeLL applies per displayed frame (30 fps until you open and close the pause menu). A cap arriving within

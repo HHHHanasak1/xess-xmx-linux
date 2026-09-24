@@ -8,7 +8,6 @@ static const INTCExtensionVersion c_MaxD3D12ExtVersion = {EXTENSION_HW_FEATURE_L
 HRESULT D3D12ExtensionContext::GetSupportedVersions(const void* pDevice, INTCExtensionVersionHelper* driverExtensionVersion)
 {
     m_pAppDevice = const_cast<ID3D12Device*>(reinterpret_cast<const ID3D12Device*>(pDevice));
-    InstallRootSignatureHook(const_cast<void*>(pDevice));
     *driverExtensionVersion = c_MaxD3D12ExtVersion;
     return S_OK;
 }
@@ -36,7 +35,6 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
         return E_NOINTERFACE;
     }
     m_pAppDevice = const_cast<ID3D12Device*>(reinterpret_cast<const ID3D12Device*>(pDevice));
-    InstallRootSignatureHook(const_cast<void*>(pDevice));
     m_SupportedExtVersion = pExtensionInfo->RequestedExtensionVersion;
 
     INTCDeviceInfo1& di = pExtensionInfo->IntelDeviceInfo;

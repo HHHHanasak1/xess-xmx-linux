@@ -49,8 +49,6 @@ const char* SafeStr(const void* p, char* buf, size_t cap)
 }
 
 void StartXellHook();
-void StartStackSampler();
-void StartFgHook();
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -58,61 +56,6 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
         char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
         TraceF("==== igdext64 (tracing build) attached to %s", exe);
         StartXellHook();
-        StartStackSampler();
-        StartFgHook();
     }
     return TRUE;
 }
-
-// ---- ID3D12Device::CreateRootSignature vtable hook (index 16): dumps every serialized root signature ----
-#include <d3d12.h>
-typedef HRESULT (STDMETHODCALLTYPE *PFN_CreateRootSignature)(ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
-static PFN_CreateRootSignature g_origCRS = nullptr;
-static volatile LONG g_rsCount = 0;
-static HRESULT STDMETHODCALLTYPE HookCreateRootSignature(ID3D12Device* d, UINT mask, const void* blob, SIZE_T len, REFIID riid, void** out)
-{
-    TraceF("CreateRootSignature ENTER len=%zu out=%p", (size_t)len, (void*)out);
-    HRESULT hr = g_origCRS(d, mask, blob, len, riid, out);
-    TraceF("CreateRootSignature orig returned hr=0x%08lx", (unsigned long)hr);
-    LONG n = InterlockedIncrement(&g_rsCount) - 1;
-    void* obj = (SUCCEEDED(hr) && out) ? *out : nullptr;
-    char name[64]; snprintf(name, sizeof(name), "rootsig_%04ld_%p.bin", n, obj);
-    bool okd = DumpBlob(name, blob, len);
-    TraceF("CreateRootSignature dump ok=%d", (int)okd);
-    TraceF("CreateRootSignature #%ld len=%zu -> %p (hr=0x%08lx) dumped %s", n, (size_t)len, obj, (unsigned long)hr, name);
-    return hr;
-}
-static void PatchVtable(void* obj, const char* what)
-{
-    void** vtbl = *reinterpret_cast<void***>(obj);
-    if (vtbl[16] == reinterpret_cast<void*>(&HookCreateRootSignature)) return;       // already patched
-    DWORD old;
-    if (!VirtualProtect(&vtbl[16], sizeof(void*), PAGE_READWRITE, &old)) { TraceF("rootsig hook: VirtualProtect failed (%s)", what); return; }
-    void* orig = vtbl[16];
-    if (!g_origCRS) g_origCRS = reinterpret_cast<PFN_CreateRootSignature>(orig);
-    else if (orig != reinterpret_cast<void*>(g_origCRS)) TraceF("rootsig hook: %s has a DIFFERENT original (%p vs %p)", what, orig, (void*)g_origCRS);
-    vtbl[16] = reinterpret_cast<void*>(&HookCreateRootSignature);
-    VirtualProtect(&vtbl[16], sizeof(void*), old, &old);
-    TraceF("rootsig hook installed on %s vtable %p (orig %p)", what, (void*)vtbl, orig);
-}
-void InstallRootSignatureHook(void* device)
-{
-    return; // disabled: hooking CreateRootSignature hangs the game (OptiScaler layer)
-    if (!device) return;
-    PatchVtable(device, "ID3D12Device (as passed)");
-    IUnknown* unk = reinterpret_cast<IUnknown*>(device);
-    struct { const IID* iid; const char* name; } list[] = {
-        { &__uuidof(ID3D12Device),  "ID3D12Device"  }, { &__uuidof(ID3D12Device1), "ID3D12Device1" }, { &__uuidof(ID3D12Device2), "ID3D12Device2" },
-        { &__uuidof(ID3D12Device3), "ID3D12Device3" }, { &__uuidof(ID3D12Device4), "ID3D12Device4" }, { &__uuidof(ID3D12Device5), "ID3D12Device5" },
-        { &__uuidof(ID3D12Device6), "ID3D12Device6" }, { &__uuidof(ID3D12Device7), "ID3D12Device7" }, { &__uuidof(ID3D12Device8), "ID3D12Device8" },
-        { &__uuidof(ID3D12Device9), "ID3D12Device9" }, { &__uuidof(ID3D12Device10), "ID3D12Device10" },
-    };
-    for (auto& e : list)
-    {
-        void* p = nullptr;
-        if (SUCCEEDED(unk->QueryInterface(*e.iid, &p)) && p) { PatchVtable(p, e.name); unk->Release(); }
-    }
-}
-
-
-
