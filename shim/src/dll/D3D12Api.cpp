@@ -1,5 +1,6 @@
 #include "Stdafx.h"
 #include "Trace.h"
+#include "GpuInfo.h"
 #include <string>
 #include <vector>
 #include <atomic>
@@ -20,9 +21,11 @@ static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_
     return h;
 }
 
-// Kernels that are not in the static table get a persistent id per prefix (C:\igdext_kernels\map.txt: "<id> <hash>"), their
-// SPIR-V and compile options are written next to it as dyn_<id>.spv / dyn_<id>.opt, and the dummy pipeline for that id is
-// returned. The patched ANV finds the files through $WINEPREFIX/drive_c/igdext_kernels and compiles them on first use.
+// Every CM kernel gets a persistent id per prefix (C:\igdext_kernels\map.txt: "<id> <hash>"), its SPIR-V and compile options
+// are written next to it as dyn_<id>.spv / dyn_<id>.opt, and the placeholder pipeline for that id is returned. The patched
+// ANV finds the files through $WINEPREFIX/drive_c/igdext_kernels, looks the hash up in ~/.cache/xess-xmx/kernels and
+// compiles the kernel there on a miss. When all ids are taken the map starts over (the compiled kernels are keyed by hash,
+// so nothing is lost but the id assignment).
 static const char* kDynDir = "C:\\igdext_kernels";
 static CRITICAL_SECTION g_dynCs; static INIT_ONCE g_dynOnce = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK DynInit(PINIT_ONCE, PVOID, PVOID*) { InitializeCriticalSection(&g_dynCs); return TRUE; }
@@ -53,7 +56,20 @@ static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, 
     if (id < 0)
     {
         id = maxId + 1;
-        if (id >= nDyn) { LeaveCriticalSection(&g_dynCs); TraceF("  dynamic kernel table full (%d)", nDyn); return -1; }
+        if (id >= nDyn)
+        {
+            // all placeholders in use: start a new map (old one kept as map.old.txt); ids are only names for this prefix
+            char oldPath[MAX_PATH]; snprintf(oldPath, sizeof(oldPath), "%s\\map.old.txt", kDynDir);
+            MoveFileExA(mapPath, oldPath, MOVEFILE_REPLACE_EXISTING);
+            for (int i = 0; i < nDyn; ++i)
+            {
+                char q[MAX_PATH];
+                snprintf(q, sizeof(q), "%s\\dyn_%d.spv", kDynDir, i); DeleteFileA(q);
+                snprintf(q, sizeof(q), "%s\\dyn_%d.opt", kDynDir, i); DeleteFileA(q);
+            }
+            TraceF("  all %d placeholder ids used: map restarted", nDyn);
+            id = 0;
+        }
         if (FILE* f = nullptr; fopen_s(&f, mapPath, "ab") == 0 && f) { fprintf(f, "%d %016llx\n", id, hash); fclose(f); }
     }
     char p[MAX_PATH];
@@ -133,27 +149,9 @@ void _INTC_D3D12_GetRaytracingAccelerationStructurePrebuildInfo_Host(INTCExtensi
     TraceF("GetRaytracingAccelerationStructurePrebuildInfo_Host (not implemented)");
 }
 
-HRESULT _INTC_D3D12_LatencyReductionExt(INTCExtensionContext* pExtensionContext, uint32_t version, BOOL latencyReductionEnabled, BOOL renderSubmitTimingsEnabled, uint32_t timingSlots)
-{
-    TraceF("LatencyReductionExt (not implemented)");
-    return E_NOTIMPL;
-}
-
-HRESULT _INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers(INTCExtensionContext* pExtensionContext, void** ppRenderSubmitCpuTimings, void** ppRenderSubmitGpuTimings)
-{
-    TraceF("LatencyReductionGetRenderSubmitTimingsBuffers (not implemented)");
-    return E_NOTIMPL;
-}
-
 HRESULT _INTC_D3D12_RegisterApplicationCallbacks1(const INTC_D3D12_API_CALLBACKS1* pCallbacks)
 {
     TraceF("RegisterApplicationCallbacks1 (not implemented)");
-    return E_NOTIMPL;
-}
-
-HRESULT _INTC_D3D12_RenderSubmitStart(INTCExtensionContext* pExtensionContext, uint32_t frameId)
-{
-    TraceF("RenderSubmitStart (not implemented)");
     return E_NOTIMPL;
 }
 
@@ -231,9 +229,11 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
             const char* opts = d->CompileOptions ? (const char*)d->CompileOptions : "";
             const unsigned long long h = Fnv1a64(d->CS.pShaderBytecode, d->CS.BytecodeLength, opts, strlen(opts));
             bool known = false;
-            static int dynOnly = -1;   // IGDEXT_DYN_ONLY=1: ignore the static table (every kernel goes through the run-time path)
-            if (dynOnly < 0) { char b[8]; dynOnly = GetEnvironmentVariableA("IGDEXT_DYN_ONLY", b, sizeof(b)) > 0 && atoi(b); }
-            if (!dynOnly) for (const XessDummy& xd : kXessDummies)
+            // IGDEXT_STATIC=1: kernels of the prebuilt table use their static ids (needs the kernels/ directory of a
+            // developer build); by default every kernel goes through the run-time path
+            static int useStatic = -1;
+            if (useStatic < 0) { char b[8]; useStatic = GetEnvironmentVariableA("IGDEXT_STATIC", b, sizeof(b)) > 0 && atoi(b); }
+            if (useStatic) for (const XessDummy& xd : kXessDummies)
                 if (xd.hash == h) { desc.CS.pShaderBytecode = xd.bytes; desc.CS.BytecodeLength = xd.size; TraceF("  kernel hash %016llx -> dummy id %d (workgroup %d,%d,5)", h, xd.id, 1 + xd.id % 16, 1 + xd.id / 16); known = true; break; }
             if (!known && d->ShaderInputType == CM_SPIRV)
             {
@@ -288,7 +288,7 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
     if (f == INTC_D3D12_FEATURE_D3D12_OPTIONS1 && size >= sizeof(INTC_D3D12_FEATURE_DATA_D3D12_OPTIONS1))
     {
         auto* o = (INTC_D3D12_FEATURE_DATA_D3D12_OPTIONS1*)data;
-        int xmx = 1, dl = 1, em = 0;
+        int xmx = XmxDetectGpu().xmx ? 1 : 0, dl = xmx, em = 0;
         { char b[32]; if (GetEnvironmentVariableA("IGDEXT_OPTIONS1", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &xmx, &dl, &em); }
         o->XMXEnabled = xmx ? TRUE : FALSE; o->DLBoostEnabled = dl ? TRUE : FALSE; o->EmulatedTyped64bitAtomics = em ? TRUE : FALSE;
         TraceF("  OPTIONS1 -> XMXEnabled=%d DLBoostEnabled=%d EmulatedTyped64bitAtomics=%d", xmx, dl, em);
@@ -297,14 +297,24 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
     if (f == INTC_D3D12_FEATURE_D3D12_OPTIONS2 && size >= sizeof(INTC_D3D12_FEATURE_DATA_D3D12_OPTIONS2))
     {
         auto* o = (INTC_D3D12_FEATURE_DATA_D3D12_OPTIONS2*)data;
-        // IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy> overrides the answer (experiment: which kernel variants XeSS then picks)
-        // XeSS SR (extension context requested as HW level 3 / API 10): SIMD16Required=1 -> XeSS ships its SIMD16 + LSC-typed kernel
-        // variant, the one Xe2/Xe3 can run natively (the SIMD8/legacy-typed variant produced the stippled motion ghost).
-        // The same answer goes to every caller: a real Xe2/Xe3 driver cannot hand out the SIMD8 variant (legacy typed ops do
-        // not compile for Xe3). IGDEXT_OPTIONS2_FG overrides it for calls that come from libxess_fg.dll.
+        // SIMD16Required=1 (Xe2 and later) makes XeSS and XeFG hand out their SIMD16 + LSC-typed kernel variant, the only
+        // one those GPUs can compile (the SIMD8 variant uses legacy typed messages); Xe-HPG gets the SIMD8 variant.
+        // The same answer goes to every caller. LSCSupported=0 makes XeSS use no CM kernels at all (DP4a HLSL path): given
+        // after a run-time kernel compile failed in this prefix (C:\igdext_kernels\compile_failed.txt, written by ANV),
+        // so a broken compiler setup degrades to DP4a instead of noise. Overrides: IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>,
+        // IGDEXT_OPTIONS2_FG=... for calls from libxess_fg.dll, IGDEXT_IGNORE_FAILED=1.
         TraceCallers("OPTIONS2");
         const bool fgCtx = CalledFromXeFG();
-        int simd16 = 1, lsc = 1, legacy = 0;
+        int simd16 = XmxDetectGpu().simd16 ? 1 : 0, lsc = 1, legacy = 0;
+        {
+            char b[8];
+            if (GetFileAttributesA("C:\\igdext_kernels\\compile_failed.txt") != INVALID_FILE_ATTRIBUTES &&
+                GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
+            {
+                lsc = 0;
+                TraceF("  a kernel failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt): falling back to DP4a");
+            }
+        }
         { char b[32]; if (GetEnvironmentVariableA(fgCtx ? "IGDEXT_OPTIONS2_FG" : "IGDEXT_OPTIONS2", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &simd16, &lsc, &legacy); }
         o->SIMD16Required = simd16 ? TRUE : FALSE; o->LSCSupported = lsc ? TRUE : FALSE; o->LegacyTranslationRequired = legacy ? TRUE : FALSE;
         TraceF("  OPTIONS2 (%s ctx) -> SIMD16Required=%d LSCSupported=%d LegacyTranslationRequired=%d", fgCtx ? "FG" : "SR", simd16, lsc, legacy);
@@ -369,7 +379,6 @@ D3D12_RESOURCE_ALLOCATION_INFO _INTC_D3D12_GetResourceAllocationInfo(INTCExtensi
 HRESULT _INTC_D3D12_AddShaderBinariesPath(INTCExtensionContext*, const wchar_t* p)   { char b[260] = {}; WideCharToMultiByte(CP_UTF8, 0, p ? p : L"", -1, b, sizeof(b) - 1, nullptr, nullptr); TraceF("AddShaderBinariesPath '%s'", b); return S_OK; }
 HRESULT _INTC_D3D12_RemoveShaderBinariesPath(INTCExtensionContext*, const wchar_t* p) { char b[260] = {}; WideCharToMultiByte(CP_UTF8, 0, p ? p : L"", -1, b, sizeof(b) - 1, nullptr, nullptr); TraceF("RemoveShaderBinariesPath '%s'", b); return S_OK; }
 HRESULT _INTC_D3D12_SetApplicationInfo(INTCExtensionAppInfo1*)                          { TraceF("SetApplicationInfo"); return S_OK; }
-HRESULT _INTC_D3D12_GetLatencyReductionStatus(INTCExtensionContext*, INTC_D3D12_LATENCY_REDUCTION_STATUS* st) { TraceF("GetLatencyReductionStatus"); if (st) *st = {}; return S_OK; }
 void    _INTC_D3D12_QueryCpuVisibleVidmem(INTCExtensionContext*, UINT64* total, UINT64* freeb) { TraceF("QueryCpuVisibleVidmem"); if (total) *total = 0; if (freeb) *freeb = 0; }
 
 } // extern "C"

@@ -24,6 +24,8 @@ set(SOURCES
     ${DLL_DIR}/IgdextApiDll.cpp
     ${DLL_DIR}/D3D12Api.cpp
     ${DLL_DIR}/XellHook.cpp
+    ${DLL_DIR}/GpuInfo.cpp
+    ${DLL_DIR}/XellDriver.cpp
     ${SRC_DIR}/Trace.cpp
     ${DLL_DIR}/IgdextApiDllInt.cpp
     ${DLL_DIR}/IgdextApiDllLegacy.cpp

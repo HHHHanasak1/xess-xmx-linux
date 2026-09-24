@@ -3,7 +3,9 @@
 // The game applies a 33.3 ms frame cap (30 fps, counted per displayed frame) right after it enables frame generation and only
 // replaces it when the pause menu is opened and closed. A nonzero interval arriving within 1.5 s of xellSetFgEnabled(1) is replaced by
 // the interval that was in effect before.
-//   IGDEXT_XELL_KEEPCAP=1   turn that fix off
+// The fix is on for Wuthering Waves only (process path contains "Wuthering Waves"), a cap set at that moment in any other game
+// is left alone.
+//   IGDEXT_XELL_FIXCAP=1    apply the fix in any game;  IGDEXT_XELL_KEEPCAP=1   turn it off everywhere
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
 #include "Stdafx.h"
 #include "Trace.h"
@@ -21,8 +23,10 @@ typedef uint32_t (*PFN_XellFg)(void*, uint32_t, uint32_t);
 
 static PFN_XellSet g_origSet; static PFN_XellSleep g_origSleep; static PFN_XellFg g_origFg;
 static bool g_log = false;
-static bool g_fixCap = true; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
+static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
 static volatile LONG g_sleepCalls = 0;
+typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
+static PFN_XellSetLog g_setLog;   // xellSetLoggingCallback: XeLL's own messages go to the log with IGDEXT_XELL_LOG
 
 static void XLog(const char* fmt, ...)
 {
@@ -33,6 +37,11 @@ static void XLog(const char* fmt, ...)
     fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
     va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
     fputc('\n', f); fclose(f);
+}
+
+static void XellLogCb(const char* msg, uint32_t level)
+{
+    if (msg) XLog("XeLL[%u] %s", level, msg);
 }
 
 static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
@@ -58,6 +67,7 @@ static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
     if (!g_log) return g_origSleep(ctx, frame);
+    if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
     LARGE_INTEGER qa, qb, qf; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qa);
     uint32_t rr = g_origSleep(ctx, frame);
@@ -105,6 +115,7 @@ static DWORD WINAPI XellThread(LPVOID)
     auto slp = (void*) GetProcAddress(m, "xellSleep");
     auto fg = (void*) GetProcAddress(m, "xellSetFgEnabled");
     if (!set || !slp || !fg) { XLog("XeLL exports missing"); return 0; }
+    g_setLog = (PFN_XellSetLog) GetProcAddress(m, "xellSetLoggingCallback");
     void* dummy = nullptr;
     PatchThunk(slp, (void*) Hook_Sleep, &dummy, "xellSleep"); g_origSleep = (PFN_XellSleep) dummy;
     PatchThunk(set, (void*) Hook_SetSleepMode, &dummy, "xellSetSleepMode"); g_origSet = (PFN_XellSet) dummy;
@@ -116,6 +127,11 @@ void StartXellHook()
 {
     char b[32];
     if (GetEnvironmentVariableA("IGDEXT_XELL_LOG", b, sizeof(b)) > 0) g_log = true;
+    {
+        char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
+    }
+    if (GetEnvironmentVariableA("IGDEXT_XELL_FIXCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = true;
     if (GetEnvironmentVariableA("IGDEXT_XELL_KEEPCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = false;
     if (!g_fixCap && !g_log) return;
     char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);

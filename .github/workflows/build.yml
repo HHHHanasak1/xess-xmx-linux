@@ -1,0 +1,71 @@
+name: build
+
+# Builds the two binaries from source on every push / pull request and keeps them as workflow artifacts:
+#   igdext64.dll         (shim, MSVC, static runtime)
+#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain)
+# plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
+# these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shell syntax
+        run: for f in *.sh tools/*.sh; do bash -n "$f" || exit 1; done
+      - name: python syntax
+        run: python3 -m py_compile tools/*.py
+      - name: placeholder id layout matches the driver
+        run: python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
+
+  shim:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: configure
+        run: cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: build
+        run: cmake --build shim/build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: igdext64
+          path: shim/build/igdext64.dll
+
+  mesa:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      MESA_TAG: mesa-26.1.2
+    steps:
+      - name: toolchain
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git meson ninja python-mako python-yaml python-packaging \
+            python-ply glslang spirv-tools spirv-headers spirv-llvm-translator llvm clang libclc libdrm \
+            wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf
+      - uses: actions/checkout@v4
+      - name: mesa source
+        run: git clone --depth 1 --branch "$MESA_TAG" https://gitlab.freedesktop.org/mesa/mesa.git mesa
+      - name: apply patches
+        run: |
+          cd mesa
+          git -c user.name=ci -c user.email=ci@localhost am ../patches/0001-*.patch ../patches/0002-*.patch
+      - name: configure
+        run: |
+          cd mesa
+          meson setup build -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled \
+            -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=disabled \
+            -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+      - name: build
+        run: ninja -C mesa/build src/intel/vulkan/libvulkan_intel.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvulkan_intel
+          path: mesa/build/src/intel/vulkan/libvulkan_intel.so

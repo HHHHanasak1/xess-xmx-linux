@@ -14,10 +14,11 @@ STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
 ENVD="$HOME/.config/environment.d"
 UNITD="$HOME/.config/systemd/user"
 SHIM="$PKG/igdext64.dll"
-for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/run/intel_icd.json" "$PKG/tools/cm-compile.sh"; do
+for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/tools/cm-compile.sh"; do
   [ -f "$f" ] || { echo "missing $f - run this from the unpacked package"; exit 1; }
 done
-grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" || \
+mkdir -p "$PKG/run"
+grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" 2>/dev/null || \
   printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s/lib/libvulkan_intel.so" }, "file_format_version": "1.0.1" }\n' "$PKG" > "$PKG/run/intel_icd.json"
 
 # 1. compiler bundle
@@ -29,16 +30,38 @@ chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 
 # 2. session environment
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
+  # VK_DRIVER_FILES replaces the loader's driver list: every other GPU's driver stays in it (hybrid laptops, eGPUs),
+  # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the patched one
+  drivers="$PKG/run/intel_icd.json"
+  for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
+    for j in "$d"/*.json; do
+      [ -f "$j" ] || continue
+      case "$(basename "$j")" in intel_icd.x86_64.json|intel_icd.json) continue ;; esac   # 32-bit Intel ICD stays (32-bit games)
+      drivers="$drivers:$j"
+    done
+  done
   mkdir -p "$ENVD"
-  cat > "$ENVD/50-xess-xmx.conf" <<EOF
-# XeSS XMX (xess-xmx-linux): patched ANV as the Vulkan driver + native CM kernels for every game of this session
-VK_DRIVER_FILES=$PKG/run/intel_icd.json
-VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer
-ANV_CM_KERNEL_DIR=$PKG/kernels
-EOF
+  {
+    echo "# XeSS XMX (xess-xmx-linux): patched ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
+    echo "VK_DRIVER_FILES=$drivers"
+    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer"
+    echo "ANV_CM_KERNEL_DIR=$PKG/kernels"
+    echo "ANV_CM_HELPER=$PKG/tools/cm-compile.sh"
+  } > "$ENVD/50-xess-xmx.conf"
   systemctl --user import-environment 2>/dev/null
-  systemctl --user set-environment "VK_DRIVER_FILES=$PKG/run/intel_icd.json" "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer" "ANV_CM_KERNEL_DIR=$PKG/kernels" 2>/dev/null
+  systemctl --user set-environment "VK_DRIVER_FILES=$drivers" "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer" \
+    "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" 2>/dev/null
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
+  echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
+fi
+mkdir -p "$PKG/kernels" "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/kernels"
+# a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, try again
+if [ -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+  rm -f "$STEAM"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels/compile_failed.txt
+fi
+if [ -d "$HOME/.var/app/com.valvesoftware.Steam" ]; then
+  echo "!! Flatpak Steam found: its games see neither ~/.config/environment.d nor this folder (sandbox)."
+  echo "   install.sh only covers the native Steam (SteamOS, distribution package)."
 fi
 
 # 3. shim
