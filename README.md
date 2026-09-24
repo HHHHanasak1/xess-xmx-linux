@@ -9,7 +9,8 @@ C-for-Metal (CM) kernel compiler/runtime in the driver. This project provides bo
   answers XeSS' capability queries like an Intel Xe2/Xe3 driver and turns every CM kernel XeSS submits into a tiny
   placeholder D3D12 compute pipeline.
 * a patched Mesa **ANV** Vulkan driver that recognises those placeholders and executes the real kernels, compiled
-  ahead of time with Intel's own compiler (IGC) from the SPIR-V that XeSS ships, inside the normal vkd3d-proton queue.
+  with Intel's own compiler (IGC) from the SPIR-V that XeSS ships - a precompiled set for the known XeSS versions, any
+  other kernel on first use at run time - inside the normal vkd3d-proton queue.
 
 Developed and tested on an ONEXPLAYER 3 (Intel Core Ultra "Panther Lake", Arc B390, Xe3) running SteamOS with
 Mesa 26.1.2 and GE-Proton 11-6, with Wuthering Waves (XeSS 2.0.2.68, XeFG 1.3.1.78). Xe2 (Lunar Lake, Battlemage)
@@ -22,7 +23,22 @@ is the limit at 22 W), so the point is quality, not speed: the XMX network is th
 ## Quick start (release archive)
 
 Download the release archive for your GPU generation (it contains `lib/libvulkan_intel.so`, `kernels/`, `igdext64.dll`
-and these scripts) and unpack it anywhere, then:
+and these scripts) and unpack it anywhere (the folder stays in place), then either
+
+**System-wide (recommended):**
+
+    ./install.sh     # once; fetches the compiler bundle (~230 MB), then reboot / re-login
+    ./uninstall.sh   # reverts everything
+
+`install.sh` puts the three variables below into `~/.config/environment.d/50-xess-xmx.conf`, so the whole user session
+(Steam and every game it starts, gamescope included) uses the patched ANV - no launch options, no per-game setup; installs
+the shim into every Proton that bundles an `igdext64.dll` (Proton Experimental copies it into the prefix at each launch)
+and into every existing prefix; and enables a user path unit that re-installs the shim after a Proton update. Kernels not
+in the shipped set are compiled on first use (see "How it works"). Re-run it after a game created a new prefix.
+Steam's per-game `MESA_SHADER_CACHE_DIR` is kept; `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` applies to every
+D3D12 game (it makes vkd3d-proton use its classic descriptor path, which the kernel binding-table code relies on).
+
+**Per game (the original way):**
 
     ./enable.sh      # game closed; copies the shim into the game's Proton prefix, appends a config block, clears the cache
     ./disable.sh     # restores everything
@@ -60,9 +76,16 @@ ANV is ABI-bound to the exact Mesa version - rebuild it from the patch for other
    one descriptor table per resource, whose heap offsets vkd3d passes as push constants), provides the single static
    sampler XeSS declares (linear, clamp) and programs SLM and barriers. Nothing leaves the Vulkan queue, so vkd3d-proton
    is unmodified.
-3. **Kernels.** Compiled offline from the dumped SPIR-V with `ocloc` from Intel's compute-runtime and **IGC 2.10.10**
+3. **Kernels.** Compiled from the kernel's SPIR-V with `ocloc` from Intel's compute-runtime and **IGC 2.10.10**
    (`-vc-codegen` plus the options XeSS passes: `-doubleGRF`, `-ze-exp-register-file-size`). Newer IGC versions crash on
-   a few kernels and are used only as fallbacks.
+   a few kernels. The release ships the set for XeSS 2.0.2.68 / XeFG 1.3.1.78 precompiled, and everything else is
+   compiled **at run time**: a kernel whose hash is not in the shim's table gets a persistent id per prefix
+   (`C:\igdext_kernels\map.txt`), its SPIR-V and options are written next to it (`dyn_<id>.spv/.opt`) and a dummy pipeline
+   with `numthreads (1 + m % 16, 1 + m / 16, z)`, z = 7, 11 or 13 (primes no game uses, so a real shader is never
+   mistaken for one), is returned. When ANV meets such a workgroup and finds no `dyn_<id>.cmk`, it runs
+   `tools/cm-compile.sh` (ocloc + IGC from `igc/`, fetched by `tools/get-igc.sh`) and loads the result - a one-time
+   stall of about a second per kernel on the first launch. Run-time and precompiled kernels are byte-identical
+   (verified for all 114 shipped ones), so a new XeSS version needs no rebuild of anything.
 
 ### Which kernel variant XeSS hands out
 
@@ -87,28 +110,34 @@ and generates frames through its non-CM path; measured throughput is identical, 
     tools/build-kernels.sh       compile + pack a whole map (ocloc + IGC bundles)
     tools/cmk_pack.py            zebin -> .cmk packer;  tools/check-kernels.py validates a kernel dir
     tools/gen_all_dummies.py     regenerate the shim table from a map (needs fxc)
+    tools/gen_dyn_dummies.py     the 288 dummies for dynamically assigned kernel ids (src/dll/dyn_dummies.inc)
+    tools/cm-compile.sh          run-time compiler helper called by ANV (ocloc + IGC from igc/, then cmk_pack.py)
+    tools/get-igc.sh             fetch IGC 2.10.10 + ocloc 25.18 into igc/ (needed for the run-time path)
+    tools/anv_rt_patch.py        the run-time part of the ANV patch as a script (already contained in the .patch)
     tools/kernel_map_xess_2.0.2.68.txt   the map of the shipped set
 
-Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (142 kernels: 90 SR + 4 SR variants
-first seen in Forza Horizon 6 + 24 XeFG SIMD16 variants + 24 old XeFG), `igdext64.dll`. See THIRD_PARTY.md about the
-kernels.
+Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (146 kernels: 90 SR + 4 SR variants
+first seen in Forza Horizon 6 + 24 XeFG SIMD16 variants + 4 SR variants first seen in Resident Evil 4 + 24 old XeFG),
+`igdext64.dll`. See THIRD_PARTY.md about the kernels.
 
 ## Another game or another XeSS version
 
-The kernel table is keyed by the kernel contents, not by the game. A game that ships the same `libxess.dll` (same
-version) mostly works out of the box: run `enable.sh` with `XMX_APPID`/`XMX_PREFIX` pointing at its prefix and get the
-four variables into its environment. The same XeSS build can still hand out a few kernels another game never asked for
-(Forza Horizon 6, same libxess.dll as Wuthering Waves, needed 4 more: the auto-exposure `average`/`average_sum` pair and
-a second `input_processing`/`output_filter` variant - all four are in the shipped set now). Unknown kernels run as
-no-ops and part of XeSS' output turns into white noise, so when that happens, or with a different XeSS version, extend
-the set:
+Nothing to do, provided the compiler bundle is present: run `tools/get-igc.sh` once (about 230 MB into `igc/`), then
+run `enable.sh` for the game's prefix. Kernels the shipped table does not know are compiled on first use (see "How it
+works", step 3). Watch it happen with `IGDEXT_TRACE=1` (`C:\igdext_trace.log`: `kernel hash ... -> dynamic id N`) and in
+the game's stderr (`ANV CM: compiling dynamic kernel N` / `injected .../dyn_N.cmk`); failures are logged to
+`$XDG_RUNTIME_DIR/xess-xmx-compile.log`. `IGDEXT_DYN_ONLY=1` ignores the static table so every kernel takes the
+run-time path (test switch). The compiled kernels live in the prefix (`drive_c/igdext_kernels/dyn_<id>.cmk`); delete the
+folder to force a recompile, delete `~/.cache/xess-xmx-mesa` when `lib/` or `kernels/` change.
+
+The offline route still exists for shipping a precompiled set (no first-launch stall) or for another GPU generation
+(`-device lnl`/`bmg` for Xe2):
 
 1. Run the game once with `IGDEXT_TRACE=1` in its environment. The shim writes `C:\igdext_trace.log` and dumps every
    kernel as `C:\igdext_dump\cs_NNNN_type2.bin` + `cs_NNNN_options.txt` (inside the prefix's `drive_c`).
 2. `tools/s16_map.py <dump dir> map.txt` - unique kernels with ids (order of first appearance).
 3. `tools/build-kernels.sh <dump dir> map.txt kernels/` - needs unpacked Intel compute-runtime (ocloc) and IGC debs,
-   see the variables at the top of the script. IGC 2.10.10 first, 2.12.5 / 2.16.0 as fallbacks; `-device ptl` for Xe3,
-   `lnl`/`bmg` for Xe2.
+   see the variables at the top of the script. IGC 2.10.10 first, 2.12.5 / 2.16.0 as fallbacks.
 4. `tools/gen_all_dummies.py map.txt shim/src/dll/xess_dummies.inc` (fxc from the Windows SDK), rebuild the shim.
 5. `tools/check-kernels.py kernels/` must report 0 bad files; clear `~/.cache/xess-xmx-mesa`.
 
@@ -141,6 +170,19 @@ spoof `libxess.dll` would see an NVIDIA adapter and take its DP4a path. XeFG dri
 kernels (a SIMD16 variant set of 24, ids 94-117 in the table, which the game-integrated XeFG of Wuthering Waves never
 requests). Verified on FH6: ~28 real fps -> ~56 presented at 2x, HUD stable; `[XeFG] InterpolationCount=2|3` gives
 3x / 4x.
+
+### A game without XeSS at all (Resident Evil 4, RE Engine) - tried, not recommended
+
+RE Engine games ship a custom FSR2 that OptiScaler cannot hook. The only route is REFramework's `pd-upscaler` build +
+PureDark's UpscalerBasePlugin 1.1.2 + a `libxess.dll` 2.0.2.68 in the game folder (`dinput8=n,b` override): its
+TemporalUpscaler replaces the game's TAA by an XeSS call, XeSS loads the shim and runs on XMX (four more SR variants,
+ids 118-121, are in the shipped set for that). Technically it works, but the result in RE4 1.5.9 was blurry text and
+flicker, worse than the game's own FSR2, and frame generation is impossible there (OptiScaler: "FG inputs: none").
+Left in the kernel set only; not worth setting up.
+
+Note for anyone rebuilding the shim: it is linked against the static MSVC runtime on purpose. RE4's prefix carries an
+older `msvcp140.dll`, in which a dynamically linked build crashed inside `DllMain` and XeSS silently fell back to DP4a
+(the only symptom: `igdext64.dll` loaded and unloaded twice in a `PROTON_LOG` and no trace file).
 
 ## Debug switches
 

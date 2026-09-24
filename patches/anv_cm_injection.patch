@@ -60,6 +60,89 @@ index 6aeb1fc..2aded41 100644
     ANV_RMV(bo_allocate, device, bo);
  
     return VK_SUCCESS;
+diff --git a/src/intel/vulkan/anv_image.c b/src/intel/vulkan/anv_image.c
+index 0834465..22abdea 100644
+--- a/src/intel/vulkan/anv_image.c
++++ b/src/intel/vulkan/anv_image.c
+@@ -2344,6 +2344,60 @@ anv_image_init_from_create_info(struct anv_device *device,
+    return anv_image_init(device, image, &create_info);
+ }
+ 
++/* ---- double-destroy guard --------------------------------------------------------------------------------------
++ * Some D3D12 titles under vkd3d-proton release an image twice (seen as glibc "double free or corruption" inside
++ * anv_DestroyImage). Every image created here is recorded in a process-wide table; a destroy of a handle that is not
++ * in the table is logged and ignored. ANV_IMAGE_GUARD=0 turns the guard off. */
++#include "util/simple_mtx.h"
++static simple_mtx_t anv_image_guard_mtx = SIMPLE_MTX_INITIALIZER;
++static struct set *anv_image_guard_set;
++static int anv_image_guard_on = -1;
++static unsigned anv_image_guard_hits;
++
++static bool
++anv_image_guard(void)
++{
++   if (anv_image_guard_on < 0) {
++      const char *e = getenv("ANV_IMAGE_GUARD");
++      anv_image_guard_on = !(e && e[0] == '0');
++   }
++   return anv_image_guard_on;
++}
++
++static void
++anv_image_guard_add(struct anv_image *image)
++{
++   if (!anv_image_guard())
++      return;
++   simple_mtx_lock(&anv_image_guard_mtx);
++   if (!anv_image_guard_set)
++      anv_image_guard_set = _mesa_pointer_set_create(NULL);
++   _mesa_set_add(anv_image_guard_set, image);
++   simple_mtx_unlock(&anv_image_guard_mtx);
++}
++
++/* true = go ahead and destroy, false = unknown handle, skip */
++static bool
++anv_image_guard_take(struct anv_image *image)
++{
++   if (!anv_image_guard())
++      return true;
++   bool known = false;
++   simple_mtx_lock(&anv_image_guard_mtx);
++   if (anv_image_guard_set) {
++      struct set_entry *e = _mesa_set_search(anv_image_guard_set, image);
++      if (e) {
++         _mesa_set_remove(anv_image_guard_set, e);
++         known = true;
++      }
++   }
++   simple_mtx_unlock(&anv_image_guard_mtx);
++   if (!known && anv_image_guard_hits++ < 20)
++      mesa_logw("ANV image guard: vkDestroyImage(%p) on an image that is not alive - ignored (%u so far)",
++                image, anv_image_guard_hits);
++   return known;
++}
++
+ VkResult anv_CreateImage(
+     VkDevice                                    _device,
+     const VkImageCreateInfo*                    pCreateInfo,
+@@ -2382,6 +2436,7 @@ VkResult anv_CreateImage(
+ 
+    ANV_RMV(image_create, device, false, image);
+ 
++   anv_image_guard_add(image);
+    *pImage = anv_image_to_handle(image);
+ 
+    return result;
+@@ -2397,6 +2452,9 @@ anv_DestroyImage(VkDevice _device, VkImage _image,
+    if (!image)
+       return;
+ 
++   if (!anv_image_guard_take(image))
++      return;
++
+    ANV_RMV(image_destroy, device, image);
+ 
+    assert(&device->vk == image->vk.base.device);
 diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
 index 3b57e0c..a186fc5 100644
 --- a/src/intel/vulkan/anv_private.h
@@ -88,10 +171,10 @@ index 5efe5ac..d6ac8fa 100644
     if (shader->replay_kernel.alloc_size != 0)
        anv_shader_heap_free(&device->shader_heap, shader->replay_kernel);
 diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index 7f2c77b..c3abf10 100644
+index 7f2c77b..131c505 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1204,6 +1204,188 @@ anv_shader_compile_fs(struct anv_device *device,
+@@ -1204,6 +1204,242 @@ anv_shader_compile_fs(struct anv_device *device,
     }
  }
  
@@ -121,6 +204,57 @@ index 7f2c77b..c3abf10 100644
 +   uint32_t table_idx[24];      /* descriptor table number (push constant slot) of surface k */
 +   uint32_t elem[24];           /* element inside the table */
 +};
++
++/* Dynamically registered kernels (shim dyn_dummies): workgroup (x<=8, y<=8, z in 6..15) -> id, compiled on first use */
++static bool
++anv_cm_dyn_kernel(uint32_t wx, uint32_t wy, uint32_t wz, char *path, size_t pathlen)
++{
++   int id = -1;
++   if (wx >= 1 && wx <= 16) {
++      if (wz == 7 && wy >= 1 && wy <= 9)
++         id = (wx - 1) + (wy - 1) * 16;
++      else if (wz == 11 && wy >= 1 && wy <= 5)
++         id = 144 + (wx - 1) + (wy - 1) * 16;
++      else if (wz == 13 && wy >= 1 && wy <= 4)
++         id = 224 + (wx - 1) + (wy - 1) * 16;
++   }
++   if (id < 0)
++      return false;
++   char dirbuf[512];
++   const char *sdir = getenv("ANV_CM_SPV_DIR");
++   if (!sdir) {
++      const char *pfx = getenv("WINEPREFIX");
++      if (!pfx)
++         return false;
++      snprintf(dirbuf, sizeof(dirbuf), "%s/drive_c/igdext_kernels", pfx);
++      sdir = dirbuf;
++   }
++   snprintf(path, pathlen, "%s/dyn_%u.cmk", sdir, id);
++   if (access(path, R_OK) == 0)
++      return true;
++   char spv[600], opt[600];
++   snprintf(spv, sizeof(spv), "%s/dyn_%u.spv", sdir, id);
++   snprintf(opt, sizeof(opt), "%s/dyn_%u.opt", sdir, id);
++   if (access(spv, R_OK) != 0 || access(opt, R_OK) != 0) {
++      fprintf(stderr, "ANV CM: dynamic kernel %u: no %s\n", id, spv);
++      return false;
++   }
++   char helperbuf[600];
++   const char *helper = getenv("ANV_CM_HELPER");
++   if (!helper) {
++      snprintf(helperbuf, sizeof(helperbuf), "%s/../tools/cm-compile.sh", getenv("ANV_CM_KERNEL_DIR"));
++      helper = helperbuf;
++   }
++   char cmd[2600];
++   snprintf(cmd, sizeof(cmd), "/bin/sh '%s' '%s' '%s' '%s'", helper, spv, opt, path);
++   fprintf(stderr, "ANV CM: compiling dynamic kernel %u (%s)\n", id, spv);
++   const int rc = system(cmd);
++   if (rc != 0 || access(path, R_OK) != 0) {
++      fprintf(stderr, "ANV CM: dynamic kernel %u: helper failed (rc %d)\n", id, rc);
++      return false;
++   }
++   return true;
++}
 +
 +static bool
 +anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
@@ -152,13 +286,16 @@ index 7f2c77b..c3abf10 100644
 +         fprintf(stderr, "ANV CM:   surface %u: set %u index %u\n", i, shader_data->bind_map.surface_to_descriptor[i].set, shader_data->bind_map.surface_to_descriptor[i].index);
 +   }
 +   if (access(path, R_OK) != 0) {
-+      /* dummy pipelines made by the igdext shim encode the XeSS kernel index in the workgroup size (x, y, 5) */
-+      if (nir->info.workgroup_size[2] != 5)
++      /* dummy pipelines made by the igdext shim encode the XeSS kernel index in the workgroup size: static set (x, y, 5),
++       * dynamically registered kernels (x<=8, y<=8, 6..15) compiled on first use */
++      const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
++      if (wz == 5) {
++         snprintf(path, sizeof(path), "%s/wg%u_%u_5.cmk", dir, wx, wy);
++         if (access(path, R_OK) != 0)
++            return false;
++      } else if (!anv_cm_dyn_kernel(wx, wy, wz, path, sizeof(path))) {
 +         return false;
-+      snprintf(path, sizeof(path), "%s/wg%u_%u_5.cmk", dir,
-+               nir->info.workgroup_size[0], nir->info.workgroup_size[1]);
-+      if (access(path, R_OK) != 0)
-+         return false;
++      }
 +   }
 +   {
 +      /* debugging: ANV_CM_ONLY="x,y x,y ..." injects only these kernels, ANV_CM_SKIP the listed ones are left as dummies */
@@ -280,7 +417,7 @@ index 7f2c77b..c3abf10 100644
  static void
  anv_shader_compile_cs(struct anv_device *device,
                        void *mem_ctx,
-@@ -1214,6 +1396,11 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1214,6 +1450,11 @@ anv_shader_compile_cs(struct anv_device *device,
     const struct intel_device_info *devinfo = compiler->devinfo;
     nir_shader *nir = shader_data->info->nir;
  
@@ -293,10 +430,10 @@ index 7f2c77b..c3abf10 100644
  
     struct brw_compile_cs_params params = {
 diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
-index 1e8aa36..a79f746 100644
+index 1e8aa36..58d8587 100644
 --- a/src/intel/vulkan/genX_cmd_buffer.c
 +++ b/src/intel/vulkan/genX_cmd_buffer.c
-@@ -2694,6 +2694,238 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
+@@ -2694,6 +2694,239 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
  {
     uint32_t state_offset;
  
@@ -313,6 +450,7 @@ index 1e8aa36..a79f746 100644
 +            struct anv_state sst = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 16, 32);
 +            if (sst.map == NULL)
 +               return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++            const bool smp_point = getenv("ANV_CM_SAMPLER_POINT") != NULL;
 +            struct GENX(SAMPLER_STATE) smp = {
 +               .SamplerDisable = false,
 +               .TextureBorderColorMode = DX10OGL,
@@ -321,8 +459,8 @@ index 1e8aa36..a79f746 100644
 +#endif
 +               .LODPreClampMode = CLAMP_MODE_OGL,
 +               .MipModeFilter = MIPFILTER_LINEAR,
-+               .MagModeFilter = MAPFILTER_LINEAR,
-+               .MinModeFilter = MAPFILTER_LINEAR,
++               .MagModeFilter = smp_point ? MAPFILTER_NEAREST : MAPFILTER_LINEAR,
++               .MinModeFilter = smp_point ? MAPFILTER_NEAREST : MAPFILTER_LINEAR,
 +               .TextureLODBias = 0,
 +               .AnisotropicAlgorithm = LEGACY,
 +               .MinLOD = 0,
@@ -463,7 +601,7 @@ index 1e8aa36..a79f746 100644
 +                     for (unsigned r = 0; r < gnrec; r++) {
 +                        if (!grec[r].done && grec[r].kx == gkx && grec[r].ky == gky && gcount[gkx][gky] >= grec[r].due) {
 +                           char path[128];
-+                           snprintf(path, sizeof(path), "/tmp/anv_cm_cap/gcap_%u_%u_n%u_s%u.bin", grec[r].kx, grec[r].ky, grec[r].n, grec[r].k);
++                           snprintf(path, sizeof(path), "/home/deck/xmx/cap/gcap_%u_%u_n%u_s%u.bin", grec[r].kx, grec[r].ky, grec[r].n, grec[r].k);
 +                           FILE *gf = fopen(path, "wb");
 +                           if (gf) { fwrite((const char *)gbo->map + grec[r].off, 1, grec[r].size, gf); fclose(gf); }
 +                           grec[r].done = true;
@@ -518,7 +656,7 @@ index 1e8aa36..a79f746 100644
 +                     continue;
 +                  }
 +                  char path[128];
-+                  snprintf(path, sizeof(path), "/tmp/anv_cm_cap/cap_%u_%u_n%u_s%u.bin", ckx, cky, cn, k);
++                  snprintf(path, sizeof(path), "/home/deck/xmx/cap/cap_%u_%u_n%u_s%u.bin", ckx, cky, cn, k);
 +                  FILE *cf = fopen(path, "wb");
 +                  if (cf) {
 +                     fwrite((const char *)m + (addr - (found->offset & 0xffffffffffffull)), 1, size, cf);
@@ -617,3 +755,129 @@ index 5f16826..9b4b847 100644
     assert(ARRAY_SIZE(shader->cs.gfx125.compute_walker_body) >=
            GENX(COMPUTE_WALKER_BODY_length));
     GENX(COMPUTE_WALKER_BODY_pack)(NULL,
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+index d9b7b55..065eb81 100644
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -1252,6 +1252,13 @@ wsi_CreateSwapchainKHR(VkDevice _device,
+ 
+    VkSwapchainCreateInfoKHR info = *pCreateInfo;
+ 
++   /* experiment: ANV_WSI_MIN_IMAGES=<n> raises the swapchain image count (frame generation presents bursts of frames) */
++   {
++      const char *mi = getenv("ANV_WSI_MIN_IMAGES");
++      if (mi && atoi(mi) > (int)info.minImageCount)
++         info.minImageCount = atoi(mi);
++   }
++
+    if (wsi_device->force_swapchain_to_currentExtent) {
+       VkSurfaceCapabilities2KHR caps2 = {
+          .sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
+@@ -1318,6 +1325,9 @@ wsi_CreateSwapchainKHR(VkDevice _device,
+    }
+ 
+    *pSwapchain = wsi_swapchain_to_handle(swapchain);
++   if (getenv("ANV_WSI_FPS"))
++      fprintf(stderr, "ANV WSI: swapchain created %ux%u requested minImageCount=%u images=%u presentMode=%d (orig min=%u)\n", pCreateInfo->imageExtent.width,
++              pCreateInfo->imageExtent.height, info.minImageCount, swapchain->image_count, (int)pCreateInfo->presentMode, pCreateInfo->minImageCount);
+ 
+    if (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) {
+       swapchain->present_timing.active = true;
+@@ -1916,6 +1926,8 @@ wsi_signal_fence_for_image(struct vk_device *device,
+                          &fence->temporary);
+ }
+ 
++static uint64_t wsi_acq_ns, wsi_acq_n; static int wsi_seq_log;
++
+ VkResult
+ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
+                                VkDevice _device,
+@@ -1925,8 +1937,13 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
+    VK_FROM_HANDLE(wsi_swapchain, swapchain, pAcquireInfo->swapchain);
+    VK_FROM_HANDLE(vk_device, device, _device);
+ 
++   struct timespec wsi_acq_t0, wsi_acq_t1;
++   clock_gettime(CLOCK_MONOTONIC, &wsi_acq_t0);
+    VkResult result = swapchain->acquire_next_image(swapchain, pAcquireInfo,
+                                                    pImageIndex);
++   clock_gettime(CLOCK_MONOTONIC, &wsi_acq_t1);
++   wsi_acq_ns += (uint64_t)(wsi_acq_t1.tv_sec - wsi_acq_t0.tv_sec) * 1000000000ull + wsi_acq_t1.tv_nsec - wsi_acq_t0.tv_nsec;
++   wsi_acq_n++;
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+       return result;
+    struct wsi_image *image =
+@@ -2087,7 +2104,62 @@ wsi_common_queue_present(const struct wsi_device *wsi,
+    struct vk_device *dev = queue->base.device;
+    uint32_t current_frame = p_atomic_fetch_add(&dev->current_frame, 1);
+    VkResult final_result = handle_trace(queue, dev, current_frame);
++   {
++      /* debugging: ANV_WSI_FPS=1 prints how many vkQueuePresentKHR calls per second reach the driver (stderr, every 2 s) */
++      static int wsi_fps_on = -1;
++      static uint64_t wsi_fps_t0, wsi_fps_n, wsi_fps_wait;
++      if (wsi_fps_on < 0) wsi_fps_on = getenv("ANV_WSI_FPS") != NULL;
++      if (wsi_fps_on) {
++         struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++         uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
++         if (!wsi_fps_t0) wsi_fps_t0 = now;
++         wsi_fps_n += pPresentInfo->swapchainCount;
++         {
++            static uint64_t last; static float gaps[48]; static double abst[48]; static int ng;
++            if (last) { gaps[ng % 48] = (now - last) / 1e6f; abst[ng % 48] = (double)(now % 1000000000000ull) / 1e6; ng++; }
++            last = now;
++            if (now - wsi_fps_t0 >= 2000000000ull) {
++               int cnt = ng < 48 ? ng : 48; char b[600]; int o = 0;
++               for (int i = 0; i < cnt && o < 560; i++) o += snprintf(b + o, sizeof(b) - o, "%.1f ", gaps[(ng - cnt + i) % 48]);
++               {
++                  char ab[900]; int q = 0;
++                  for (int i = 0; i < cnt && q < 860; i++) q += snprintf(ab + q, sizeof(ab) - q, "%.1f ", abst[(ng - cnt + i) % 48]);
++                  fprintf(stderr, "ANV WSI ABS: %s\n", ab);
++               }
++               fprintf(stderr, "ANV WSI: %.1f presents/s, acquire calls %llu waited %.0f ms; last gaps(ms): %s\n", wsi_fps_n * 1e9 / (double)(now - wsi_fps_t0),
++                       (unsigned long long)wsi_acq_n, wsi_acq_ns / 1e6, b);
++               wsi_fps_t0 = now; wsi_fps_n = 0; wsi_acq_n = 0; wsi_acq_ns = 0;
++            }
++         }
++      }
++   }
+ 
++   if (getenv("ANV_WSI_FPS")) {
++      /* presentinfo-chain: what vkd3d attaches to each present (first 30 + every 1000th) */
++      static unsigned long wsi_pc_n;
++      /* wsi_seq_log: presents 8000..8060 in detail: per-present mode, present id, image index, time spent inside this call */
++      if (wsi_pc_n++ < 30 || (wsi_pc_n % 1000) == 0 || (wsi_pc_n >= 8000 && wsi_pc_n < 8060)) {
++         char cb[300]; int co = 0;
++         for (const VkBaseInStructure *it = pPresentInfo->pNext; it && co < 250; it = it->pNext) {
++            if (it->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR) {
++               const VkSwapchainPresentModeInfoKHR *pm = (const VkSwapchainPresentModeInfoKHR *)it;
++               co += snprintf(cb + co, sizeof(cb) - co, " mode[n=%u]=%d", pm->swapchainCount, pm->swapchainCount ? (int)pm->pPresentModes[0] : -1);
++            } else if (it->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
++               const VkPresentId2KHR *pi = (const VkPresentId2KHR *)it;
++               co += snprintf(cb + co, sizeof(cb) - co, " id2=%llu", pi->swapchainCount ? (unsigned long long)pi->pPresentIds[0] : 0ull);
++            } else if (it->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR) {
++               co += snprintf(cb + co, sizeof(cb) - co, " fence");
++            } else if (it->sType == VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT) {
++               co += snprintf(cb + co, sizeof(cb) - co, " timings");
++            } else co += snprintf(cb + co, sizeof(cb) - co, " sType=%d", (int)it->sType);
++         }
++         struct timespec pts; clock_gettime(CLOCK_MONOTONIC, &pts);
++         fprintf(stderr, "ANV WSI: present #%lu t=%.2f img=%u waits=%u chain:%s\n", wsi_pc_n, (double)(((uint64_t)pts.tv_sec * 1000000000ull + pts.tv_nsec) % 1000000000000ull) / 1e6, pPresentInfo->pImageIndices[0], pPresentInfo->waitSemaphoreCount, cb);
++         wsi_seq_log = 1;
++      }
++   }
++
++   struct timespec wsi_p0; clock_gettime(CLOCK_MONOTONIC, &wsi_p0);
+    STACK_ARRAY(VkResult, results, pPresentInfo->swapchainCount);
+    for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++)
+       results[i] = VK_SUCCESS;
+@@ -2525,6 +2597,11 @@ wsi_common_queue_present(const struct wsi_device *wsi,
+    STACK_ARRAY_FINISH(image_signal_infos);
+    STACK_ARRAY_FINISH(semaphore_wait_infos);
+    STACK_ARRAY_FINISH(results);
++   if (wsi_seq_log) {
++      struct timespec pts; clock_gettime(CLOCK_MONOTONIC, &pts);
++      fprintf(stderr, "ANV WSI:   present done, blocked %.2f ms\n", ((pts.tv_sec - wsi_p0.tv_sec) * 1e9 + (pts.tv_nsec - wsi_p0.tv_nsec)) / 1e6);
++      wsi_seq_log = 0;
++   }
+ 
+    return final_result;
+ }

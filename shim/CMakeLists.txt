@@ -1,4 +1,8 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
+# Static MSVC runtime: the shim is loaded into whatever CRT the game prefix has (Resident Evil 4's prefix carries an
+# older msvcp140 in which the dynamic build crashed inside DllMain and XeSS silently fell back to DP4a).
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(dxvk-igdext LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)

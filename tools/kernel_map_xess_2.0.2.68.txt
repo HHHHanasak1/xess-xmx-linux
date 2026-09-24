@@ -118,3 +118,8 @@
 115 269 bf130595985319cd cm_main_010 1 1 1 0
 116 270 ae8ff86a48db68f9 cm_main_011 1 1 1 0
 117 271 5825692b92db70d5 cm_main_015 1 1 1 0
+# added from a Resident Evil 4 dump (XeSS driven by REFramework TemporalUpscaler + PDPerfPlugin: a third input/output variant)
+118 0 ef494e7ce1acd9a1 average 8 4 1 0
+119 1 70ee0e64c91e1e2c average_sum 8 4 1 0
+120 2 d09865d3c47fe34c input_processing 2 1 1 0
+121 62 e104d3c5dc73f2f3 output_filter 2 1 1 0
