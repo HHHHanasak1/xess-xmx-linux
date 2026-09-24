@@ -344,8 +344,11 @@ static bool SelfTestOk(ID3D12Device* dev)
 // IGDEXT_IGNORE_FAILED=1 ignores the compile marker.
 // The compile-failure marker (written and retried by the driver) is dropped when the game's XeSS libraries are newer than
 // it: a game update brings new kernels, so the old failure says nothing about them.
-static bool CompileFailedStillValid()
+// *xessLoaded tells whether the check could look at a loaded XeSS library at all: the game itself may open an extension
+// context before it loads XeSS (Wuthering Waves does), and a game update is only visible once libxess.dll is loaded.
+static bool CompileFailedStillValid(bool* xessLoaded)
 {
+    *xessLoaded = false;
     WIN32_FILE_ATTRIBUTE_DATA mk;
     if (!GetFileAttributesExA("C:\\igdext_kernels\\compile_failed.txt", GetFileExInfoStandard, &mk)) return false;
     const char* libs[] = { "libxess.dll", "libxess_fg.dll" };
@@ -355,6 +358,7 @@ static bool CompileFailedStillValid()
         char path[MAX_PATH];
         WIN32_FILE_ATTRIBUTE_DATA la;
         if (!m || !GetModuleFileNameA(m, path, MAX_PATH) || !GetFileAttributesExA(path, GetFileExInfoStandard, &la)) continue;
+        *xessLoaded = true;
         if (CompareFileTime(&la.ftLastWriteTime, &mk.ftLastWriteTime) > 0)
         {
             TraceF("  %s is newer than compile_failed.txt (game update): marker removed, kernels are tried again", name);
@@ -370,11 +374,21 @@ bool XmxFallbackActive(ID3D12Device* dev)
     static int decided = -1;
     if (decided >= 0) return decided == 1;
     char b[8];
+    bool xessLoaded = false;
     decided = 0;
     if (GetEnvironmentVariableA("IGDEXT_FORCE_FALLBACK", b, sizeof(b)) > 0 && atoi(b))
     { TraceF("  fallback: IGDEXT_FORCE_FALLBACK"); decided = 1; }
-    else if (CompileFailedStillValid() && GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
-    { TraceF("  fallback: kernels failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt)"); decided = 1; }
+    else if (CompileFailedStillValid(&xessLoaded) && GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
+    {
+        if (!xessLoaded)
+        {
+            // not decided yet: the game-update check needs XeSS loaded; decline this context, look again at the next one
+            TraceF("  fallback for this context: compile_failed.txt present, XeSS not loaded yet (checked again later)");
+            decided = -1;
+            return true;
+        }
+        TraceF("  fallback: kernels failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt)"); decided = 1;
+    }
     else if (!SelfTestOk(dev))
     { TraceF("  fallback: self-test failed (patched driver not active in this process, or placeholders not recognised)"); decided = 1; }
     return decided == 1;
