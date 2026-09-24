@@ -198,6 +198,7 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
     char b1[400], b2[400];
     TraceF("CreateComputePipelineState #%d: inputType=%d csLen=%zu csPtr=%p d3d12desc=%p", id, (int)d->ShaderInputType,
            (size_t)d->CS.BytecodeLength, d->CS.pShaderBytecode, d->pD3D12Desc);
+    TraceCallers("CreateComputePipelineState");
     TraceF("  CompileOptions : %s", SafeStr(d->CompileOptions, b1, sizeof(b1)));
     TraceF("  InternalOptions: %s", SafeStr(d->InternalOptions, b2, sizeof(b2)));
     if (d->pD3D12Desc)
@@ -299,10 +300,11 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
         // IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy> overrides the answer (experiment: which kernel variants XeSS then picks)
         // XeSS SR (extension context requested as HW level 3 / API 10): SIMD16Required=1 -> XeSS ships its SIMD16 + LSC-typed kernel
         // variant, the one Xe2/Xe3 can run natively (the SIMD8/legacy-typed variant produced the stippled motion ghost).
-        // XeSS-FG: SIMD16Required=0 makes it use its CM (XMX) kernels; with 1 the game-integrated XeFG silently switches to a
-        // non-CM path that does not use XMX. Detected by libxess_fg.dll on the call stack (or an HW level 5 context).
-        const bool fgCtx = CalledFromXeFG() || (ctx && ctx->m_pD3D12ExtensionContext && ctx->m_pD3D12ExtensionContext->m_SupportedExtVersion.HWFeatureLevel >= 5);
-        int simd16 = fgCtx ? 0 : 1, lsc = 1, legacy = 0;
+        // The same answer goes to every caller: a real Xe2/Xe3 driver cannot hand out the SIMD8 variant (legacy typed ops do
+        // not compile for Xe3). IGDEXT_OPTIONS2_FG overrides it for calls that come from libxess_fg.dll.
+        TraceCallers("OPTIONS2");
+        const bool fgCtx = CalledFromXeFG();
+        int simd16 = 1, lsc = 1, legacy = 0;
         { char b[32]; if (GetEnvironmentVariableA(fgCtx ? "IGDEXT_OPTIONS2_FG" : "IGDEXT_OPTIONS2", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &simd16, &lsc, &legacy); }
         o->SIMD16Required = simd16 ? TRUE : FALSE; o->LSCSupported = lsc ? TRUE : FALSE; o->LegacyTranslationRequired = legacy ? TRUE : FALSE;
         TraceF("  OPTIONS2 (%s ctx) -> SIMD16Required=%d LSCSupported=%d LegacyTranslationRequired=%d", fgCtx ? "FG" : "SR", simd16, lsc, legacy);

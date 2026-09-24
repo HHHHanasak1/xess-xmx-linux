@@ -25,6 +25,25 @@ void TraceF(const char* fmt, ...)
     fputc('\n', f); fclose(f);
 }
 
+void TraceCallers(const char* tag)
+{
+    if (!TraceOn()) return;
+    void* frames[48];
+    const USHORT n = RtlCaptureStackBackTrace(1, 48, frames, nullptr);
+    char out[1024]; int o = 0; char last[64] = {};
+    for (USHORT i = 0; i < n && o < 960; ++i)
+    {
+        HMODULE m = nullptr; char path[MAX_PATH] = {};
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)frames[i], &m) || !m ||
+            !GetModuleFileNameA(m, path, MAX_PATH)) { snprintf(path, sizeof(path), "?"); }
+        const char* base = strrchr(path, '\\'); base = base ? base + 1 : path;
+        if (_stricmp(base, last) == 0) continue;
+        snprintf(last, sizeof(last), "%s", base);
+        o += snprintf(out + o, sizeof(out) - o, "%s%s", o ? " < " : "", base);
+    }
+    TraceF("  callers(%s): %s", tag, out);
+}
+
 bool DumpBlob(const char* name, const void* data, size_t size)
 {
     if (!TraceOn()) return false;

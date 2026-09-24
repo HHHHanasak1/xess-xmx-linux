@@ -18,6 +18,7 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
     TraceF("D3D12 InitExtensions: requested HW=%u API=%u REV=%u internal=%d device=%p",
            pExtensionInfo->RequestedExtensionVersion.HWFeatureLevel, pExtensionInfo->RequestedExtensionVersion.APIVersion,
            pExtensionInfo->RequestedExtensionVersion.Revision, (int)internalExtensions, pDevice);
+    TraceCallers("InitExtensions");
     if (pExtensionAppInfo)
     {
         char a[128] = {}, e[128] = {};

@@ -93,16 +93,18 @@ XeSS asks the driver `CheckFeatureSupport(OPTIONS2)` for `SIMD16Required / LSCSu
 and picks a variant set from the answer. With `SIMD16Required=0` it hands out the Xe-HPG set (SIMD8 kernels reading
 images with the legacy `gather4.typed` messages, which Xe2/Xe3 hardware and IGC cannot run); that set produced a stippled
 ghost trail behind moving objects. With `SIMD16Required=1` - Xe2/Xe3 are SIMD16-native - XeSS ships a different set:
-57 of the 90 super-resolution kernels differ, they use `lsc.load/store.quad.typed` and compile for Xe3 unchanged.
-The shim answers `SIMD16Required=1` to XeSS super resolution, and the shipped kernel set is this one. `LSCSupported=0`
-makes XeSS use no CM kernels at all (plain DP4a HLSL path).
+57 of the 90 kernels differ, they use `lsc.load/store.quad.typed` and compile for Xe3 unchanged. The shim answers
+`SIMD16Required=1` to every caller, and the shipped kernel set is this one. `LSCSupported=0` makes XeSS use no CM
+kernels at all (plain DP4a HLSL path).
 
-Frame generation is answered differently. The game-integrated XeFG of Wuthering Waves, given `SIMD16Required=1`, creates
-no CM kernels and generates frames with ordinary compute shaders that cannot use XMX; given `0` it uses its CM network
-(14 of its 24 kernels use `dpas`, i.e. XMX). XeFG creates its extension context exactly like SR does, so the shim tells
-the two apart by the caller: when `libxess_fg.dll` is on the call stack (loaded by the game or by OptiScaler) the answer
-is `SIMD16Required=0`, so all frame generation runs on XMX. `IGDEXT_OPTIONS2_FG=<simd16>,<lsc>,<legacy>` overrides
-that answer (`1,1,0` = the old non-XMX behaviour).
+Frame generation uses the same mechanism: `libxess_fg.dll` opens its own extension contexts (four at API 10, one at
+API 11) and asks the same question. Of the 90 kernels of the shipped Wuthering Waves set, ids 0-29 are XeSS SR and
+ids 30-89 are XeFG (30 of those 60 use `dpas`, i.e. XMX). At 4x the per-frame XeFG kernels run once per real frame and
+twelve of them three times, once per generated frame: multi-frame generation runs on XMX. Answering
+`SIMD16Required=0` to XeFG makes it request the Xe-HPG variant instead, 16 of whose kernels cannot be compiled for Xe3
+(black generated frames). `IGDEXT_TRACE=1` logs the calling module of every context, feature query and pipeline
+(`callers(...): igdext64.dll < libxess_fg.dll < ...`), which tells SR and XeFG kernels apart in any game;
+`IGDEXT_OPTIONS2_FG=<simd16>,<lsc>,<legacy>` overrides the answer for XeFG only (experiments).
 
 ## Contents of this repository
 
@@ -123,8 +125,9 @@ that answer (`1,1,0` = the old non-XMX behaviour).
     tools/anv_rt_patch.py        the run-time part of the ANV patch as a script (already contained in the .patch)
     tools/kernel_map_xess_2.0.2.68.txt   the map of the shipped set
 
-Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (146 kernels: 90 SR + 4 SR variants
-first seen in Forza Horizon 6 + 24 XeFG SIMD16 variants + 4 SR variants first seen in Resident Evil 4 + 24 old XeFG),
+Release archive only: `lib/libvulkan_intel.so` (patched ANV), `kernels/*.cmk` (146 kernels: 30 SR + 60 XeFG from
+Wuthering Waves, 4 SR variants first seen in Forza Horizon 6, 24 XeFG kernels first seen with OptiScaler in FH6, 4 SR
+variants first seen in Resident Evil 4, 24 Xe-HPG XeFG kernels from before the `SIMD16Required` fix),
 `igdext64.dll`. See THIRD_PARTY.md about the kernels.
 
 ## Another game or another XeSS version
@@ -173,10 +176,9 @@ stay so the kernel table matches), use this `OptiScaler.ini`:
     Dxgi=false
 
 and add `export WINEDLLOVERRIDES="dxgi=n,b"` to the sourced config file. `Dxgi=false` matters: with the default NVIDIA
-spoof `libxess.dll` would see an NVIDIA adapter and take its DP4a path. XeFG driven this way uses CM kernels on XMX
-(with `SIMD16Required=1` it asked for a SIMD16 variant set of 24, ids 94-117 in the table; it now gets `0` like every
-XeFG caller, see "Which kernel variant XeSS hands out"). Verified on FH6 (before that change): ~28 real fps -> ~56 presented at 2x, HUD stable; `[XeFG] InterpolationCount=2|3` gives
-3x / 4x.
+spoof `libxess.dll` would see an NVIDIA adapter and take its DP4a path. XeFG driven this way runs on XMX too; in FH6 it
+asked for 24 kernels that Wuthering Waves' XeFG does not use (ids 94-117 in the table). Verified on FH6: ~28 real fps
+-> ~56 presented at 2x, HUD stable; `[XeFG] InterpolationCount=2|3` gives 3x / 4x.
 
 ### A game without XeSS at all (Resident Evil 4, RE Engine) - tried, not recommended
 
