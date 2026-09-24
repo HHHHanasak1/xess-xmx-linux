@@ -34,6 +34,12 @@ set(SOURCES
 
 add_library(igdext SHARED ${SOURCES})
 
+# the prebuilt static kernel table (IGDEXT_STATIC=1, needs a kernels/ folder) is a developer option
+option(XMX_STATIC_TABLE "compile in the static XeSS kernel table" OFF)
+if(XMX_STATIC_TABLE)
+    target_compile_definitions(igdext PRIVATE XMX_STATIC_TABLE)
+endif()
+
 target_include_directories(igdext PRIVATE
     ${SRC_DIR}
     ${LEGACY_DIR}

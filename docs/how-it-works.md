@@ -48,9 +48,14 @@ The binding-table code relies on vkd3d-proton's classic descriptor path, hence
 measured without a frame-rate difference, see the README). If the heap cannot be found the driver says so in the log
 and leaves the kernel as a no-op.
 
-If a compile fails, the driver appends the kernel to `C:\igdext_kernels\compile_failed.txt`; on the next launch the
-shim answers `LSCSupported=0`, which makes XeSS use its DP4a path for that game instead of producing noise.
-`install.sh` removes the marker when a compiler is present.
+If a compile fails, the driver appends the kernel to `C:\igdext_kernels\compile_failed.txt`. At the next launch the
+driver compiles the listed kernels again when the Vulkan device is created (before XeSS asks its questions) and
+removes the marker if they all succeed; if the marker is still there, the shim answers `LSCSupported=0` and XeSS uses
+its DP4a path for that game instead of producing noise. A transient failure heals by itself.
+
+Compile cost: about 0.2 s per kernel on an idle system (ocloc 170 ms, packing 35 ms), 0.3 s while the game loads;
+Wuthering Waves' 90 kernels take about 65 s in total, most of it XeSS creating its pipelines one after another while
+the game loads. The helper is started with `posix_spawn`, so the game process is not forked for each kernel.
 
 ## 3. Which kernel variant XeSS hands out
 

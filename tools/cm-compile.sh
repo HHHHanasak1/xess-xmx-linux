@@ -4,13 +4,14 @@
 # IGC/ocloc and packs it into the CMK2 format the patched ANV loads. Called by the driver at run time (ANV_CM_HELPER,
 # default <package>/tools/cm-compile.sh). Exit 0 and <out.cmk> present = ok.
 # Environment: XMX_IGC_DIR (default <package>/igc); CM_DEVICE (ocloc -device, overrides the detection); CM_PCI_ID (PCI device
-# id, passed by the driver; otherwise the first Intel render node is used); CM_LOG (append log path).
+# id, passed by the driver; otherwise the first Intel render node is used); CM_LOG (append log path, default
+# ~/.cache/xess-xmx/compile.log).
 set -u
 SPV=$1; OPT=$2; OUT=$3
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PKG="$(dirname "$HERE")"
 IGC="${XMX_IGC_DIR:-$PKG/igc}"
-LOG="${CM_LOG:-${XDG_RUNTIME_DIR:-/tmp}/xess-xmx-compile.log}"
+LOG="${CM_LOG:-${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/compile.log}"   # outside the Steam runtime container too
 
 # target: ocloc takes a family name or a PCI device id (it picks the exact target for an id)
 pci="${CM_PCI_ID:-}"

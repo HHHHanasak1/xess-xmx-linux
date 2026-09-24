@@ -44,10 +44,12 @@ jobs:
     container: archlinux:latest
     env:
       MESA_TAG: mesa-26.1.2
+      ARCH_SNAPSHOT: 2026/09/20      # spirv-tools 1.4.350.1 as on the tested SteamOS build
     steps:
-      - name: toolchain
+      - name: toolchain (Arch Linux Archive snapshot, so every build uses the same package versions)
         run: |
-          pacman -Syu --noconfirm --needed base-devel git meson ninja python-mako python-yaml python-packaging \
+          echo "Server=https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm --needed base-devel git meson ninja python-mako python-yaml python-packaging \
             python-ply glslang spirv-tools spirv-headers spirv-llvm-translator llvm clang libclc libdrm \
             wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf
       - uses: actions/checkout@v4
@@ -65,6 +67,11 @@ jobs:
             -Dvideo-codecs= -Dvulkan-layers= -Dtools=
       - name: build
         run: ninja -C mesa/build src/intel/vulkan/libvulkan_intel.so
+      - name: dependencies of the driver (glibc / libstdc++ floor, unversioned sonames)
+        run: |
+          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep NEEDED
+          objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBC_2\.[0-9]*" | sort -t. -k2 -n -u | tail -1
+          objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
       - uses: actions/upload-artifact@v4
         with:
           name: libvulkan_intel

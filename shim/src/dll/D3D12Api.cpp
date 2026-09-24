@@ -11,7 +11,9 @@ static const unsigned char kDummyCS[] = {
 static const unsigned char kDummyUAV[] = {
 #include "dummy_uav_bytes.inc"
 };
+#ifdef XMX_STATIC_TABLE   // developer builds only (cmake -DXMX_STATIC_TABLE=ON)
 #include "xess_dummies.inc"
+#endif
 #include "dyn_dummies.inc"
 static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_t nb)
 {
@@ -229,12 +231,14 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
             const char* opts = d->CompileOptions ? (const char*)d->CompileOptions : "";
             const unsigned long long h = Fnv1a64(d->CS.pShaderBytecode, d->CS.BytecodeLength, opts, strlen(opts));
             bool known = false;
+#ifdef XMX_STATIC_TABLE
             // IGDEXT_STATIC=1: kernels of the prebuilt table use their static ids (needs the kernels/ directory of a
             // developer build); by default every kernel goes through the run-time path
             static int useStatic = -1;
             if (useStatic < 0) { char b[8]; useStatic = GetEnvironmentVariableA("IGDEXT_STATIC", b, sizeof(b)) > 0 && atoi(b); }
             if (useStatic) for (const XessDummy& xd : kXessDummies)
                 if (xd.hash == h) { desc.CS.pShaderBytecode = xd.bytes; desc.CS.BytecodeLength = xd.size; TraceF("  kernel hash %016llx -> dummy id %d (workgroup %d,%d,5)", h, xd.id, 1 + xd.id % 16, 1 + xd.id / 16); known = true; break; }
+#endif
             if (!known && d->ShaderInputType == CM_SPIRV)
             {
                 const int dyn = DynKernelId(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts);

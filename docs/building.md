@@ -16,6 +16,9 @@ or any shell with the MSVC environment loaded:
     cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build shim/build
 
+The static kernel table (`xess_dummies.inc`, only used with `IGDEXT_STATIC=1`) is compiled in only with
+`-DXMX_STATIC_TABLE=ON`.
+
 The DLL is linked against the static MSVC runtime on purpose (see "Why a static runtime" below) and imports only
 `kernel32`/`advapi32`. `shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for
 releases.

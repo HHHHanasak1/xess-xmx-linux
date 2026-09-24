@@ -5,8 +5,9 @@
 | What you see | Likely cause | Check |
 |---|---|---|
 | Image looks like the DP4a path (softer, no change after enabling) | The shim is not loaded (Proton replaced it, new prefix) | `IGDEXT_TRACE=1` produces no `C:\igdext_trace.log` in the prefix; re-run `install.sh` |
-| Patches of white noise or black areas in the XeSS output | A kernel ran as a no-op (compile failed or missing) | `$XDG_RUNTIME_DIR/xess-xmx-compile.log`, `drive_c/igdext_kernels/compile_failed.txt`; the next launch falls back to DP4a by itself |
-| XeSS is back to DP4a after a failed compile | Intended fallback after `compile_failed.txt` was written | fix the compiler (`tools/get-igc.sh`), then re-run `install.sh` (it removes the marker) |
+| Patches of white noise or black areas in the XeSS output | A kernel ran as a no-op (compile failed or missing) | `~/.cache/xess-xmx/compile.log`, `drive_c/igdext_kernels/compile_failed.txt`; the next launch falls back to DP4a by itself |
+| XeSS is back to DP4a after a failed compile | Intended fallback after `compile_failed.txt` was written | the driver retries the listed kernels at every launch and lifts the fallback once they compile; a missing compiler: `tools/get-igc.sh` |
+| XMX gone after a system update, `driver-status` says FAILED | the patched driver cannot be loaded any more (library dependencies changed); the session check switched to the stock drivers | update the package / rebuild the driver; `journalctl --user -u xess-xmx-check` |
 | Generated frames are black, flicker between black and image | XeFG got the Xe-HPG kernel variant (only with `IGDEXT_OPTIONS2_FG=0,...`) | remove the override |
 | 30 fps with frame generation until you open and close the pause menu (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
 | The first launch hangs for a minute or two at XeSS initialisation | Every kernel is compiled once (about 1 s each) | `ANV CM: compiling kernel` lines in the game's stderr; only once per machine and XeSS version |
@@ -24,7 +25,9 @@
 * Driver: `ANV_CM_DEBUG=1` logs each placeholder and injection to the game's stderr; `ANV_CM_TRACE=1` logs every
   dispatch (`ANV CM: walker kernel x,y,z ...`), `=2` also the surface states. To get the game's stderr, put
   `exec 2>>/some/file` into the launch wrapper's config.
-* Compiler: `$XDG_RUNTIME_DIR/xess-xmx-compile.log` (`CM_LOG` overrides).
+* Compiler: `~/.cache/xess-xmx/compile.log` (`CM_LOG` overrides; inside the Steam runtime container `$XDG_RUNTIME_DIR`
+  is private, so the log lives in the cache folder).
+* Session check: `~/.cache/xess-xmx/driver-status`, `journalctl --user -u xess-xmx-check`.
 
 Counting dispatches per kernel from a `ANV_CM_TRACE=1` log shows what runs every frame:
 
@@ -37,7 +40,7 @@ Shim (game environment):
 | Variable | Effect |
 |---|---|
 | `IGDEXT_TRACE=1` | trace log and kernel dump (above) |
-| `IGDEXT_STATIC=1` | use the prebuilt kernel table (`kernels/wg*_5.cmk`, developer builds) instead of run-time ids |
+| `IGDEXT_STATIC=1` | use the prebuilt kernel table (`kernels/wg*_5.cmk`) instead of run-time ids; only in shims built with `-DXMX_STATIC_TABLE=ON` |
 | `IGDEXT_IGNORE_FAILED=1` | do not fall back to DP4a after a failed compile |
 | `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | override `CheckFeatureSupport(OPTIONS1)` |
 | `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | override `OPTIONS2` (default from the detected GPU: `1,1,0` on Xe2/Xe3) |
