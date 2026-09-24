@@ -72,7 +72,9 @@ More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see
 
 * XMX vs DP4a on the Arc B390 at 22 W: same frame rate (GPU-bound either way); the XMX network gives the better image.
 * `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` (needed by the kernel binding code, set for the whole session by
-  `install.sh`): Wuthering Waves, no difference in frame rate or GPU load. FH6_RESULT
+  `install.sh`): Wuthering Waves, no difference in frame rate or GPU load. Forza Horizon 6 (open
+  world, car standing, alternating runs): 43.7 / 41.2 fps with the extension disabled, 43.8 / 40.2 fps with it enabled,
+  no measurable difference.
 * Kernel compile: about 1 s per kernel, once per machine and XeSS version (90 kernels for Wuthering Waves: ~80 s).
 
 ## Known limitations

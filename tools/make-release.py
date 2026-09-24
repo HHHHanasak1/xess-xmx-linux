@@ -24,11 +24,13 @@ out = os.path.join(outdir, name + ".zip")
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     # an empty kernels/ folder (static kernel set, developer option)
     zi = zipfile.ZipInfo(name + "/kernels/")
+    zi.create_system = 3              # Unix: unzip applies the permission bits only then
     zi.external_attr = (0o40755 << 16) | 0x10
     z.writestr(zi, b"")
     for f in files:
         zi = zipfile.ZipInfo("%s/%s" % (name, f))
         zi.compress_type = zipfile.ZIP_DEFLATED
+        zi.create_system = 3
         zi.external_attr = (0o100755 if f.endswith((".sh", ".py")) else 0o100644) << 16
         with open(os.path.join(root, f), "rb") as fh:
             z.writestr(zi, fh.read())
