@@ -11,12 +11,56 @@ static const unsigned char kDummyUAV[] = {
 #include "dummy_uav_bytes.inc"
 };
 #include "xess_dummies.inc"
+#include "dyn_dummies.inc"
 static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_t nb)
 {
     unsigned long long h = 14695981039346656037ull;
     const unsigned char* p = (const unsigned char*)a; for (size_t i = 0; i < na; ++i) { h ^= p[i]; h *= 1099511628211ull; }
     p = (const unsigned char*)b; for (size_t i = 0; i < nb; ++i) { h ^= p[i]; h *= 1099511628211ull; }
     return h;
+}
+
+// Kernels that are not in the static table get a persistent id per prefix (C:\igdext_kernels\map.txt: "<id> <hash>"), their
+// SPIR-V and compile options are written next to it as dyn_<id>.spv / dyn_<id>.opt, and the dummy pipeline for that id is
+// returned. The patched ANV finds the files through $WINEPREFIX/drive_c/igdext_kernels and compiles them on first use.
+static const char* kDynDir = "C:\\igdext_kernels";
+static CRITICAL_SECTION g_dynCs; static INIT_ONCE g_dynOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK DynInit(PINIT_ONCE, PVOID, PVOID*) { InitializeCriticalSection(&g_dynCs); return TRUE; }
+static bool WriteFileOnce(const char* path, const void* data, size_t size)
+{
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return true;
+    char tmp[MAX_PATH]; snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, GetCurrentProcessId());
+    FILE* f = nullptr; if (fopen_s(&f, tmp, "wb") != 0 || !f) return false;
+    const bool ok = fwrite(data, 1, size, f) == size; fclose(f);
+    if (!ok || !MoveFileExA(tmp, path, 0)) { DeleteFileA(tmp); return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
+    return true;
+}
+static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, const char* opts)
+{
+    InitOnceExecuteOnce(&g_dynOnce, DynInit, nullptr, nullptr);
+    EnterCriticalSection(&g_dynCs);
+    CreateDirectoryA(kDynDir, nullptr);
+    char mapPath[MAX_PATH]; snprintf(mapPath, sizeof(mapPath), "%s\\map.txt", kDynDir);
+    int id = -1, maxId = -1;
+    if (FILE* f = nullptr; fopen_s(&f, mapPath, "rb") == 0 && f)
+    {
+        int i; unsigned long long h; char line[128];
+        while (fgets(line, sizeof(line), f))
+            if (sscanf(line, "%d %llx", &i, &h) == 2) { if (i > maxId) maxId = i; if (h == hash) id = i; }
+        fclose(f);
+    }
+    const int nDyn = (int)(sizeof(kDynDummies) / sizeof(kDynDummies[0]));
+    if (id < 0)
+    {
+        id = maxId + 1;
+        if (id >= nDyn) { LeaveCriticalSection(&g_dynCs); TraceF("  dynamic kernel table full (%d)", nDyn); return -1; }
+        if (FILE* f = nullptr; fopen_s(&f, mapPath, "ab") == 0 && f) { fprintf(f, "%d %016llx\n", id, hash); fclose(f); }
+    }
+    char p[MAX_PATH];
+    snprintf(p, sizeof(p), "%s\\dyn_%d.spv", kDynDir, id); WriteFileOnce(p, spv, spvLen);
+    snprintf(p, sizeof(p), "%s\\dyn_%d.opt", kDynDir, id); WriteFileOnce(p, opts, strlen(opts));
+    LeaveCriticalSection(&g_dynCs);
+    return id;
 }
 static ID3D12Device* DevOf(INTCExtensionContext* c) { return (c && c->m_pD3D12ExtensionContext) ? c->m_pD3D12ExtensionContext->m_pAppDevice.Get() : nullptr; }
 
@@ -240,8 +284,16 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
         {
             const char* opts = d->CompileOptions ? (const char*)d->CompileOptions : "";
             const unsigned long long h = Fnv1a64(d->CS.pShaderBytecode, d->CS.BytecodeLength, opts, strlen(opts));
-            for (const XessDummy& xd : kXessDummies)
-                if (xd.hash == h) { desc.CS.pShaderBytecode = xd.bytes; desc.CS.BytecodeLength = xd.size; TraceF("  kernel hash %016llx -> dummy id %d (workgroup %d,%d,5)", h, xd.id, 1 + xd.id % 16, 1 + xd.id / 16); break; }
+            bool known = false;
+            static int dynOnly = -1;   // IGDEXT_DYN_ONLY=1: ignore the static table (every kernel goes through the run-time path)
+            if (dynOnly < 0) { char b[8]; dynOnly = GetEnvironmentVariableA("IGDEXT_DYN_ONLY", b, sizeof(b)) > 0 && atoi(b); }
+            if (!dynOnly) for (const XessDummy& xd : kXessDummies)
+                if (xd.hash == h) { desc.CS.pShaderBytecode = xd.bytes; desc.CS.BytecodeLength = xd.size; TraceF("  kernel hash %016llx -> dummy id %d (workgroup %d,%d,5)", h, xd.id, 1 + xd.id % 16, 1 + xd.id / 16); known = true; break; }
+            if (!known && d->ShaderInputType == CM_SPIRV)
+            {
+                const int dyn = DynKernelId(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts);
+                if (dyn >= 0) { desc.CS.pShaderBytecode = kDynDummies[dyn].bytes; desc.CS.BytecodeLength = kDynDummies[dyn].size; TraceF("  kernel hash %016llx -> dynamic id %d", h, dyn); }
+            }
         }
         HRESULT hr = dev->CreateComputePipelineState(&desc, riid, pp);
         TraceF("  -> DUMMY uav(u0) pipeline returned (hr=0x%08x)", (unsigned)hr);

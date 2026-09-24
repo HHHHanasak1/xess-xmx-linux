@@ -1,0 +1,76 @@
+#!/bin/bash
+# install.sh - system-wide install of the XeSS XMX package for the current user (SteamOS / any systemd user session):
+#   1. compiler bundle (igc/) fetched if missing            -> run-time kernel compilation for any XeSS version
+#   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
+#      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
+#   3. the shim igdext64.dll goes into every Proton that bundles its own igdext (Proton Experimental copies that file
+#      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store
+#   4. a user path unit re-installs the shim whenever a Proton update replaces its bundled copy
+# Re-run after Steam installs a new Proton or after a game created a new prefix. uninstall.sh reverts everything.
+# Environment: XMX_NO_ENV=1 skips step 2 (keep using enable.sh / launch options per game).
+set -u
+PKG="$(cd "$(dirname "$0")" && pwd)"
+STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
+ENVD="$HOME/.config/environment.d"
+UNITD="$HOME/.config/systemd/user"
+SHIM="$PKG/igdext64.dll"
+for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/run/intel_icd.json" "$PKG/tools/cm-compile.sh"; do
+  [ -f "$f" ] || { echo "missing $f - run this from the unpacked package"; exit 1; }
+done
+grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" || \
+  printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s/lib/libvulkan_intel.so" }, "file_format_version": "1.0.1" }\n' "$PKG" > "$PKG/run/intel_icd.json"
+
+# 1. compiler bundle
+if [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+  echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~230 MB)"
+  bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
+fi
+chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
+
+# 2. session environment
+if [ "${XMX_NO_ENV:-0}" != 1 ]; then
+  mkdir -p "$ENVD"
+  cat > "$ENVD/50-xess-xmx.conf" <<EOF
+# XeSS XMX (xess-xmx-linux): patched ANV as the Vulkan driver + native CM kernels for every game of this session
+VK_DRIVER_FILES=$PKG/run/intel_icd.json
+VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer
+ANV_CM_KERNEL_DIR=$PKG/kernels
+EOF
+  systemctl --user import-environment 2>/dev/null
+  systemctl --user set-environment "VK_DRIVER_FILES=$PKG/run/intel_icd.json" "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer" "ANV_CM_KERNEL_DIR=$PKG/kernels" 2>/dev/null
+  echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
+fi
+
+# 3. shim
+n=0
+install_shim() { # <igdext64.dll path>
+  local f=$1
+  [ -f "$f" ] || return
+  cmp -s "$f" "$SHIM" && return
+  [ -f "$f.stock" ] || cp -p "$f" "$f.stock"
+  chmod u+w "$f" 2>/dev/null
+  cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
+}
+for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
+         "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
+for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
+  [ -d "$d" ] || continue
+  if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
+done
+echo "== shim: $n file(s) updated"
+
+# 4. keep the Proton copies ours across Proton updates
+mkdir -p "$UNITD"
+watch=""
+for p in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do [ -f "$p" ] && watch="$watch
+PathChanged=$p"; done
+if [ -n "$watch" ]; then
+  { echo "[Unit]"; echo "Description=Re-install the XeSS XMX shim after a Proton update"; echo "[Path]";
+    printf '%s\n' "${watch#
+}"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path"
+  { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
+    echo "ExecStart=/bin/bash $PKG/install.sh"; echo "Environment=XMX_NO_ENV=1"; } > "$UNITD/xess-xmx-shim.service"
+  systemctl --user daemon-reload 2>/dev/null
+  systemctl --user enable --now xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
+fi
+echo "done. Reboot (or log out and in) once so Steam picks up the environment; then any game with XeSS runs on XMX."
