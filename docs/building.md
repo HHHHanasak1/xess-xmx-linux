@@ -53,10 +53,15 @@ patches themselves are written against 26.1.2 and need a rebase for other versio
     git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
-    meson setup build -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled \
-      -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=enabled \
-      -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+    meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
+      -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
+      -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
+
+`-Dprefix=/usr -Dsysconfdir=/etc` matter even though nothing is installed: the driver reads Mesa's per-game workarounds
+from `<prefix>/share/drirc.d`, and with meson's default `/usr/local` it silently runs without them. Wuthering Waves
+with ray tracing on hangs the GPU within a minute without the vkd3d entries there (same with an unpatched Mesa
+26.1.2 or 26.1.8 built that way; fine with `DRIRC_CONFIGDIR=/usr/share/drirc.d` or the right prefix).
 
 On SteamOS the release build is made in an Arch Linux distrobox. Keep `spirv-tools` at the version of the host
 (1.4.350.1 on the tested SteamOS build), since a mismatch has been suspected of subtle breakage before (it turned out not to be the

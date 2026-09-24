@@ -29,12 +29,18 @@ if ! git -c user.name=xess-xmx -c user.email=xmx@localhost am --quiet "$PKG"/pat
   echo "!! the patches do not apply to Mesa $VER - they need to be rebased (nothing was changed)"
   exit 2
 fi
-OPTS="-Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled -Degl=disabled
+# prefix/sysconfdir as the system's Mesa: the driver reads its per-game workarounds from <datadir>/drirc.d, and without
+# the vkd3d entries there Wuthering Waves hangs the GPU with ray tracing on
+OPTS="-Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled -Degl=disabled
       -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers=
       -Dtools="
 if [ -d build ]; then meson setup --reconfigure build $OPTS >/dev/null; else meson setup build $OPTS >/dev/null; fi
 ninja -C build src/intel/vulkan/libvulkan_intel.so
 NEW="$SRC/build/src/intel/vulkan/libvulkan_intel.so"
+if ! grep -aq '/usr/share/drirc.d' "$NEW"; then
+  echo "!! the new driver does not read /usr/share/drirc.d (wrong prefix); not installed"
+  exit 3
+fi
 # test the new driver before installing it (same checks as the session check)
 TMPICD=$(mktemp --suffix=.json)
 trap 'rm -f "$TMPICD"' EXIT
