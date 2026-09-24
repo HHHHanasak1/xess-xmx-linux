@@ -1,6 +1,7 @@
 #include "Stdafx.h"
 #include "Trace.h"
 #include "ExtensionVersions.h"
+#include "dll/GpuInfo.h"
 
 // Highest version we claim: HW feature level 5 (Xe2 and newer), API version 20
 static const INTCExtensionVersion c_MaxD3D12ExtVersion = {EXTENSION_HW_FEATURE_LEVEL_5, EXTENSION_API_VERSION_20, EXTENSION_REVISION_0};
@@ -40,17 +41,16 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
 
     INTCDeviceInfo1& di = pExtensionInfo->IntelDeviceInfo;
     di = {};
-    // experiment switches: IGDEXT_GMD=<arch>,<release>  IGDEXT_GTGEN=<n>  IGDEXT_GTNAME=<ascii name>  IGDEXT_EUS=<eu count>,<xe cores>
-    int gmdArch = 30, gmdRel = 0, gtGen = 30, eus = 96, cores = 12; char gtName[64] = "Xe3-LPG"; char eb[64];
-    if (GetEnvironmentVariableA("IGDEXT_GMD", eb, sizeof(eb)) > 0) sscanf(eb, "%d,%d", &gmdArch, &gmdRel);
-    if (GetEnvironmentVariableA("IGDEXT_GTGEN", eb, sizeof(eb)) > 0) gtGen = atoi(eb);
-    if (GetEnvironmentVariableA("IGDEXT_GTNAME", gtName, sizeof(gtName)) == 0) strcpy_s(gtName, "Xe3-LPG");
-    if (GetEnvironmentVariableA("IGDEXT_EUS", eb, sizeof(eb)) > 0) sscanf(eb, "%d,%d", &eus, &cores);
+    // the detected GPU (GpuInfo.cpp); overrides: IGDEXT_GMD=<arch>,<release>  IGDEXT_GTGEN=<n>  IGDEXT_EUS=<eus>,<cores>  IGDEXT_GTNAME=<name>
+    const XmxGpu& gpu = XmxDetectGpu();
+    const int gmdArch = gpu.gmdArch, gmdRel = gpu.gmdRel, gtGen = gpu.gtGen, eus = gpu.eus, cores = gpu.cores;
+    char gtName[64];
+    if (GetEnvironmentVariableA("IGDEXT_GTNAME", gtName, sizeof(gtName)) == 0) strcpy_s(gtName, gpu.family);
     { wchar_t wn[64]; size_t n = 0; mbstowcs_s(&n, wn, gtName, _TRUNCATE); wcsncpy_s(di.GTGenerationName, wn, _TRUNCATE); }
     di.GPUMaxFreq = 2500; di.GPUMinFreq = 300; di.GTGeneration = gtGen; di.EUCount = eus; di.PackageTDP = 25; di.MaxFillRate = 32;
     di.GMDID = INTC_GMD_ID(gmdArch, gmdRel); di.XeCoresCount = cores;
     TraceF("  device info: GMD %d.%d gen %d name %s EUs %d cores %d", gmdArch, gmdRel, gtGen, gtName, eus, cores);
-    pExtensionInfo->pDeviceDriverDesc       = L"Intel(R) Graphics (Wine tracing igdext)";
+    pExtensionInfo->pDeviceDriverDesc       = L"Intel(R) Graphics (xess-xmx-linux)";
     pExtensionInfo->pDeviceDriverVersion    = L"32.0.101.9999";
     pExtensionInfo->DeviceDriverBuildNumber = 9999;
     TraceF("  context created (granted)");

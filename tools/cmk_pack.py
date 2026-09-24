@@ -83,7 +83,8 @@ for m in re.finditer(r"- arg_type:\s+(\w+)\s+offset:\s+(\d+)\s+size:\s+(\d+)", p
     per_size = max(per_size, int(m.group(2)) + int(m.group(3)))
     if m.group(1) != "packed_local_ids":
         print("warning: unhandled per-thread arg", m.group(1), file=sys.stderr)
-per_size = (per_size + 63) // 64 * 64        # Xe3: 64-byte per-thread stride
+grf_bytes = int(os.environ.get("CMK_GRF_BYTES", "64"))  # per-thread stride = one GRF: 64 bytes on Xe2/Xe3, 32 on Xe-HPG/Xe-LPG
+per_size = (per_size + grf_bytes - 1) // grf_bytes * grf_bytes
 
 btis = {}
 if "binding_table_indices:" in blk:
