@@ -100,6 +100,7 @@ and generates frames through its non-CM path; measured throughput is identical, 
 
 ## Contents of this repository
 
+    install.sh, uninstall.sh     system-wide install / removal (session environment, shim in every Proton and prefix)
     enable.sh, disable.sh        install / remove for one Proton prefix;  xmx-launch.sh: Steam launch wrapper
     patches/anv_cm_injection.patch   Mesa ANV patch (tag mesa-26.1.2); also adds the debug switches listed below
     shim/                        igdext64.dll source: dxvk-igdext plus src/dll/D3D12Api.cpp (feature answers, dummy
@@ -123,8 +124,8 @@ first seen in Forza Horizon 6 + 24 XeFG SIMD16 variants + 4 SR variants first se
 ## Another game or another XeSS version
 
 Nothing to do, provided the compiler bundle is present: run `tools/get-igc.sh` once (about 230 MB into `igc/`), then
-run `enable.sh` for the game's prefix. Kernels the shipped table does not know are compiled on first use (see "How it
-works", step 3). Watch it happen with `IGDEXT_TRACE=1` (`C:\igdext_trace.log`: `kernel hash ... -> dynamic id N`) and in
+run `install.sh` (system-wide) or `enable.sh` for the game's prefix. Kernels the shipped table does not know are compiled
+on first use (see "How it works", step 3). Watch it happen with `IGDEXT_TRACE=1` (`C:\igdext_trace.log`: `kernel hash ... -> dynamic id N`) and in
 the game's stderr (`ANV CM: compiling dynamic kernel N` / `injected .../dyn_N.cmk`); failures are logged to
 `$XDG_RUNTIME_DIR/xess-xmx-compile.log`. `IGDEXT_DYN_ONLY=1` ignores the static table so every kernel takes the
 run-time path (test switch). The compiled kernels live in the prefix (`drive_c/igdext_kernels/dyn_<id>.cmk`); delete the
@@ -207,9 +208,13 @@ cap, which XeLL applies per displayed frame (30 fps until you open and close the
 
 * Only Xe3 (Panther Lake B390) has been tested. The ANV build is tied to Mesa 26.1.2; a SteamOS update that moves
   Mesa needs a rebuilt driver from the patch.
-* Kernels are compiled for one GPU generation (`ocloc -device`; the run-time helper takes `CM_DEVICE`, default `ptl`). They no longer depend on the XeSS version: the shipped set is only a precompiled fast path, everything else is compiled on first use.
+* Kernels are compiled for one GPU generation (`ocloc -device`; the run-time helper takes `CM_DEVICE`, default `ptl`).
+  They no longer depend on the XeSS version: the shipped set is only a precompiled fast path, everything else is
+  compiled on first use.
 * XeSS quality presets 1 and 3 verified; frame generation verified at 2x/3x/4x; a 10 minute continuous run without
   GPU hangs; fast camera motion clean with the SIMD16 set. Games verified: Wuthering Waves, Forza Horizon 6 (SR only:
   that game has no XeSS frame generation, its FG option is DLSS-G).
 * XeLL runs in software mode (the driver-side latency extension entry points are not implemented).
-* Run-time compilation needs the `igc/` bundle (`install.sh` fetches it, otherwise `tools/get-igc.sh`). Without it, or if a compile fails (see `$XDG_RUNTIME_DIR/xess-xmx-compile.log`), that kernel runs as a no-op and part of XeSS' output turns into noise.
+* Run-time compilation needs the `igc/` bundle (`install.sh` fetches it, otherwise `tools/get-igc.sh`). Without it, or
+  if a compile fails (see `$XDG_RUNTIME_DIR/xess-xmx-compile.log`), that kernel runs as a no-op and part of XeSS'
+  output turns into noise.
