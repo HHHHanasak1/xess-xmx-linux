@@ -206,9 +206,9 @@ cap, which XeLL applies per displayed frame (30 fps until you open and close the
 
 * Only Xe3 (Panther Lake B390) has been tested. The ANV build is tied to Mesa 26.1.2; a SteamOS update that moves
   Mesa needs a rebuilt driver from the patch.
-* Kernel sets are per XeSS version and per GPU generation (`ocloc -device`).
+* Kernels are compiled for one GPU generation (`ocloc -device`; the run-time helper takes `CM_DEVICE`, default `ptl`). They no longer depend on the XeSS version: the shipped set is only a precompiled fast path, everything else is compiled on first use.
 * XeSS quality presets 1 and 3 verified; frame generation verified at 2x/3x/4x; a 10 minute continuous run without
   GPU hangs; fast camera motion clean with the SIMD16 set. Games verified: Wuthering Waves, Forza Horizon 6 (SR only:
   that game has no XeSS frame generation, its FG option is DLSS-G).
 * XeLL runs in software mode (the driver-side latency extension entry points are not implemented).
-* Unknown kernels become no-ops instead of a DP4a fallback.
+* Run-time compilation needs the `igc/` bundle (`install.sh` fetches it, otherwise `tools/get-igc.sh`). Without it, or if a compile fails (see `$XDG_RUNTIME_DIR/xess-xmx-compile.log`), that kernel runs as a no-op and part of XeSS' output turns into noise.
