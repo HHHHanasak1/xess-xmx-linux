@@ -6,7 +6,8 @@
 # included, would lose the Intel GPU. This script
 #   1. loads the driver once (every symbol resolved),
 #   2. lets vulkaninfo create an instance and enumerate the GPU with only the patched driver,
-# and if either fails points the session back to the stock drivers (games still run; the shim's self-test then makes
+# (plus two reports that change nothing: Mesa version against the system's, and whether the driver reads the system's
+# per-game workarounds in /usr/share/drirc.d) and if either of the first two fails points the session back to the stock drivers (games still run; the shim's self-test then makes
 # XeSS use DP4a). A Mesa version that differs from the system's is only reported (the patched driver is a complete
 # driver; rebuild it with tools/rebuild-driver.sh when convenient).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
@@ -57,6 +58,11 @@ if [ -n "$ours" ] && command -v vulkaninfo >/dev/null 2>&1; then
         | grep -m1 "driverInfo" | sed 's/.*= *//')
   v_ours=$(printf '%s' "$ours" | grep -o 'Mesa [0-9.]*'); v_sys=$(printf '%s' "$sys" | grep -o 'Mesa [0-9.]*')
   [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the patched driver is $v_ours - rebuild with tools/rebuild-driver.sh)"
+fi
+# 4. per-game workarounds: a driver built with meson's default /usr/local prefix never reads /usr/share/drirc.d
+#    (report only; e.g. Wuthering Waves with ray tracing hangs the GPU without them)
+if [ -d /usr/share/drirc.d ] && ! grep -aq '/usr/share/drirc.d' "$LIB"; then
+  note="$note (note: this driver does not read /usr/share/drirc.d, so Mesa's per-game workarounds are off - update the package or rebuild with tools/rebuild-driver.sh)"
 fi
 echo "ok $(date '+%F %T') $LIB ${ours}${note}" > "$STATUS"
 echo "patched ANV loads and finds the GPU: ${ours}${note}"

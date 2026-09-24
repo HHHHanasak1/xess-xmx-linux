@@ -74,6 +74,7 @@ OptiScaler and on a game without XeSS.
 | noise or black patches in the image | a kernel failed to compile; the next launch retries once and uses the generic paths if it fails again. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
 | XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer works on the updated system: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` in a distrobox (see docs/building.md) |
 | looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
+| no image / GPU hang with ray tracing on (Wuthering Waves) | drivers up to v1.3.1 were built with the wrong install prefix and ran every game without Mesa's per-game workarounds (`/usr/share/drirc.d`); fixed in v1.3.2. A self-built driver: rebuild with `tools/rebuild-driver.sh`. `~/.cache/xess-xmx/driver-status` notes a driver that does not read them |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
 | another GPU or 32-bit games lost Vulkan | older `install.sh` versions listed only the patched 64-bit driver (found by reading the configuration, not seen on a machine): re-run the current one, re-login |
