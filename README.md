@@ -11,8 +11,9 @@ vkd3d-proton:
 
 Developed and tested on an ONEXPLAYER 3 (Intel Core Ultra "Panther Lake", Arc B390, Xe3) with SteamOS, Mesa 26.1.2 and
 GE-Proton 11-6 / Proton Experimental. XeSS super resolution renders correctly and is temporally stable; frame
-generation runs at 2x/3x/4x with its network on XMX as well. The point is image quality, not speed: on the B390 at
-22 W the XMX networks cost more GPU time than XeSS' generic paths (see "Performance").
+generation runs at 2x/3x/4x with its network on XMX as well. Without the Intel extension (stock Proton, or this
+project's fallback) XeSS runs its DP4a super resolution and a generic frame generation that is limited to 2x; with it,
+the game's 3x/4x multi-frame generation works (see "Performance").
 
 ## Install
 
@@ -52,7 +53,7 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ### Requirements
 
-* Intel Xe3 (Panther Lake, tested) or Xe2 (Lunar Lake, Battlemage: should work, untested) on the `xe` or `i915`
+* Intel Xe3 (Panther Lake, tested) or Xe2 (Lunar Lake, Battlemage: untested, enabled by default) on the `xe` or `i915`
   kernel driver. Xe-HPG (Alchemist) and Xe-LPG are detected and get the answers a Windows driver would give, but
   nothing about them has been tested.
 * The driver in the archive is Mesa 26.1.2 with the patches (ray tracing enabled, like the stock driver); it replaces
@@ -70,34 +71,43 @@ OptiScaler and on a game without XeSS.
 | Symptom | Cause / fix |
 |---|---|
 | looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` (new prefix, Proton update without the watcher) |
-| noise or black patches in the image | a kernel failed to compile; the next launch retries it and falls back to DP4a if it still fails. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
+| noise or black patches in the image | a kernel failed to compile; the next launch retries once and uses the generic paths if it fails again. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
 | XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer works on the updated system: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` in a distrobox (see docs/building.md) |
 | looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
-| another GPU or 32-bit games lost Vulkan | installed with an older `install.sh`: re-run the current one, re-login |
+| another GPU or 32-bit games lost Vulkan | older `install.sh` versions listed only the patched 64-bit driver (found by reading the configuration, not seen on a machine): re-run the current one, re-login |
 
 More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see which kernels run).
 
 ## Performance
 
-* Wuthering Waves, Arc B390 at 22 W, 4x frame generation, same driver and scene, alternating runs: XMX (super
-  resolution and frame generation on XMX) 22.4 / 23.2 real fps, XeSS' generic paths (DP4a super resolution, non-CM
-  frame generation) 26.5 / 26.8 real fps. The XMX frame generation network is the heavier one; without frame
-  generation, XMX and DP4a super resolution run at the same frame rate. `IGDEXT_FORCE_FALLBACK=1` selects the generic
-  paths for a game.
+* Wuthering Waves, Arc B390 at 22 W, frame generation set to 4x in the game, same driver and scene, alternating runs:
+  - XMX path: the game gets its 4x (3 generated frames per real frame): 22.4 / 23.2 real fps, about 90 displayed.
+  - generic path (`IGDEXT_FORCE_FALLBACK=1`, what stock Proton gets): XeSS frame generation falls back to 2x
+    (1 generated frame): 26.5 / 26.8 real fps, about 53 displayed.
+  The real frame rate and latency are not comparable across these two runs (different numbers of generated frames);
+  a same-multiplier comparison (both at 2x) has not been made.
+* XMX vs DP4a super resolution alone: not measured with an uncapped frame rate. The only numbers (September 2026, a
+  30 fps cap, GPU 94-95 % busy either way) show nothing beyond both being close to GPU-bound.
+* Image quality: not measured objectively. The XMX network is Intel's higher-quality model; the one metric taken here
+  (stray pixels in a fast camera pan) came out about equal for XMX and DP4a.
 * `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` (needed by the kernel binding code, set for the whole session by
-  `install.sh`): Wuthering Waves, no difference in frame rate or GPU load. Forza Horizon 6 (open
-  world, car standing, alternating runs): 43.7 / 41.2 fps with the extension disabled, 43.8 / 40.2 fps with it enabled,
-  no measurable difference.
-* Kernel compile: about 1 s per kernel, once per machine and XeSS version (90 kernels for Wuthering Waves: ~80 s).
+  `install.sh`): no reliable measurement yet. The Wuthering Waves numbers were taken on the title screen with a 30 fps
+  cap; the Forza Horizon 6 runs (43.7 / 41.2 fps disabled, 43.8 / 40.2 fps enabled) switched the variable through
+  Proton's `user_settings.py` without checking that the game process received it.
+* Kernel compile: about 0.2 s per kernel on an idle system, 0.3 s while a game loads; Wuthering Waves' 90 kernels
+  took 65-70 s in total, once per machine and XeSS version (31 s of that is the compiler itself; the rest was not
+  broken down).
 
 ## Known limitations
 
-* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode. Its driver mode is a
-  separate component of Intel's Windows driver (`igxell64.dll`) plus an undocumented timing interface; neither exists
-  on Linux. Details in [docs/how-it-works.md](docs/how-it-works.md).
+* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode. Its driver mode
+  appears to be a separate component of Intel's Windows driver (`igxell64.dll`, inferred from the disassembly) plus an
+  undocumented timing interface; neither exists on Linux. Details in [docs/how-it-works.md](docs/how-it-works.md).
 * Only tested on Xe3. The driver patches are written against Mesa 26.1.2.
+* The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
+  limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
 * The placeholder shaders use workgroup sizes on three reserved planes (z = 7, 11, 13) and a magic value; the driver
   checks both, so a game shader is never replaced, but the check depends on vkd3d-proton compiling the placeholder
   to a store of that constant.

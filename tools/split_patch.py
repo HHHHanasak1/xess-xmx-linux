@@ -4,7 +4,7 @@ The working tree carries the full xess-xmx change set with the debug-only parts 
 /* XMX-DEBUG-BEGIN */ and /* XMX-DEBUG-END */ lines. Writes two patches:
   0001-anv-cm-kernel-injection.patch  base -> core (debug blocks removed)
   0002-anv-cm-debug-tools.patch       core -> full (markers removed)
-and leaves the tree in the 'full' state without markers (so it still builds the same library)."""
+and leaves the tree on its branch with the marked sources as working-tree changes."""
 import os, re, subprocess, sys
 
 tree, base, outdir = sys.argv[1:4]
@@ -31,6 +31,8 @@ def variant(text, keep_debug):
 
 
 orig = {f: open(os.path.join(tree, f), encoding="utf-8").read() for f in files}
+if not any(BEGIN.search(t) for t in (l for s in orig.values() for l in s.splitlines())):
+    sys.exit("no XMX-DEBUG markers in the tree - refusing to split (the debug code would end up in 0001)")
 env = dict(os.environ, GIT_AUTHOR_NAME="xess-xmx-linux", GIT_AUTHOR_EMAIL="xmx@localhost",
            GIT_COMMITTER_NAME="xess-xmx-linux", GIT_COMMITTER_EMAIL="xmx@localhost")
 git = lambda *a: subprocess.run(["git", "-C", tree, *a], check=True, capture_output=True, text=True, env=env).stdout
@@ -46,5 +48,10 @@ for f in files:
 git("add", *files)
 git("commit", "-q", "-m", "anv: debug tools for the C-for-Metal kernel injection (xess-xmx-linux)")
 git("format-patch", "-q", "-2", "--no-signature", "-o", outdir)
+# back to the branch the tree was on, with the marked sources as working-tree changes again, so that the next edit
+# starts from the marked version (splitting an unmarked tree would put the debug code into 0001)
+git("checkout", "-q", cur)
+for f in files:
+    open(os.path.join(tree, f), "w", encoding="utf-8").write(orig[f])
 for p in sorted(os.listdir(outdir)):
     print(p)

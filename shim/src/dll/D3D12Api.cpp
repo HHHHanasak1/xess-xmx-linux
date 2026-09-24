@@ -342,6 +342,29 @@ static bool SelfTestOk(ID3D12Device* dev)
 // context is declined - exactly what XeSS sees on a system without the Intel extension (DP4a super resolution, generic
 // frame generation). Answering LSCSupported=0 instead would switch XeSS frame generation off altogether.
 // IGDEXT_IGNORE_FAILED=1 ignores the compile marker.
+// The compile-failure marker (written and retried by the driver) is dropped when the game's XeSS libraries are newer than
+// it: a game update brings new kernels, so the old failure says nothing about them.
+static bool CompileFailedStillValid()
+{
+    WIN32_FILE_ATTRIBUTE_DATA mk;
+    if (!GetFileAttributesExA("C:\\igdext_kernels\\compile_failed.txt", GetFileExInfoStandard, &mk)) return false;
+    const char* libs[] = { "libxess.dll", "libxess_fg.dll" };
+    for (const char* name : libs)
+    {
+        HMODULE m = GetModuleHandleA(name);
+        char path[MAX_PATH];
+        WIN32_FILE_ATTRIBUTE_DATA la;
+        if (!m || !GetModuleFileNameA(m, path, MAX_PATH) || !GetFileAttributesExA(path, GetFileExInfoStandard, &la)) continue;
+        if (CompareFileTime(&la.ftLastWriteTime, &mk.ftLastWriteTime) > 0)
+        {
+            TraceF("  %s is newer than compile_failed.txt (game update): marker removed, kernels are tried again", name);
+            DeleteFileA("C:\\igdext_kernels\\compile_failed.txt");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool XmxFallbackActive(ID3D12Device* dev)
 {
     static int decided = -1;
@@ -350,9 +373,8 @@ bool XmxFallbackActive(ID3D12Device* dev)
     decided = 0;
     if (GetEnvironmentVariableA("IGDEXT_FORCE_FALLBACK", b, sizeof(b)) > 0 && atoi(b))
     { TraceF("  fallback: IGDEXT_FORCE_FALLBACK"); decided = 1; }
-    else if (GetFileAttributesA("C:\\igdext_kernels\\compile_failed.txt") != INVALID_FILE_ATTRIBUTES &&
-             GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
-    { TraceF("  fallback: a kernel failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt)"); decided = 1; }
+    else if (CompileFailedStillValid() && GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
+    { TraceF("  fallback: kernels failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt)"); decided = 1; }
     else if (!SelfTestOk(dev))
     { TraceF("  fallback: self-test failed (patched driver not active in this process, or placeholders not recognised)"); decided = 1; }
     return decided == 1;
