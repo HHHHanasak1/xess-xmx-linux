@@ -2,6 +2,7 @@
 #include "Trace.h"
 #include "ExtensionVersions.h"
 #include "dll/GpuInfo.h"
+extern "C" bool XmxFallbackActive(struct ID3D12Device* dev);   // dll/D3D12Api.cpp
 
 // Highest version we claim: HW feature level 5 (Xe2 and newer), API version 20
 static const INTCExtensionVersion c_MaxD3D12ExtVersion = {EXTENSION_HW_FEATURE_LEVEL_5, EXTENSION_API_VERSION_20, EXTENSION_REVISION_0};
@@ -20,6 +21,13 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
            pExtensionInfo->RequestedExtensionVersion.HWFeatureLevel, pExtensionInfo->RequestedExtensionVersion.APIVersion,
            pExtensionInfo->RequestedExtensionVersion.Revision, (int)internalExtensions, pDevice);
     TraceCallers("InitExtensions");
+    if (XmxFallbackActive(reinterpret_cast<ID3D12Device*>(const_cast<void*>(pDevice))))
+    {
+        // behave like a system without the Intel extension: XeSS takes its DP4a path and XeSS frame generation its generic
+        // path (answering LSCSupported=0 instead would switch frame generation off altogether)
+        TraceF("  context declined (fallback): XeSS and XeFG use their generic paths");
+        return E_NOTIMPL;
+    }
     if (pExtensionAppInfo)
     {
         char a[128] = {}, e[128] = {};

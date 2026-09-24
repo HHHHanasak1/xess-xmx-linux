@@ -27,6 +27,13 @@ static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval
 static volatile LONG g_sleepCalls = 0;
 typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
 static PFN_XellSetLog g_setLog;   // xellSetLoggingCallback: XeLL's own messages go to the log with IGDEXT_XELL_LOG
+// xellGetFramesReports: per-frame time stamps (ns) XeLL collects; with IGDEXT_XELL_LOG the average time from the start
+// of a frame's simulation to the end of its present (the latency XeLL itself works on) is logged every 100 frames
+#pragma pack(push, 8)
+struct XellFrameReport { uint32_t id; uint64_t simS, simE, rsS, rsE, prS, prE, r1, r2, r3, r4, r5; };
+#pragma pack(pop)
+typedef uint32_t (*PFN_XellReports)(void*, XellFrameReport*);
+static PFN_XellReports g_reports;
 
 static void XLog(const char* fmt, ...)
 {
@@ -80,6 +87,21 @@ static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
     {
         double wall = (qb.QuadPart - t0.QuadPart) * 1000.0 / qf.QuadPart;
         XLog("xellSleep stats: 100 calls in %.0f ms (%.1f ms/frame), blocked avg %.2f ms max %.2f ms = %.0f%% of wall", wall, wall / 100, sum / 100, mx, 100.0 * sum / wall);
+        if (g_reports)
+        {
+            static XellFrameReport r[64];
+            memset(r, 0, sizeof(r));
+            if (g_reports(ctx, r) == 0)
+            {
+                double lat = 0, sub = 0; int k = 0;
+                for (int i = 0; i < 64; ++i)
+                {
+                    if (!r[i].id || !r[i].simS || r[i].prE <= r[i].simS || r[i].prE - r[i].simS > 1000000000ull) continue;
+                    lat += (r[i].prE - r[i].simS) / 1e6; sub += (r[i].rsS > r[i].simS ? (r[i].rsS - r[i].simS) / 1e6 : 0); ++k;
+                }
+                if (k) XLog("xell latency: simulation start -> present end avg %.1f ms (sim -> render submit %.1f ms) over %d frames", lat / k, sub / k, k);
+            }
+        }
         sum = mx = 0; cnt = 0; t0 = qb;
     }
     return rr;
@@ -116,6 +138,7 @@ static DWORD WINAPI XellThread(LPVOID)
     auto fg = (void*) GetProcAddress(m, "xellSetFgEnabled");
     if (!set || !slp || !fg) { XLog("XeLL exports missing"); return 0; }
     g_setLog = (PFN_XellSetLog) GetProcAddress(m, "xellSetLoggingCallback");
+    g_reports = (PFN_XellReports) GetProcAddress(m, "xellGetFramesReports");
     void* dummy = nullptr;
     PatchThunk(slp, (void*) Hook_Sleep, &dummy, "xellSleep"); g_origSleep = (PFN_XellSleep) dummy;
     PatchThunk(set, (void*) Hook_SetSleepMode, &dummy, "xellSetSleepMode"); g_origSet = (PFN_XellSet) dummy;

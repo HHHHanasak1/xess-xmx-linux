@@ -1,22 +1,22 @@
-From 078b318dcf6218d441da708263bfd8b491a8a8d9 Mon Sep 17 00:00:00 2001
+From f0c21e65814277c71e20806eed56e58e0dbf5e6e Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
-Date: Fri, 25 Sep 2026 03:06:39 +0900
+Date: Fri, 25 Sep 2026 05:33:56 +0900
 Subject: [PATCH 1/2] anv: native C-for-Metal kernel injection for XeSS
  (xess-xmx-linux)
 
 ---
- src/intel/compiler/brw/brw_compiler.h |  21 ++
- src/intel/vulkan/anv_allocator.c      |   7 +
+ src/intel/compiler/brw/brw_compiler.h |  21 +
+ src/intel/vulkan/anv_allocator.c      |   2 +
  src/intel/vulkan/anv_device.c         |   3 +
- src/intel/vulkan/anv_private.h        |  16 +
+ src/intel/vulkan/anv_private.h        |  12 +
  src/intel/vulkan/anv_shader.c         |   5 +
- src/intel/vulkan/anv_shader_compile.c | 482 ++++++++++++++++++++++++++
- src/intel/vulkan/genX_cmd_buffer.c    | 246 +++++++++++++
- src/intel/vulkan/genX_cmd_compute.c   |  23 ++
- src/intel/vulkan/genX_shader.c        |  31 ++
+ src/intel/vulkan/anv_shader_compile.c | 601 ++++++++++++++++++++++++++
+ src/intel/vulkan/genX_cmd_buffer.c    | 100 +++++
+ src/intel/vulkan/genX_cmd_compute.c   |  12 +
+ src/intel/vulkan/genX_shader.c        |  27 ++
  src/vulkan/runtime/vk_pipeline.c      |   2 +-
  src/vulkan/runtime/vk_shader.h        |   3 +
- 11 files changed, 838 insertions(+), 1 deletion(-)
+ 11 files changed, 787 insertions(+), 1 deletion(-)
 
 diff --git a/src/intel/compiler/brw/brw_compiler.h b/src/intel/compiler/brw/brw_compiler.h
 index 8deb32e..5451798 100644
@@ -51,26 +51,21 @@ index 8deb32e..5451798 100644
        struct brw_push_const_block cross_thread;
        struct brw_push_const_block per_thread;
 diff --git a/src/intel/vulkan/anv_allocator.c b/src/intel/vulkan/anv_allocator.c
-index 6aeb1fc..e795abf 100644
+index 6aeb1fc..046ed6f 100644
 --- a/src/intel/vulkan/anv_allocator.c
 +++ b/src/intel/vulkan/anv_allocator.c
-@@ -1627,6 +1627,10 @@ anv_bo_vma_alloc_or_close(struct anv_device *device,
+@@ -1627,6 +1627,7 @@ anv_bo_vma_alloc_or_close(struct anv_device *device,
     return VK_SUCCESS;
  }
  
-+/* ANV_CM_CAPTURE: every BO is remembered so that a buffer surface can be mapped by its GPU address */
-+struct anv_bo *anv_cm_bos[16384];
-+unsigned anv_cm_nbos;
 +
  VkResult
  anv_device_alloc_bo(struct anv_device *device,
                      const char *name,
-@@ -1779,6 +1783,9 @@ anv_device_alloc_bo(struct anv_device *device,
+@@ -1779,6 +1780,7 @@ anv_device_alloc_bo(struct anv_device *device,
  
     *bo_out = bo;
  
-+   if (anv_cm_env()->capture && anv_cm_nbos < 16384)
-+      anv_cm_bos[anv_cm_nbos++] = bo;
 +
     ANV_RMV(bo_allocate, device, bo);
  
@@ -90,10 +85,10 @@ index 0b743bc..5949d51 100644
  
     return VK_SUCCESS;
 diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
-index 3b57e0c..785a4b4 100644
+index 3b57e0c..9637962 100644
 --- a/src/intel/vulkan/anv_private.h
 +++ b/src/intel/vulkan/anv_private.h
-@@ -1314,6 +1314,19 @@ struct anv_shader_group_rt_replay {
+@@ -1314,6 +1314,15 @@ struct anv_shader_group_rt_replay {
     uint64_t intersection;
  };
  
@@ -102,10 +97,6 @@ index 3b57e0c..785a4b4 100644
 +   const char *kernel_dir;   /* ANV_CM_KERNEL_DIR */
 +   bool debug;               /* ANV_CM_DEBUG */
 +   int trace;                /* ANV_CM_TRACE=1|2 */
-+   bool pc, sync;
-+   const char *view, *gcap, *capture, *only, *skip, *cap_dir;
-+   uint32_t maxgroups;
-+   int preempt;
 +};
 +const struct anv_cm_env *anv_cm_env(void);
 +void anv_cm_retry_failed(struct anv_device *device);
@@ -113,7 +104,7 @@ index 3b57e0c..785a4b4 100644
  struct anv_shader {
     struct vk_shader vk;
  
-@@ -1340,6 +1353,9 @@ struct anv_shader {
+@@ -1340,6 +1349,9 @@ struct anv_shader {
  
     struct anv_pipeline_bind_map bind_map;
  
@@ -147,10 +138,10 @@ index 5efe5ac..ee4df4e 100644
     result =
        anv_reloc_list_init(&shader->relocs, &device->vk.alloc,
 diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index 7f2c77b..62f40a8 100644
+index 7f2c77b..43adc98 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1204,6 +1204,479 @@ anv_shader_compile_fs(struct anv_device *device,
+@@ -1204,6 +1204,598 @@ anv_shader_compile_fs(struct anv_device *device,
     }
  }
  
@@ -170,6 +161,9 @@ index 7f2c77b..62f40a8 100644
 +#include <errno.h>
 +#include <sys/stat.h>
 +#include <sys/wait.h>
++#include <dirent.h>
++#include <dlfcn.h>
++#include <time.h>
 +#include <spawn.h>
 +#include "util/u_call_once.h"
 +
@@ -242,6 +236,8 @@ index 7f2c77b..62f40a8 100644
 +/* Dynamic ids: planes z = 7, 11, 13; inside a plane every (x, y) with x * y * z <= 1024, ordered by y then x.
 + * Must match tools/gen_dyn_dummies.py. */
 +static const uint32_t anv_cm_dyn_planes[] = { 7, 11, 13 };
++static bool anv_cm_spv_dir(char *buf, size_t len);
++static void anv_cm_mkdirs(const char *path);
 +
 +static int
 +anv_cm_dyn_id(uint32_t wx, uint32_t wy, uint32_t wz)
@@ -294,6 +290,62 @@ index 7f2c77b..62f40a8 100644
 +   return true;
 +}
 +
++/* Compiler helper script: ANV_CM_HELPER, else <package>/tools/cm-compile.sh next to ANV_CM_KERNEL_DIR. */
++static bool
++anv_cm_helper_path(char *buf, size_t len)
++{
++   const struct anv_cm_env *env = anv_cm_env();
++   const char *helper = getenv("ANV_CM_HELPER");
++   if (helper && helper[0]) {
++      snprintf(buf, len, "%s", helper);
++      return true;
++   }
++   if (!env->kernel_dir || !env->kernel_dir[0])
++      return false;
++   snprintf(buf, len, "%s/../tools/cm-compile.sh", env->kernel_dir);
++   return true;
++}
++
++/* Generation of the compiler toolchain: FNV-1a over the ocloc and IGC library file names in <package>/igc and the
++ * packer's size. Part of every cached kernel's name, so an IGC/ocloc update or a new .cmk format invalidates them. */
++static uint32_t
++anv_cm_toolchain_gen(void)
++{
++   static uint32_t gen;
++   static bool done;
++   if (done)
++      return gen;
++   uint32_t h = 2166136261u;
++   char helper[600], dir[700];
++   if (anv_cm_helper_path(helper, sizeof(helper))) {
++      char *slash = strrchr(helper, '/');
++      if (slash)
++         *slash = 0;                            /* <package>/tools */
++      const char *sub[] = { "/../igc/neo/bin", "/../igc/igc/local/lib" };
++      for (unsigned i = 0; i < ARRAY_SIZE(sub); i++) {
++         snprintf(dir, sizeof(dir), "%s%s", helper, sub[i]);
++         DIR *d = opendir(dir);
++         if (!d)
++            continue;
++         struct dirent *e;
++         while ((e = readdir(d))) {
++            if (strncmp(e->d_name, "ocloc", 5) != 0 && strncmp(e->d_name, "libigc.so.", 10) != 0)
++               continue;
++            for (const char *c = e->d_name; *c; c++)
++               h = (h ^ (uint8_t)*c) * 16777619u;
++         }
++         closedir(d);
++      }
++      snprintf(dir, sizeof(dir), "%s/cmk_pack.py", helper);
++      struct stat st;
++      if (stat(dir, &st) == 0)
++         h = (h ^ (uint32_t)st.st_size) * 16777619u;
++   }
++   gen = h;
++   done = true;
++   return gen;
++}
++
 +/* Per-user kernel cache: ~/.cache/xess-xmx/kernels (XDG_CACHE_HOME honoured); fills the folder and the file name. */
 +static void
 +anv_cm_cache_path(struct anv_device *device, const char *hash, char *dir, size_t dirlen, char *path, size_t pathlen)
@@ -303,14 +355,13 @@ index 7f2c77b..62f40a8 100644
 +      snprintf(dir, dirlen, "%s/xess-xmx/kernels", xdg);
 +   else
 +      snprintf(dir, dirlen, "%s/.cache/xess-xmx/kernels", getenv("HOME") ? getenv("HOME") : "/tmp");
-+   snprintf(path, pathlen, "%s/%s_%04x.cmk", dir, hash, device->info->pci_device_id);
++   snprintf(path, pathlen, "%s/%s_%04x_%08x.cmk", dir, hash, device->info->pci_device_id, anv_cm_toolchain_gen());
 +}
 +
 +/* Runs the compiler helper for dyn_<id>.spv into path; true when the packed kernel exists afterwards. */
 +static bool
 +anv_cm_compile(struct anv_device *device, const char *sdir, int id, const char *hash, const char *cdir, const char *path)
 +{
-+   const struct anv_cm_env *env = anv_cm_env();
 +   char spv[600], opt[600];
 +   snprintf(spv, sizeof(spv), "%s/dyn_%d.spv", sdir, id);
 +   snprintf(opt, sizeof(opt), "%s/dyn_%d.opt", sdir, id);
@@ -319,14 +370,9 @@ index 7f2c77b..62f40a8 100644
 +      return false;
 +   }
 +   anv_cm_mkdirs(cdir);
-+   char helperbuf[600];
-+   const char *helper = getenv("ANV_CM_HELPER");
-+   if (!helper || !helper[0]) {
-+      if (!env->kernel_dir || !env->kernel_dir[0])
-+         return false;
-+      snprintf(helperbuf, sizeof(helperbuf), "%s/../tools/cm-compile.sh", env->kernel_dir);
-+      helper = helperbuf;
-+   }
++   char helper[600];
++   if (!anv_cm_helper_path(helper, sizeof(helper)))
++      return false;
 +   /* posix_spawn instead of system(): no fork of the (multi-GB) game process for every kernel */
 +   char pci[32];
 +   snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", device->info->pci_device_id);
@@ -399,8 +445,8 @@ index 7f2c77b..62f40a8 100644
 +}
 +
 +/* Called when a device is created (before the game's XeSS asks the shim which path to take): every kernel listed in
-+ * compile_failed.txt is compiled again; when all of them succeed the marker is removed and XeSS goes back to XMX.
-+ * A transient failure (disk full, missing compiler, interrupted first launch) therefore heals by itself. */
++ * compile_failed.txt is compiled again (once; see below); when all of them succeed the marker is removed and XeSS goes
++ * back to XMX, so a transient failure (disk full, interrupted first launch) heals at the next launch. */
 +void
 +anv_cm_retry_failed(struct anv_device *device)
 +{
@@ -408,13 +454,60 @@ index 7f2c77b..62f40a8 100644
 +   if (!anv_cm_spv_dir(sdir, sizeof(sdir)))
 +      return;
 +   snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
++   struct stat ms;
++   if (stat(mark, &ms) != 0)
++      return;
++   /* The first failure is followed by exactly one automatic retry (at the next launch). After that the kernels are
++    * tried again only when a graphics component changed after the marker was written - the compiler (helper, igc/),
++    * this driver, or the system's Mesa - or by hand (delete the marker, or run install.sh). A game update is detected
++    * by the shim, which removes the marker when the game's XeSS libraries are newer than it. */
++   int attempts = 1;
 +   FILE *f = fopen(mark, "r");
 +   if (!f)
 +      return;
-+   char line[128], hash[32], keep[64][48];
++   char line[128];
++   while (fgets(line, sizeof(line), f))
++      if (sscanf(line, "# attempts %d", &attempts) == 1)
++         break;
++   fclose(f);
++   {
++      time_t newest = 0;
++      struct stat hs;
++      char helper[600], other[700];
++      if (anv_cm_helper_path(helper, sizeof(helper))) {
++         if (stat(helper, &hs) == 0 && hs.st_mtime > newest)
++            newest = hs.st_mtime;
++         char *slash = strrchr(helper, '/');
++         if (slash)
++            *slash = 0;
++         snprintf(other, sizeof(other), "%s/../igc", helper);
++         if (stat(other, &hs) == 0 && hs.st_mtime > newest)
++            newest = hs.st_mtime;
++      }
++      Dl_info dl;
++      if (dladdr((void *)anv_cm_retry_failed, &dl) && dl.dli_fname && stat(dl.dli_fname, &hs) == 0 && hs.st_mtime > newest)
++         newest = hs.st_mtime;
++      const char *sys[] = { "/usr/lib/libvulkan_intel.so", "/usr/lib/x86_64-linux-gnu/libvulkan_intel.so" };
++      for (unsigned i = 0; i < ARRAY_SIZE(sys); i++)
++         if (stat(sys[i], &hs) == 0 && hs.st_mtime > newest)
++            newest = hs.st_mtime;
++      if (newest > ms.st_mtime) {
++         attempts = 1;
++         fprintf(stderr, "ANV CM: a graphics component changed since the kernels failed to compile: trying again\n");
++      }
++   }
++   if (attempts >= 2) {
++      fprintf(stderr, "ANV CM: kernels failed to compile twice; not retrying until a graphics component or the game "
++              "changes (or %s is removed). XeSS uses its generic paths in this prefix.\n", mark);
++      return;
++   }
++   f = fopen(mark, "r");
++   if (!f)
++      return;
++   char hash[32], keep[64][48];
 +   int id, nkeep = 0, ok = 0;
 +   while (fgets(line, sizeof(line), f)) {
-+      if (sscanf(line, "%d %31s", &id, hash) != 2)
++      if (line[0] == '#' || sscanf(line, "%d %31s", &id, hash) != 2)
 +         continue;
 +      char cdir[512], path[700];
 +      anv_cm_cache_path(device, hash, cdir, sizeof(cdir), path, sizeof(path));
@@ -431,16 +524,18 @@ index 7f2c77b..62f40a8 100644
 +   fclose(f);
 +   if (nkeep == 0) {
 +      unlink(mark);
-+      fprintf(stderr, "ANV CM: %d previously failed kernel(s) compiled, DP4a fallback lifted\n", ok);
++      fprintf(stderr, "ANV CM: %d previously failed kernel(s) compiled, fallback lifted\n", ok);
 +      return;
 +   }
 +   f = fopen(mark, "w");
 +   if (f) {
++      fprintf(f, "# attempts %d\n", attempts + 1);
 +      for (int k = 0; k < nkeep; k++)
 +         fputs(keep[k], f);
 +      fclose(f);
 +   }
-+   fprintf(stderr, "ANV CM: %d kernel(s) still fail to compile, XeSS stays on DP4a in this prefix\n", nkeep);
++   fprintf(stderr, "ANV CM: %d kernel(s) failed to compile again (attempt %d); XeSS uses its generic paths in this prefix\n",
++           nkeep, attempts + 1);
 +}
 +
 +/* The pipeline layout's static sampler (vkd3d-proton turns D3D12 static samplers into immutable samplers). */
@@ -481,6 +576,21 @@ index 7f2c77b..62f40a8 100644
 +   const struct anv_cm_env *env = anv_cm_env();
 +   const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
 +   char path[512] = "";
++   if (wx == 1 && wy == 1 && wz == 17 && anv_cm_is_placeholder(nir)) {
++      /* the shim's self-test: proves to it that this process runs the patched driver and that placeholders still
++       * reach the driver recognisably (a vkd3d-proton change could break that); the shim checks the time stamp */
++      char sdir[512], mark[600];
++      if (anv_cm_spv_dir(sdir, sizeof(sdir))) {
++         anv_cm_mkdirs(sdir);
++         snprintf(mark, sizeof(mark), "%s/anv_canary", sdir);
++         FILE *cf = fopen(mark, "w");
++         if (cf) {
++            fprintf(cf, "patched ANV (xess-xmx-linux) recognised the self-test placeholder\n");
++            fclose(cf);
++         }
++      }
++      return ANV_CM_FAILED;
++   }
 +   const int dyn = anv_cm_dyn_id(wx, wy, wz);
 +   if (!path[0]) {
 +      if (wz != 5 && dyn < 0)
@@ -630,7 +740,7 @@ index 7f2c77b..62f40a8 100644
  static void
  anv_shader_compile_cs(struct anv_device *device,
                        void *mem_ctx,
-@@ -1214,6 +1687,12 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1214,6 +1806,12 @@ anv_shader_compile_cs(struct anv_device *device,
     const struct intel_device_info *devinfo = compiler->devinfo;
     nir_shader *nir = shader_data->info->nir;
  
@@ -643,7 +753,7 @@ index 7f2c77b..62f40a8 100644
     shader_data->num_stats = 1;
  
     struct brw_compile_cs_params params = {
-@@ -1245,6 +1724,9 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1245,6 +1843,9 @@ anv_shader_compile_cs(struct anv_device *device,
     }
  
     *error_str = params.base.error_str;
@@ -654,18 +764,10 @@ index 7f2c77b..62f40a8 100644
  
  static bool
 diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
-index 1e8aa36..27ae6cb 100644
+index 1e8aa36..5b7a690 100644
 --- a/src/intel/vulkan/genX_cmd_buffer.c
 +++ b/src/intel/vulkan/genX_cmd_buffer.c
-@@ -21,6 +21,7 @@
-  * IN THE SOFTWARE.
-  */
- 
-+#include <sys/stat.h>
- #include <assert.h>
- #include <stdbool.h>
- 
-@@ -2694,6 +2695,251 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
+@@ -2694,6 +2694,106 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
  {
     uint32_t state_offset;
  
@@ -740,12 +842,6 @@ index 1e8aa36..27ae6cb 100644
 +               cm_bt[cm->cm_bti[k]] = ns.offset + state_offset;
 +            return VK_SUCCESS;
 +         }
-+         if (env->trace && env->pc) {
-+            fprintf(stderr, "ANV CM: pc %u,%u,%u:", kx, ky, kz);
-+            for (uint32_t j = 0; j < cm->cm_table_pc_off[0] / 4; j++)
-+               fprintf(stderr, " %08x", pc[j]);
-+            fputc(0x0a, stderr);
-+         }
 +         if (env->trace)
 +            fprintf(stderr, "ANV CM: dispatch kernel %u,%u,%u idx:", kx, ky, kz);
 +         for (uint32_t k = 0; k < cm->cm_nsurf; k++) {
@@ -761,32 +857,6 @@ index 1e8aa36..27ae6cb 100644
 +            }
 +            cm_bt[cm->cm_bti[k]] = hs->desc_offset + cm->cm_heap_desc_off +
 +                                   idx * cm->cm_heap_stride + state_offset;
-+            if (env->view) {
-+               /* ANV_CM_VIEW="x,y:surf=X,Y:S;..." makes surface <surf> of kernel x,y use the most recently recorded
-+                * surface state S of kernel X,Y (so a probe kernel can look at any intermediate buffer of the frame) */
-+               static uint32_t last[17][17][24][16];
-+               static bool last_valid[17][17][24];
-+               if (kx < 17 && ky < 17 && k < 24) {
-+                  memcpy(last[kx][ky][k], (const char *)hs->desc_surface_mem.map + cm->cm_heap_desc_off + idx * cm->cm_heap_stride, 64);
-+                  last_valid[kx][ky][k] = true;
-+               }
-+               const char *view = env->view;
-+               while (*view) {
-+                  unsigned vx, vy, vs, tx, ty, ts;
-+                  int n = 0;
-+                  if (sscanf(view, "%u,%u:%u=%u,%u:%u%n", &vx, &vy, &vs, &tx, &ty, &ts, &n) < 6)
-+                     break;
-+                  if (vx == kx && vy == ky && vs == k && tx < 17 && ty < 17 && ts < 24 && last_valid[tx][ty][ts]) {
-+                     struct anv_state vss = anv_cmd_buffer_alloc_surface_states(cmd_buffer, 1);
-+                     if (vss.map) {
-+                        memcpy(vss.map, last[tx][ty][ts], 64);
-+                        cm_bt[cm->cm_bti[k]] = vss.offset + state_offset;
-+                     }
-+                  }
-+                  view += n;
-+                  if (*view == ';') view++;
-+               }
-+            }
 +            if (env->trace == 2) {
 +               const uint32_t *ss = (const uint32_t *)((const char *)hs->desc_surface_mem.map +
 +                                    cm->cm_heap_desc_off + idx * cm->cm_heap_stride);
@@ -797,119 +867,6 @@ index 1e8aa36..27ae6cb 100644
 +         }
 +         if (env->trace)
 +            fprintf(stderr, "\n");
-+         if (env->gcap && kx < 17 && ky < 17) {
-+            /* ANV_CM_GCAP="kx,ky:N": GPU-side capture of every small buffer (<= 4 KiB) the kernel reads at its N-th dispatch
-+             * (an MI copy in the batch right before the walker); files are written 40 dispatches of the same kernel later */
-+            static struct anv_bo *gbo;
-+            static uint32_t gused;
-+            static struct { unsigned kx, ky, k, size, off, n, due; bool done; } grec[64];
-+            static unsigned gnrec;
-+            static unsigned gcount[17][17];
-+            ++gcount[kx][ky];
-+            const char *gp = env->gcap;
-+            unsigned sx, sy, sn;
-+            int used;
-+            while (sscanf(gp, "%u,%u:%u%n", &sx, &sy, &sn, &used) == 3) {
-+               if (sx == kx && sy == ky && gcount[kx][ky] == sn) {
-+                  if (!gbo &&
-+                      anv_device_alloc_bo(cmd_buffer->device, "cm-gcap", 4 << 20,
-+                                          ANV_BO_ALLOC_MAPPED | ANV_BO_ALLOC_HOST_CACHED_COHERENT, 0, &gbo) != VK_SUCCESS)
-+                     gbo = NULL;
-+                  if (gbo) {
-+                     struct mi_builder mb;
-+                     mi_builder_init(&mb, cmd_buffer->device->info, &cmd_buffer->batch);
-+                     for (uint32_t k = 0; k < cm->cm_nsurf && gnrec < 64; k++) {
-+                        const uint32_t idx = pc[cm->cm_table_pc_off[k] / 4] + cm->cm_elem[k];
-+                        if (idx >= hs->layout->descriptor_count)
-+                           continue;
-+                        const uint32_t *ss2 = (const uint32_t *)((const char *)hs->desc_surface_mem.map +
-+                                                                 cm->cm_heap_desc_off + idx * cm->cm_heap_stride);
-+                        const uint32_t fmt2 = (ss2[0] >> 18) & 0x1ff;
-+                        const uint64_t a2 = (((uint64_t)ss2[9] << 32) | ss2[8]) & 0xffffffffffffull;
-+                        const uint32_t sz2 = ss2[11];
-+                        if (fmt2 != 0x1ff || sz2 == 0 || sz2 > 4096 || gused + sz2 > (4u << 20))
-+                           continue;
-+                        mi_memcpy(&mb, (struct anv_address){ .bo = gbo, .offset = gused },
-+                                  (struct anv_address){ .bo = NULL, .offset = a2 }, sz2);
-+                        grec[gnrec].kx = kx; grec[gnrec].ky = ky; grec[gnrec].k = k; grec[gnrec].size = sz2; grec[gnrec].off = gused;
-+                        grec[gnrec].n = sn; grec[gnrec].due = gcount[kx][ky] + 40; grec[gnrec].done = false; gnrec++;
-+                        gused += (sz2 + 63) & ~63u;
-+                     }
-+                     fprintf(stderr, "ANV CM: gcap %u,%u n=%u queued %u surfaces\n", kx, ky, sn, gnrec);
-+                  }
-+               }
-+               gp += used;
-+               if (*gp == ';') gp++;
-+            }
-+            if (gbo) {
-+               for (unsigned r = 0; r < gnrec; r++) {
-+                  if (!grec[r].done && grec[r].kx == kx && grec[r].ky == ky && gcount[kx][ky] >= grec[r].due) {
-+                     char path[512];
-+                     mkdir(env->cap_dir, 0755);
-+                     snprintf(path, sizeof(path), "%s/gcap_%u_%u_n%u_s%u.bin", env->cap_dir, grec[r].kx, grec[r].ky, grec[r].n, grec[r].k);
-+                     FILE *gf = fopen(path, "wb");
-+                     if (gf) { fwrite((const char *)gbo->map + grec[r].off, 1, grec[r].size, gf); fclose(gf); }
-+                     grec[r].done = true;
-+                     fprintf(stderr, "ANV CM: gcap wrote %s\n", path);
-+                  }
-+               }
-+            }
-+         }
-+         if (env->capture && kx < 17 && ky < 17) {
-+            /* ANV_CM_CAPTURE="kx,ky:N;...": at the N-th dispatch of kernel kx,ky dump every buffer surface it uses (CPU side) */
-+            static unsigned cap_count[17][17];
-+            unsigned cn = 0;
-+            bool do_cap = false;
-+            const char *cp = env->capture;
-+            unsigned sx, sy, sn;
-+            int used;
-+            ++cap_count[kx][ky];
-+            while (sscanf(cp, "%u,%u:%u%n", &sx, &sy, &sn, &used) == 3) {
-+               if (sx == kx && sy == ky && cap_count[kx][ky] == sn) { do_cap = true; cn = sn; }
-+               cp += used;
-+               if (*cp == ';') cp++;
-+            }
-+            if (do_cap) {
-+               extern struct anv_bo *anv_cm_bos[];
-+               extern unsigned anv_cm_nbos;
-+               mkdir(env->cap_dir, 0755);
-+               for (uint32_t k = 0; k < cm->cm_nsurf; k++) {
-+                  const uint32_t idx = pc[cm->cm_table_pc_off[k] / 4] + cm->cm_elem[k];
-+                  if (idx >= hs->layout->descriptor_count)
-+                     continue;
-+                  const uint32_t *ss = (const uint32_t *)((const char *)hs->desc_surface_mem.map +
-+                                                          cm->cm_heap_desc_off + idx * cm->cm_heap_stride);
-+                  const uint32_t fmt = (ss[0] >> 18) & 0x1ff;
-+                  const uint64_t addr = (((uint64_t)ss[9] << 32) | ss[8]) & 0xffffffffffffull;
-+                  const uint64_t size = ss[11];
-+                  if (fmt != 0x1ff || size == 0)
-+                     continue;
-+                  struct anv_bo *found = NULL;
-+                  for (unsigned i = 0; i < anv_cm_nbos; i++) {
-+                     struct anv_bo *b = anv_cm_bos[i];
-+                     const uint64_t bo_va = b->offset & 0xffffffffffffull;
-+                     if (bo_va <= addr && addr + size <= bo_va + b->size) { found = b; break; }
-+                  }
-+                  if (!found) {
-+                     fprintf(stderr, "ANV CM: capture surf %u addr %llx size %llu: no BO\n", k, (unsigned long long)addr, (unsigned long long)size);
-+                     continue;
-+                  }
-+                  void *m = found->map;
-+                  if (!m && anv_device_map_bo(cmd_buffer->device, found, 0, found->size, NULL, &m) != VK_SUCCESS) {
-+                     fprintf(stderr, "ANV CM: capture surf %u: map failed\n", k);
-+                     continue;
-+                  }
-+                  char path[512];
-+                  snprintf(path, sizeof(path), "%s/cap_%u_%u_n%u_s%u.bin", env->cap_dir, kx, ky, cn, k);
-+                  FILE *cf = fopen(path, "wb");
-+                  if (cf) {
-+                     fwrite((const char *)m + (addr - (found->offset & 0xffffffffffffull)), 1, size, cf);
-+                     fclose(cf);
-+                  }
-+                  fprintf(stderr, "ANV CM: captured surf %u (%llu bytes @%llx) -> %s\n", k, (unsigned long long)size, (unsigned long long)addr, path);
-+               }
-+            }
-+         }
 +         return VK_SUCCESS;
 +      }
 +   }
@@ -918,7 +875,7 @@ index 1e8aa36..27ae6cb 100644
     if (map->surface_count == 0) {
        *bt_state = (struct anv_state) { 0, };
 diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
-index 120f6cc..92e07ac 100644
+index 120f6cc..5b36b54 100644
 --- a/src/intel/vulkan/genX_cmd_compute.c
 +++ b/src/intel/vulkan/genX_cmd_compute.c
 @@ -174,6 +174,10 @@ cmd_buffer_flush_compute_state(struct anv_cmd_buffer *cmd_buffer)
@@ -932,23 +889,12 @@ index 120f6cc..92e07ac 100644
     if (cmd_buffer->state.descriptors_dirty & VK_SHADER_STAGE_COMPUTE_BIT) {
        cmd_buffer->state.descriptors_pointers_dirty |=
           genX(cmd_buffer_flush_descriptor_sets)(
-@@ -552,6 +556,25 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
+@@ -552,6 +556,14 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
  
     compute_update_async_threads_limit(cmd_buffer, prog_data, &dispatch);
  
 +   if (prog_data->uses_cm_kernel) {
 +      const struct anv_cm_env *env = anv_cm_env();
-+      if (env->maxgroups) {
-+         for (int i = 0; i < 3; i++)
-+            num_wg[i] = MIN2(num_wg[i], env->maxgroups);
-+      }
-+      if (env->sync) {
-+         /* ANV_CM_SYNC: serialise every CM dispatch against all earlier work and flush/invalidate every cache */
-+         anv_add_pending_pipe_bits(cmd_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-+                                   ANV_PIPE_END_OF_PIPE_SYNC_BIT | ANV_PIPE_FLUSH_BITS | ANV_PIPE_INVALIDATE_BITS,
-+                                   "ANV_CM_SYNC");
-+         genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
-+      }
 +      if (env->trace)
 +         fprintf(stderr, "ANV CM: walker kernel %u,%u,%u groups %u,%u,%u threads %u\n",
 +                 prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
@@ -959,10 +905,10 @@ index 120f6cc..92e07ac 100644
     if (!anv_address_is_null(indirect_addr)) {
        uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
 diff --git a/src/intel/vulkan/genX_shader.c b/src/intel/vulkan/genX_shader.c
-index 5f16826..14a3652 100644
+index 5f16826..220ce2b 100644
 --- a/src/intel/vulkan/genX_shader.c
 +++ b/src/intel/vulkan/genX_shader.c
-@@ -1212,6 +1212,37 @@ emit_cs_shader(struct anv_batch *batch,
+@@ -1212,6 +1212,33 @@ emit_cs_shader(struct anv_batch *batch,
        .EmitInlineParameter            = cs_prog_data->uses_inline_push_addr,
     };
  
@@ -988,10 +934,6 @@ index 5f16826..14a3652 100644
 +      walker.IndirectDataLength = total;
 +      if (cs_prog_data->cm_has_sampler)
 +         walker.InterfaceDescriptor.SamplerCount = 1;
-+#if GFX_VER >= 20
-+      if (anv_cm_env()->preempt >= 0)
-+         walker.InterfaceDescriptor.ThreadPreemption = anv_cm_env()->preempt;
-+#endif
 +      if (cs_prog_data->cm_nsurf > 0)
 +         walker.InterfaceDescriptor.BindingTableEntryCount = MIN2(cs_prog_data->cm_max_bti + 1, 31);
 +      walker.IndirectDataStartAddress = shader->cm_indirect.offset;

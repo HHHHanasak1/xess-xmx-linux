@@ -37,6 +37,15 @@ there, and XeSS silently fell back to DP4a. The only symptom was `igdext64.dll` 
 
 ## The driver (`libvulkan_intel.so`)
 
+After a SteamOS update to a new Mesa version, `tools/rebuild-driver.sh` does everything below for the system's
+version: fetch the tag, apply both patches, build (ray tracing enabled), check the result like the session check
+does, and install it into the package (the previous driver is kept as `lib/libvulkan_intel.so.prev`). SteamOS has
+no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
+
+    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh
+
+If the patches do not apply to the new version, nothing is changed and the script says so.
+
 The patches apply to Mesa **26.1.2** (tag `mesa-26.1.2`, the version SteamOS ships at the time of writing). The
 driver must match the Mesa version of the system it runs on only loosely (it is a complete Vulkan driver), but the
 patches themselves are written against 26.1.2 and need a rebase for other versions.
@@ -44,10 +53,15 @@ patches themselves are written against 26.1.2 and need a rebase for other versio
     git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
-    meson setup build -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled \
-      -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=disabled \
-      -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+    meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
+      -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
+      -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
+
+`-Dprefix=/usr -Dsysconfdir=/etc` matter even though nothing is installed: the driver reads Mesa's per-game workarounds
+from `<prefix>/share/drirc.d`, and with meson's default `/usr/local` it silently runs without them. Wuthering Waves
+with ray tracing on hangs the GPU within a minute without the vkd3d entries there (same with an unpatched Mesa
+26.1.2 or 26.1.8 built that way; fine with `DRIRC_CONFIGDIR=/usr/share/drirc.d` or the right prefix).
 
 On SteamOS the release build is made in an Arch Linux distrobox. Keep `spirv-tools` at the version of the host
 (1.4.350.1 on the tested SteamOS build), since a mismatch has been suspected of subtle breakage before (it turned out not to be the
@@ -67,6 +81,13 @@ cause, but there is no reason to risk it).
 * `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: the new fields and the environment block (`struct anv_cm_env`).
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
+
+The two patches are generated from one source tree in which the debug-only code sits between
+`/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
+writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
+
+`-Dintel-rt=enabled` matters: without it the driver exposes no ray tracing extensions and games hide their ray
+tracing options (v1.3.1 and earlier were built that way).
 
 ## Kernels ahead of time (optional)
 
