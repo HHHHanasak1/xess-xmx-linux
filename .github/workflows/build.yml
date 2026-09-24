@@ -22,6 +22,9 @@ jobs:
         run: python3 -m py_compile tools/*.py
       - name: placeholder id layout matches the driver
         run: python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
+      - name: debug tools stay out of the feature patch
+        run: |
+          ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch
 
   shim:
     runs-on: windows-latest
@@ -63,7 +66,7 @@ jobs:
         run: |
           cd mesa
           meson setup build -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled \
-            -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=disabled \
+            -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=enabled \
             -Dvideo-codecs= -Dvulkan-layers= -Dtools=
       - name: build
         run: ninja -C mesa/build src/intel/vulkan/libvulkan_intel.so

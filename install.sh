@@ -81,20 +81,36 @@ for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstor
   if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
 done
 echo "== shim: $n file(s) updated"
+# started by the watcher: a new prefix gets its driver store folder a few seconds after compatdata/<id> appears, so keep
+# looking for a while and put the shim in as soon as the folder exists
+if [ "${XMX_WAIT_PREFIX:-0}" -gt 0 ]; then
+  end=$(( $(date +%s) + XMX_WAIT_PREFIX ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
+      [ -d "$d" ] || continue
+      if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && echo "   shim -> $d/igdext64.dll"; fi
+    done
+    sleep 3
+  done
+fi
 
-# 4. keep the Proton copies ours across Proton updates
+# 4. watcher: re-install after a Proton update (bundled igdext64.dll replaced), a newly installed Proton, or a new prefix
+#    (a game started for the first time)
 mkdir -p "$UNITD"
 watch=""
 for p in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do [ -f "$p" ] && watch="$watch
 PathChanged=$p"; done
+for p in "$STEAM/steamapps/compatdata" "$STEAM/steamapps/common" "$STEAM/compatibilitytools.d"; do [ -d "$p" ] && watch="$watch
+PathModified=$p"; done
 if [ -n "$watch" ]; then
-  { echo "[Unit]"; echo "Description=Re-install the XeSS XMX shim after a Proton update"; echo "[Path]";
+  { echo "[Unit]"; echo "Description=Re-install the XeSS XMX shim after a Proton update or for a new prefix"; echo "[Path]";
     printf '%s\n' "${watch#
-}"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path"
+}"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path"
   { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
-    echo "ExecStart=/bin/bash $PKG/install.sh"; echo "Environment=XMX_NO_ENV=1"; } > "$UNITD/xess-xmx-shim.service"
+    echo "ExecStart=/bin/bash $PKG/install.sh"; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service"
   systemctl --user daemon-reload 2>/dev/null
-  systemctl --user enable --now xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
+  systemctl --user enable xess-xmx-shim.path >/dev/null 2>&1
+  systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
 fi
 # 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
 #    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU

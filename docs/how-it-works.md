@@ -48,14 +48,29 @@ The binding-table code relies on vkd3d-proton's classic descriptor path, hence
 measured without a frame-rate difference, see the README). If the heap cannot be found the driver says so in the log
 and leaves the kernel as a no-op.
 
-If a compile fails, the driver appends the kernel to `C:\igdext_kernels\compile_failed.txt`. At the next launch the
-driver compiles the listed kernels again when the Vulkan device is created (before XeSS asks its questions) and
-removes the marker if they all succeed; if the marker is still there, the shim answers `LSCSupported=0` and XeSS uses
-its DP4a path for that game instead of producing noise. A transient failure heals by itself.
+If a compile fails, the driver appends the kernel to `C:\igdext_kernels\compile_failed.txt`. When a Vulkan device is
+created (before XeSS asks its questions) the driver compiles the listed kernels again - but only if the compiler
+changed since the failure or the failure is more than a day old, so a still-broken compiler does not cost every launch
+a minute - and removes the marker if they all succeed; if the marker is still there, the shim declines the extension
+context and XeSS uses its generic paths for that game instead of producing noise. A transient failure heals by itself.
 
 Compile cost: about 0.2 s per kernel on an idle system (ocloc 170 ms, packing 35 ms), 0.3 s while the game loads;
 Wuthering Waves' 90 kernels take about 65 s in total, most of it XeSS creating its pipelines one after another while
 the game loads. The helper is started with `posix_spawn`, so the game process is not forked for each kernel.
+
+Cached kernels are named `<hash>_<pci id>_<toolchain>.cmk`; the toolchain part is derived from the ocloc and IGC
+library names in `igc/` and the packer, so a compiler update or a new `.cmk` format simply leads to recompiles.
+
+### Self-test
+
+Before the shim tells XeSS to use CM kernels (the first `OPTIONS2` query of a process) it creates one extra
+placeholder pipeline on the game's device: workgroup (1, 1, 17), outside the id planes, with the magic value. The
+patched driver recognises it and writes `C:\igdext_kernels\anv_canary`. Only if that file is newer than the game
+process does the shim accept the extension context; otherwise it declines it and XeSS behaves as on a system without
+the Intel extension: DP4a super resolution and generic frame generation (answering `LSCSupported=0` instead would
+switch XeSS frame generation off altogether). This catches every way placeholders could
+silently stay placeholders: the stock driver in use (the session check fell back, the variables did not reach the
+game) or a vkd3d-proton change in how the placeholder reaches the driver.
 
 ## 3. Which kernel variant XeSS hands out
 

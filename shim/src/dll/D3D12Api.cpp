@@ -285,6 +285,79 @@ static bool CalledFromXeFG()
     return false;
 }
 
+// Self-test, once per process, before XeSS is told to use CM kernels: a placeholder pipeline with workgroup (1, 1, 17)
+// is created on the game's device; the patched ANV recognises it (magic value) and writes C:\igdext_kernels\anv_canary.
+// If the file is not newer than this process, placeholders would not be replaced - the stock driver is in use (the
+// session check fell back, the variables are missing) or vkd3d-proton changed how placeholders reach the driver - and
+// XeSS must use its DP4a path instead of producing noise. IGDEXT_SKIP_SELFTEST=1 skips it.
+static bool SelfTestOk(ID3D12Device* dev)
+{
+    static int result = -1;
+    if (result >= 0) return result == 1;
+    char b[8];
+    if (GetEnvironmentVariableA("IGDEXT_SKIP_SELFTEST", b, sizeof(b)) > 0 && atoi(b)) { result = 1; return true; }
+    result = 0;
+    if (!dev) { TraceF("  self-test: no device"); return false; }
+    typedef HRESULT (WINAPI *PFN_Serialize)(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
+    HMODULE d3d12 = GetModuleHandleA("d3d12.dll");
+    auto serialize = d3d12 ? (PFN_Serialize)GetProcAddress(d3d12, "D3D12SerializeRootSignature") : nullptr;
+    if (!serialize) { TraceF("  self-test: D3D12SerializeRootSignature not found"); return false; }
+    D3D12_DESCRIPTOR_RANGE range = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 0 };
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    param.DescriptorTable.NumDescriptorRanges = 1; param.DescriptorTable.pDescriptorRanges = &range;
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_SIGNATURE_DESC rsd = { 1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+    ID3DBlob* blob = nullptr; ID3DBlob* err = nullptr;
+    ID3D12RootSignature* rs = nullptr; ID3D12PipelineState* pso = nullptr;
+    HRESULT hr = serialize(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
+    if (SUCCEEDED(hr)) hr = dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), __uuidof(ID3D12RootSignature), (void**)&rs);
+    if (SUCCEEDED(hr))
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = rs; pd.CS.pShaderBytecode = kCanaryDummy; pd.CS.BytecodeLength = sizeof(kCanaryDummy);
+        hr = dev->CreateComputePipelineState(&pd, __uuidof(ID3D12PipelineState), (void**)&pso);
+    }
+    if (pso) pso->Release();
+    if (rs) rs->Release();
+    if (blob) blob->Release();
+    if (err) err->Release();
+    if (FAILED(hr)) { TraceF("  self-test: creating the test pipeline failed (hr=0x%08lx)", (unsigned long)hr); return false; }
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    FILETIME created, t1, t2, t3;
+    if (!GetFileAttributesExA("C:\\igdext_kernels\\anv_canary", GetFileExInfoStandard, &fa) ||
+        !GetProcessTimes(GetCurrentProcess(), &created, &t1, &t2, &t3))
+    { TraceF("  self-test: no C:\\igdext_kernels\\anv_canary from the driver"); return false; }
+    ULARGE_INTEGER m, c;
+    m.LowPart = fa.ftLastWriteTime.dwLowDateTime; m.HighPart = fa.ftLastWriteTime.dwHighDateTime;
+    c.LowPart = created.dwLowDateTime; c.HighPart = created.dwHighDateTime;
+    const bool fresh = m.QuadPart + 2ull * 10000000ull >= c.QuadPart;   // 2 s slack for file time granularity
+    TraceF("  self-test: %s", fresh ? "the patched driver recognised the test placeholder" : "anv_canary is older than this process");
+    result = fresh ? 1 : 0;
+    return fresh;
+}
+
+// Fallback decision, made when XeSS / XeFG create their extension context: if IGDEXT_FORCE_FALLBACK=1, a kernel compile
+// failed earlier in this prefix (C:\igdext_kernels\compile_failed.txt, retried by the driver) or the self-test fails, the
+// context is declined - exactly what XeSS sees on a system without the Intel extension (DP4a super resolution, generic
+// frame generation). Answering LSCSupported=0 instead would switch XeSS frame generation off altogether.
+// IGDEXT_IGNORE_FAILED=1 ignores the compile marker.
+bool XmxFallbackActive(ID3D12Device* dev)
+{
+    static int decided = -1;
+    if (decided >= 0) return decided == 1;
+    char b[8];
+    decided = 0;
+    if (GetEnvironmentVariableA("IGDEXT_FORCE_FALLBACK", b, sizeof(b)) > 0 && atoi(b))
+    { TraceF("  fallback: IGDEXT_FORCE_FALLBACK"); decided = 1; }
+    else if (GetFileAttributesA("C:\\igdext_kernels\\compile_failed.txt") != INVALID_FILE_ATTRIBUTES &&
+             GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
+    { TraceF("  fallback: a kernel failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt)"); decided = 1; }
+    else if (!SelfTestOk(dev))
+    { TraceF("  fallback: self-test failed (patched driver not active in this process, or placeholders not recognised)"); decided = 1; }
+    return decided == 1;
+}
+
 HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FEATURES f, void* data, UINT size)
 {
     TraceF("CheckFeatureSupport feature=%d size=%u", (int)f, size);
@@ -303,22 +376,11 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
         auto* o = (INTC_D3D12_FEATURE_DATA_D3D12_OPTIONS2*)data;
         // SIMD16Required=1 (Xe2 and later) makes XeSS and XeFG hand out their SIMD16 + LSC-typed kernel variant, the only
         // one those GPUs can compile (the SIMD8 variant uses legacy typed messages); Xe-HPG gets the SIMD8 variant.
-        // The same answer goes to every caller. LSCSupported=0 makes XeSS use no CM kernels at all (DP4a HLSL path): given
-        // after a run-time kernel compile failed in this prefix (C:\igdext_kernels\compile_failed.txt, written by ANV),
-        // so a broken compiler setup degrades to DP4a instead of noise. Overrides: IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>,
-        // IGDEXT_OPTIONS2_FG=... for calls from libxess_fg.dll, IGDEXT_IGNORE_FAILED=1.
+        // The same answer goes to every caller; the fallbacks happen at context creation (XmxFallbackActive).
+        // Overrides: IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>, IGDEXT_OPTIONS2_FG=... for calls from libxess_fg.dll.
         TraceCallers("OPTIONS2");
         const bool fgCtx = CalledFromXeFG();
         int simd16 = XmxDetectGpu().simd16 ? 1 : 0, lsc = 1, legacy = 0;
-        {
-            char b[8];
-            if (GetFileAttributesA("C:\\igdext_kernels\\compile_failed.txt") != INVALID_FILE_ATTRIBUTES &&
-                GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
-            {
-                lsc = 0;
-                TraceF("  a kernel failed to compile earlier (C:\\igdext_kernels\\compile_failed.txt): falling back to DP4a");
-            }
-        }
         { char b[32]; if (GetEnvironmentVariableA(fgCtx ? "IGDEXT_OPTIONS2_FG" : "IGDEXT_OPTIONS2", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &simd16, &lsc, &legacy); }
         o->SIMD16Required = simd16 ? TRUE : FALSE; o->LSCSupported = lsc ? TRUE : FALSE; o->LegacyTranslationRequired = legacy ? TRUE : FALSE;
         TraceF("  OPTIONS2 (%s ctx) -> SIMD16Required=%d LSCSupported=%d LegacyTranslationRequired=%d", fgCtx ? "FG" : "SR", simd16, lsc, legacy);

@@ -11,8 +11,8 @@ vkd3d-proton:
 
 Developed and tested on an ONEXPLAYER 3 (Intel Core Ultra "Panther Lake", Arc B390, Xe3) with SteamOS, Mesa 26.1.2 and
 GE-Proton 11-6 / Proton Experimental. XeSS super resolution renders correctly and is temporally stable; frame
-generation runs at 2x/3x/4x with its network on XMX as well. On the B390 the frame rate is at parity with DP4a (at 22 W
-the GPU, not the upscaler, is the limit), so the point is image quality: the XMX network is the better one.
+generation runs at 2x/3x/4x with its network on XMX as well. The point is image quality, not speed: on the B390 at
+22 W the XMX networks cost more GPU time than XeSS' generic paths (see "Performance").
 
 ## Install
 
@@ -33,13 +33,15 @@ What `install.sh` does:
   game of the session; see "Performance" below);
 * puts the shim into every Proton that bundles an `igdext64.dll` (Proton Experimental copies it into each prefix at
   launch) and into every existing prefix, keeping the original as `.stock`;
-* enables a user path unit that puts the shim back after a Proton update;
-* enables `xess-xmx-check.service`, which loads the patched driver once before every graphical session. If a system
-  update broke one of its library dependencies (`libSPIRV-Tools.so`, glibc), the session is pointed back to the stock
-  drivers: XeSS runs as DP4a, everything else keeps working (instead of the whole session losing the Intel GPU).
-  Result in `~/.cache/xess-xmx/driver-status`.
+* enables a user path unit that puts the shim back after a Proton update and into the prefix of a game started for
+  the first time;
+* enables `xess-xmx-check.service`, which loads the patched driver and lets `vulkaninfo` find the GPU through it
+  before every graphical session. If a system update broke it (library dependencies, kernel driver), the session is
+  pointed back to the stock drivers: everything keeps working, XeSS runs as DP4a (instead of the whole session losing
+  the Intel GPU). Result in `~/.cache/xess-xmx/driver-status`, which also notes when the system's Mesa version differs
+  from the patched driver's; `tools/rebuild-driver.sh` then rebuilds it for the new version.
 
-Run it again after a game created a new prefix. (XeSS would also accept the shim's folder through
+(XeSS would also accept the shim's folder through
 `INTC_ALT_DRIVER_EXTENSIONS_PATH`, which would make the per-prefix copies unnecessary, but GE-Proton sets that variable
 to `C:\Windows\System32` for every game, so the copies stay.) It supports the native Steam client (SteamOS, distribution packages);
 Flatpak Steam is not supported (its sandbox sees neither the environment file nor the package folder).
@@ -53,8 +55,9 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 * Intel Xe3 (Panther Lake, tested) or Xe2 (Lunar Lake, Battlemage: should work, untested) on the `xe` or `i915`
   kernel driver. Xe-HPG (Alchemist) and Xe-LPG are detected and get the answers a Windows driver would give, but
   nothing about them has been tested.
-* The driver in the archive is Mesa 26.1.2 with the patches; it replaces the system's 64-bit ANV only for the user
-  session. For another Mesa version, rebuild it from `patches/` (see [docs/building.md](docs/building.md)).
+* The driver in the archive is Mesa 26.1.2 with the patches (ray tracing enabled, like the stock driver); it replaces
+  the system's 64-bit ANV only for the user session. For another Mesa version, `tools/rebuild-driver.sh` rebuilds it
+  (see [docs/building.md](docs/building.md)).
 * vkd3d-proton as in Proton 11 / GE-Proton 11.
 
 ## Games
@@ -68,7 +71,8 @@ OptiScaler and on a game without XeSS.
 |---|---|
 | looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` (new prefix, Proton update without the watcher) |
 | noise or black patches in the image | a kernel failed to compile; the next launch retries it and falls back to DP4a if it still fails. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
-| XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer loads on the updated system: `~/.cache/xess-xmx/driver-status`; a release built for the new system fixes it |
+| XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer works on the updated system: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` in a distrobox (see docs/building.md) |
+| looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
 | another GPU or 32-bit games lost Vulkan | installed with an older `install.sh`: re-run the current one, re-login |
@@ -77,7 +81,11 @@ More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see
 
 ## Performance
 
-* XMX vs DP4a on the Arc B390 at 22 W: same frame rate (GPU-bound either way); the XMX network gives the better image.
+* Wuthering Waves, Arc B390 at 22 W, 4x frame generation, same driver and scene, alternating runs: XMX (super
+  resolution and frame generation on XMX) 22.4 / 23.2 real fps, XeSS' generic paths (DP4a super resolution, non-CM
+  frame generation) 26.5 / 26.8 real fps. The XMX frame generation network is the heavier one; without frame
+  generation, XMX and DP4a super resolution run at the same frame rate. `IGDEXT_FORCE_FALLBACK=1` selects the generic
+  paths for a game.
 * `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` (needed by the kernel binding code, set for the whole session by
   `install.sh`): Wuthering Waves, no difference in frame rate or GPU load. Forza Horizon 6 (open
   world, car standing, alternating runs): 43.7 / 41.2 fps with the extension disabled, 43.8 / 40.2 fps with it enabled,

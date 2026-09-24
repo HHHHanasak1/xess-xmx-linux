@@ -6,7 +6,8 @@
 |---|---|---|
 | Image looks like the DP4a path (softer, no change after enabling) | The shim is not loaded (Proton replaced it, new prefix) | `IGDEXT_TRACE=1` produces no `C:\igdext_trace.log` in the prefix; re-run `install.sh` |
 | Patches of white noise or black areas in the XeSS output | A kernel ran as a no-op (compile failed or missing) | `~/.cache/xess-xmx/compile.log`, `drive_c/igdext_kernels/compile_failed.txt`; the next launch falls back to DP4a by itself |
-| XeSS is back to DP4a after a failed compile | Intended fallback after `compile_failed.txt` was written | the driver retries the listed kernels at every launch and lifts the fallback once they compile; a missing compiler: `tools/get-igc.sh` |
+| XeSS is back to DP4a after a failed compile | Intended fallback after `compile_failed.txt` was written | the driver retries the listed kernels at the next launch after a compiler update, or after a day, and lifts the fallback once they compile; a missing compiler: `tools/get-igc.sh` |
+| XeSS is DP4a and the trace says `fallback: self-test failed` | the shim's self-test placeholder was not recognised in this game process: the stock driver is in use (session check fell back, the variables did not reach the game) or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; `drive_c/igdext_kernels/anv_canary` is written by the patched driver when it sees the test |
 | XMX gone after a system update, `driver-status` says FAILED | the patched driver cannot be loaded any more (library dependencies changed); the session check switched to the stock drivers | update the package / rebuild the driver; `journalctl --user -u xess-xmx-check` |
 | Generated frames are black, flicker between black and image | XeFG got the Xe-HPG kernel variant (only with `IGDEXT_OPTIONS2_FG=0,...`) | remove the override |
 | 30 fps with frame generation until you open and close the pause menu (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
@@ -42,6 +43,8 @@ Shim (game environment):
 | `IGDEXT_TRACE=1` | trace log and kernel dump (above) |
 | `IGDEXT_STATIC=1` | use the prebuilt kernel table (`kernels/wg*_5.cmk`) instead of run-time ids; only in shims built with `-DXMX_STATIC_TABLE=ON` |
 | `IGDEXT_IGNORE_FAILED=1` | do not fall back to DP4a after a failed compile |
+| `IGDEXT_SKIP_SELFTEST=1` | skip the self-test (the shim then assumes the patched driver is active) |
+| `IGDEXT_FORCE_FALLBACK=1` | decline the extension context: XeSS uses DP4a, XeSS frame generation its generic path (as without the shim) |
 | `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | override `CheckFeatureSupport(OPTIONS1)` |
 | `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | override `OPTIONS2` (default from the detected GPU: `1,1,0` on Xe2/Xe3) |
 | `IGDEXT_OPTIONS2_FG=...` | the same, only for calls from `libxess_fg.dll` |
