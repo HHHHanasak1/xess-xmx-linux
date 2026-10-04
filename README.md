@@ -64,8 +64,8 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ## Games
 
-See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), notes on
-OptiScaler and on a game without XeSS.
+See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
+2077 (SR + FG after replacing its older XeSS libraries), notes on OptiScaler and on a game without XeSS.
 
 ## Troubleshooting
 
@@ -77,6 +77,8 @@ OptiScaler and on a game without XeSS.
 | looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
 | no image / GPU hang with ray tracing on (Wuthering Waves) | drivers up to v1.3.1 were built with the wrong install prefix and ran every game without Mesa's per-game workarounds (`/usr/share/drirc.d`); fixed in v1.3.2. A self-built driver: rebuild with `tools/rebuild-driver.sh`. `~/.cache/xess-xmx/driver-status` notes a driver that does not read them |
 | XeSS super resolution stays on DP4a in one game while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...; Cyberpunk 2077 from Mesa 26.3) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU and `libxess.dll` never asks for the Intel extension. Releases after v1.3.2 set `force_vk_vendor=0` for the session (re-run `install.sh` / `enable.sh`); by hand: launch options `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
+| DP4a and no XeSS frame generation option in a game, the shim's trace stays empty, the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | the game ships XeSS older than 2.0.2.68 and DXVK then reports the GPU as an AMD one. Replace the game's XeSS libraries with newer ones: docs/games.md |
+| XMX gone in the games of one Proton after that Proton updated | `install.sh` before v1.3.3 could miss the update's new `igdext64.dll` when Steam wrote it while the watcher was already running: re-run `install.sh` |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
 | another GPU or 32-bit games lost Vulkan | older `install.sh` versions listed only the patched 64-bit driver (found by reading the configuration, not seen on a machine): re-run the current one, re-login |
