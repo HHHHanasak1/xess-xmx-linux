@@ -6,7 +6,7 @@ set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
 rm -f "$HOME/.config/environment.d/50-xess-xmx.conf"
-systemctl --user unset-environment VK_DRIVER_FILES VKD3D_DISABLE_EXTENSIONS ANV_CM_KERNEL_DIR ANV_CM_HELPER 2>/dev/null
+systemctl --user unset-environment VK_DRIVER_FILES VKD3D_DISABLE_EXTENSIONS ANV_CM_KERNEL_DIR ANV_CM_HELPER force_vk_vendor 2>/dev/null
 systemctl --user disable --now xess-xmx-shim.path >/dev/null 2>&1
 systemctl --user disable xess-xmx-check.service >/dev/null 2>&1
 rm -f "$HOME/.config/systemd/user/xess-xmx-shim.path" "$HOME/.config/systemd/user/xess-xmx-shim.service" "$HOME/.config/systemd/user/xess-xmx-check.service"

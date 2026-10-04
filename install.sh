@@ -47,10 +47,13 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer"
     echo "ANV_CM_KERNEL_DIR=$PKG/kernels"
     echo "ANV_CM_HELPER=$PKG/tools/cm-compile.sh"
+    echo "# Mesa hides the Intel vendor id from some games (force_vk_vendor=-1 profiles), which keeps XeSS on DP4a there;"
+    echo "# an option set in the environment overrides the profile. One game back to Mesa's default: force_vk_vendor=-1 %command%"
+    echo "force_vk_vendor=0"
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user import-environment 2>/dev/null
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer" \
-    "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" 2>/dev/null
+    "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" 2>/dev/null
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
 fi
