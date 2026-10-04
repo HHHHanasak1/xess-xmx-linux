@@ -73,27 +73,36 @@ install_shim() { # <igdext64.dll path>
   local f=$1
   [ -f "$f" ] || return
   cmp -s "$f" "$SHIM" && return
-  [ -f "$f.stock" ] || cp -p "$f" "$f.stock"
+  # keep the original as .stock. Every build of the shim names its IGDEXT_* switches; a file without them is a stock one,
+  # also a newer one that a Proton update just brought (then the old .stock is out of date and is replaced)
+  if ! grep -aq 'IGDEXT_' "$f"; then
+    if [ ! -f "$f.stock" ] || ! cmp -s "$f" "$f.stock"; then
+      chmod u+w "$f.stock" 2>/dev/null
+      cp -p "$f" "$f.stock"
+    fi
+  fi
   chmod u+w "$f" 2>/dev/null
   cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
 }
-for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
-         "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
-for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
-  [ -d "$d" ] || continue
-  if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
-done
+shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder
+  local f d
+  for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
+           "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
+  for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
+    [ -d "$d" ] || continue
+    if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
+  done
+}
+shim_pass
 echo "== shim: $n file(s) updated"
-# started by the watcher: a new prefix gets its driver store folder a few seconds after compatdata/<id> appears, so keep
-# looking for a while and put the shim in as soon as the folder exists
+# started by the watcher: keep looking for a while. A new prefix gets its driver store folder a few seconds after
+# compatdata/<id> appears, and Steam may write a Proton update's files after the event that started this run - the path
+# unit does not report changes while its service is running, so they have to be picked up here.
 if [ "${XMX_WAIT_PREFIX:-0}" -gt 0 ]; then
   end=$(( $(date +%s) + XMX_WAIT_PREFIX ))
   while [ "$(date +%s)" -lt "$end" ]; do
-    for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
-      [ -d "$d" ] || continue
-      if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && echo "   shim -> $d/igdext64.dll"; fi
-    done
     sleep 3
+    shim_pass
   done
 fi
 
