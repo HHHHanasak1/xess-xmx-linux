@@ -38,6 +38,9 @@ shader, even with the same workgroup size, is compiled normally. For a placehold
 4. never stores the placeholder in a pipeline cache, so a changed kernel or a compile that failed once is picked up
    on the next launch.
 
+The register count (128 or 256, from the kernel's compile options) goes into the interface descriptor on Xe3; on Xe2
+it needs the engine-wide Large GRF Mode, which `patches/0003` switches around the kernels that use 256 registers.
+
 At each dispatch ANV builds the kernel's binding table from vkd3d-proton's descriptor heap (XeSS root signatures are
 one descriptor table per resource; vkd3d passes the heap offsets as push constants), takes the sampler state from the
 root signature's static sampler (an immutable sampler in the pipeline layout), and programs SLM and barriers. Nothing

@@ -54,7 +54,8 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ### Requirements
 
-* Intel Xe3 (Panther Lake, tested) or Xe2 (Lunar Lake, Battlemage: untested, enabled by default) on the `xe` or `i915`
+* Intel Xe3 (Panther Lake, Arc B390: tested) or Xe2 (Battlemage, Arc B580: tested by a contributor, #16; Lunar Lake:
+  untested) on the `xe` or `i915`
   kernel driver. Xe-HPG (Alchemist) and Xe-LPG are detected and get the answers a Windows driver would give, but
   nothing about them has been tested.
 * The driver in the archive is Mesa 26.1.2 with the patches (ray tracing enabled, like the stock driver); it replaces
@@ -110,7 +111,8 @@ More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see
 * **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode. Its driver mode
   appears to be a separate component of Intel's Windows driver (`igxell64.dll`, inferred from the disassembly) plus an
   undocumented timing interface; neither exists on Linux. Details in [docs/how-it-works.md](docs/how-it-works.md).
-* Only tested on Xe3. The driver patches are written against Mesa 26.1.2.
+* Tested on Xe3 (Arc B390) and, by a contributor, on Xe2 (Arc B580: Cyberpunk 2077 and Wuthering Waves, super
+  resolution and frame generation). Lunar Lake is untested. The driver patches are written against Mesa 26.1.2.
 * The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
   limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
 * The placeholder shaders use workgroup sizes on three reserved planes (z = 7, 11, 13) and a magic value; the driver
@@ -131,6 +133,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/0001-*.patch          Mesa 26.1.2 ANV: CM kernel injection and run-time compilation
     patches/0002-*.patch          Mesa 26.1.2 ANV: debug tools (captures, kernel selection, see docs/debugging.md)
+    patches/0003-*.patch          Mesa 26.1.2 ANV: Xe2 only, Large GRF Mode around CM kernels (without it the first
+                                  kernel hangs the GPU on Battlemage)
     shim/                         igdext64.dll source: dxvk-igdext plus src/dll/ (D3D12Api.cpp feature answers and
                                   placeholders, GpuInfo.cpp device detection, XellHook.cpp XeLL frame-cap fix,
                                   XellDriver.cpp XeLL driver-mode probe, dyn_dummies.inc / xess_dummies.inc tables)

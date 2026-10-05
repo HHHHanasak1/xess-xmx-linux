@@ -19,8 +19,10 @@ Intel GPU, never loads the extension library (the shim's trace stays empty) and 
 frame generation is older than 1.2 (Intel only) does not offer it at all.
 
 Replacing the game's XeSS libraries with newer ones lifts that. In Cyberpunk 2077 (Steam, 2.31, `bin/x64/`):
-`libxess.dll`, `libxess_dx11.dll`, `libxess_fg.dll`, `libxell.dll` taken from a game that ships XeSS 2.0.2.68 (or from
-Intel's XeSS SDK release). Keep the originals; a game update or "verify integrity" puts the old ones back. Result on a
+`libxess.dll`, `libxess_dx11.dll`, `libxess_fg.dll`, `libxell.dll` taken from a game that ships XeSS 2.0.2.68, from
+Intel's XeSS SDK release, or from Proton: one launch with `PROTON_XESS_UPGRADE=1 %command%` downloads a newer set
+into the prefix (`drive_c/windows/system32/umu/`), from where the four files can be copied into the game folder (the
+redirect alone is not enough, the game loads its own `libxess.dll`). Keep the originals; a game update or "verify integrity" puts the old ones back. Result on a
 B390: super resolution and frame generation on XMX (126 + 86 kernel pipelines, 24 kernels new to this game compiled on
 first use), the XeSS frame generation option appears in the game's menu.
 

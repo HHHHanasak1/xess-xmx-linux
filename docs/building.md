@@ -38,7 +38,7 @@ there, and XeSS silently fell back to DP4a. The only symptom was `igdext64.dll` 
 ## The driver (`libvulkan_intel.so`)
 
 After a SteamOS update to a new Mesa version, `tools/rebuild-driver.sh` does everything below for the system's
-version: fetch the tag, apply both patches, build (ray tracing enabled), check the result like the session check
+version: fetch the tag, apply the patches, build (ray tracing enabled), check the result like the session check
 does, and install it into the package (the previous driver is kept as `lib/libvulkan_intel.so.prev`). SteamOS has
 no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
@@ -53,6 +53,7 @@ patches themselves are written against 26.1.2 and need a rebase for other versio
     git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
+    git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe2: needed; Xe3: no effect (applies with or without 0002)
     meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
       -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
@@ -82,7 +83,14 @@ cause, but there is no reason to risk it).
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-The two patches are generated from one source tree in which the debug-only code sits between
+`0003` (Xe2 only, contributed in #16): the kernels are compiled with `-doubleGRF` (256 registers). Xe3 sizes the
+register file per shader (`RegistersPerThread`), Xe2 has one engine-wide switch, `STATE_COMPUTE_MODE` Large GRF Mode,
+which nothing else turns on; without it the first CM kernel never finishes and the engine is reset. The patch
+switches the mode on before a CM kernel with more than 128 registers and off before other compute work and at the
+end of each command buffer, only when it changes. It also drops CM dispatches with a zero group count (a no-op by
+the Vulkan specification), on every generation.
+
+`0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
 writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
 
