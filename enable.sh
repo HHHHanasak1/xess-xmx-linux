@@ -52,6 +52,7 @@ export VK_DRIVER_FILES=$drivers
 export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer
 export ANV_CM_KERNEL_DIR=$ROOT/kernels
 export ANV_CM_HELPER=$ROOT/tools/cm-compile.sh
+export force_vk_vendor=0
 # <<< XESS-XMX <<<
 EOF
 

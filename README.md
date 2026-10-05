@@ -31,7 +31,8 @@ What `install.sh` does:
 * writes `~/.config/environment.d/50-xess-xmx.conf`: the patched driver as the 64-bit Intel Vulkan driver (every other
   driver, including other GPUs and the 32-bit Intel driver, stays in the list), the kernel compiler, and
   `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`, which the kernel binding code needs (it applies to every D3D12
-  game of the session; see "Performance" below);
+  game of the session; see "Performance" below), and `force_vk_vendor=0` (Mesa has per-game profiles that hide the
+  Intel vendor id, which keeps XeSS super resolution on DP4a in those games; see "Troubleshooting");
 * puts the shim into every Proton that bundles an `igdext64.dll` (Proton Experimental copies it into each prefix at
   launch) and into every existing prefix, keeping the original as `.stock`;
 * enables a user path unit that puts the shim back after a Proton update and into the prefix of a game started for
@@ -53,7 +54,8 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ### Requirements
 
-* Intel Xe3 (Panther Lake, tested) or Xe2 (Lunar Lake, Battlemage: untested, enabled by default) on the `xe` or `i915`
+* Intel Xe3 (Panther Lake, Arc B390: tested) or Xe2 (Battlemage, Arc B580: tested by a contributor, #16; Lunar Lake:
+  untested) on the `xe` or `i915`
   kernel driver. Xe-HPG (Alchemist) and Xe-LPG are detected and get the answers a Windows driver would give, but
   nothing about them has been tested.
 * The driver in the archive is Mesa 26.1.2 with the patches (ray tracing enabled, like the stock driver); it replaces
@@ -63,8 +65,8 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ## Games
 
-See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), notes on
-OptiScaler and on a game without XeSS.
+See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
+2077 (SR + FG after replacing its older XeSS libraries), notes on OptiScaler and on a game without XeSS.
 
 ## Troubleshooting
 
@@ -75,6 +77,9 @@ OptiScaler and on a game without XeSS.
 | XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer works on the updated system: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` in a distrobox (see docs/building.md) |
 | looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
 | no image / GPU hang with ray tracing on (Wuthering Waves) | drivers up to v1.3.1 were built with the wrong install prefix and ran every game without Mesa's per-game workarounds (`/usr/share/drirc.d`); fixed in v1.3.2. A self-built driver: rebuild with `tools/rebuild-driver.sh`. `~/.cache/xess-xmx/driver-status` notes a driver that does not read them |
+| XeSS super resolution stays on DP4a in one game while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...; Cyberpunk 2077 from Mesa 26.3) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU and `libxess.dll` never asks for the Intel extension. Releases after v1.3.2 set `force_vk_vendor=0` for the session (re-run `install.sh` / `enable.sh`); by hand: launch options `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
+| DP4a and no XeSS frame generation option in a game, the shim's trace stays empty, the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | the game ships XeSS older than 2.0.2.68 and DXVK then reports the GPU as an AMD one. Replace the game's XeSS libraries with newer ones: docs/games.md |
+| XMX gone in the games of one Proton after that Proton updated | `install.sh` up to v1.3.2 could miss the update's new `igdext64.dll` when Steam wrote it while the watcher was already running: re-run `install.sh` |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 | 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
 | another GPU or 32-bit games lost Vulkan | older `install.sh` versions listed only the patched 64-bit driver (found by reading the configuration, not seen on a machine): re-run the current one, re-login |
@@ -106,7 +111,8 @@ More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see
 * **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode. Its driver mode
   appears to be a separate component of Intel's Windows driver (`igxell64.dll`, inferred from the disassembly) plus an
   undocumented timing interface; neither exists on Linux. Details in [docs/how-it-works.md](docs/how-it-works.md).
-* Only tested on Xe3. The driver patches are written against Mesa 26.1.2.
+* Tested on Xe3 (Arc B390) and, by a contributor, on Xe2 (Arc B580: Cyberpunk 2077 and Wuthering Waves, super
+  resolution and frame generation). Lunar Lake is untested. The driver patches are written against Mesa 26.1.2.
 * The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
   limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
 * The placeholder shaders use workgroup sizes on three reserved planes (z = 7, 11, 13) and a magic value; the driver
@@ -127,6 +133,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/0001-*.patch          Mesa 26.1.2 ANV: CM kernel injection and run-time compilation
     patches/0002-*.patch          Mesa 26.1.2 ANV: debug tools (captures, kernel selection, see docs/debugging.md)
+    patches/0003-*.patch          Mesa 26.1.2 ANV: Xe2 only, Large GRF Mode around CM kernels (without it the first
+                                  kernel hangs the GPU on Battlemage)
     shim/                         igdext64.dll source: dxvk-igdext plus src/dll/ (D3D12Api.cpp feature answers and
                                   placeholders, GpuInfo.cpp device detection, XellHook.cpp XeLL frame-cap fix,
                                   XellDriver.cpp XeLL driver-mode probe, dyn_dummies.inc / xess_dummies.inc tables)
