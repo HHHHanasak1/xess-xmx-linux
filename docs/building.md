@@ -1,9 +1,9 @@
 # Building from source
 
 The release archive contains two binaries built from this repository: the shim `igdext64.dll` and the patched Mesa
-ANV driver `lib/libvulkan_intel.so`. Kernels are not built ahead of time any more; the driver compiles them on the
-user's machine (see [how-it-works.md](how-it-works.md)). CI (`.github/workflows/build.yml`) builds both binaries on every
-push and keeps them as workflow artifacts. Release binaries are built the same way and then tested on the device.
+ANV driver `lib/libvulkan_intel.so`. The kernels are compiled on the user's machine (see
+[how-it-works.md](how-it-works.md)). CI (`.github/workflows/build.yml`) builds both binaries on every push and keeps
+them as workflow artifacts; the release driver is built with `tools/rebuild-driver.sh` on the device it is tested on.
 
 ## The shim (`igdext64.dll`)
 
@@ -16,12 +16,9 @@ or any shell with the MSVC environment loaded:
     cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build shim/build
 
-The static kernel table (`xess_dummies.inc`, only used with `IGDEXT_STATIC=1`) is compiled in only with
-`-DXMX_STATIC_TABLE=ON`.
-
-The DLL is linked against the static MSVC runtime on purpose (see "Why a static runtime" below) and imports only
-`kernel32`/`advapi32`. `shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for
-releases.
+The DLL is linked against the static MSVC runtime and imports only `kernel32`/`advapi32`: a dynamically linked build
+crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), and XeSS silently fell back to DP4a.
+`shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for releases.
 
 The two placeholder tables are generated, not written by hand (both need `fxc.exe` from the Windows SDK):
 
@@ -29,26 +26,19 @@ The two placeholder tables are generated, not written by hand (both need `fxc.ex
     python tools/gen_all_dummies.py tools/kernel_map_xess_2.0.2.68.txt shim/src/dll/xess_dummies.inc   # static ids
     python tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch          # layout matches the driver
 
-### Why a static runtime
-
-Resident Evil 4's Proton prefix carries an older `msvcp140.dll`. A dynamically linked shim crashed inside `DllMain`
-there, and XeSS silently fell back to DP4a. The only symptom was `igdext64.dll` being loaded and unloaded twice in a
-`PROTON_LOG`, with no trace file.
+The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TABLE=ON`.
 
 ## The driver (`libvulkan_intel.so`)
 
-After a SteamOS update to a new Mesa version, `tools/rebuild-driver.sh` does everything below for the system's
-version: fetch the tag, apply the patches, build (ray tracing enabled), check the result like the session check
-does, and install it into the package (the previous driver is kept as `lib/libvulkan_intel.so.prev`). SteamOS has
-no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
+`tools/rebuild-driver.sh` does everything below for the system's Mesa version, for example after a SteamOS update:
+fetch the tag, apply the patches, build, check the result like the session check does, and install it into the
+package (the previous driver is kept as `lib/libvulkan_intel.so.prev`). If the patches do not apply to the new
+version, nothing is changed and the script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox
+with the Mesa build dependencies:
 
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh
 
-If the patches do not apply to the new version, nothing is changed and the script says so.
-
-The patches apply to Mesa **26.1.2** (tag `mesa-26.1.2`, the version SteamOS ships at the time of writing). The
-driver must match the Mesa version of the system it runs on only loosely (it is a complete Vulkan driver), but the
-patches themselves are written against 26.1.2 and need a rebase for other versions.
+By hand, for Mesa **26.1.2** (the version the patches are written against; other versions need a rebase):
 
     git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
@@ -59,14 +49,13 @@ patches themselves are written against 26.1.2 and need a rebase for other versio
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
 
-`-Dprefix=/usr -Dsysconfdir=/etc` matter even though nothing is installed: the driver reads Mesa's per-game workarounds
-from `<prefix>/share/drirc.d`, and with meson's default `/usr/local` it silently runs without them. Wuthering Waves
-with ray tracing on hangs the GPU within a minute without the vkd3d entries there (same with an unpatched Mesa
-26.1.2 or 26.1.8 built that way; fine with `DRIRC_CONFIGDIR=/usr/share/drirc.d` or the right prefix).
+Two of the options are easy to get wrong:
 
-On SteamOS the release build is made in an Arch Linux distrobox. Keep `spirv-tools` at the version of the host
-(1.4.350.1 on the tested SteamOS build), since a mismatch has been suspected of subtle breakage before (it turned out not to be the
-cause, but there is no reason to risk it).
+* `-Dprefix=/usr -Dsysconfdir=/etc`, even though nothing is installed: the driver reads Mesa's per-game workarounds
+  from `<prefix>/share/drirc.d`, and with meson's default `/usr/local` it runs without them (Wuthering Waves with ray
+  tracing then hangs the GPU within a minute).
+* `-Dintel-rt=enabled`: without it the driver exposes no ray tracing extensions and games hide their ray tracing
+  options.
 
 ### What the patches change
 
@@ -83,28 +72,21 @@ cause, but there is no reason to risk it).
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-`0003` (Xe2 only, contributed in #16): the kernels are compiled with `-doubleGRF` (256 registers). Xe3 sizes the
-register file per shader (`RegistersPerThread`), Xe2 has one engine-wide switch, `STATE_COMPUTE_MODE` Large GRF Mode,
-which nothing else turns on; without it the first CM kernel never finishes and the engine is reset. The patch
-switches the mode on before a CM kernel with more than 128 registers and off before other compute work and at the
-end of each command buffer, only when it changes. It also drops CM dispatches with a zero group count (a no-op by
-the Vulkan specification), on every generation.
+`0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe2 (see how-it-works.md) and drops CM
+dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation.
 
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
 writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
 
-`-Dintel-rt=enabled` matters: without it the driver exposes no ray tracing extensions and games hide their ray
-tracing options (v1.3.1 and earlier were built that way).
-
 ## Kernels ahead of time (optional)
 
-The run-time path makes this unnecessary. It is still possible to build a static kernel set, for example to measure
-the compiler or to avoid the first-launch compile on a machine without network:
+A static kernel set, for example to measure the compiler or to avoid the first-launch compile:
 
 1. Run the game once with `IGDEXT_TRACE=1`. The shim writes `C:\igdext_trace.log` and dumps every kernel as
    `C:\igdext_dump\cs_NNNN_type2.bin` + `cs_NNNN_options.txt` (inside the prefix's `drive_c`).
 2. `tools/s16_map.py <dump dir> map.txt`: the unique kernels with ids.
 3. `tools/build-kernels.sh <dump dir> map.txt kernels/`: compile and pack (variables at the top of the script).
-4. `tools/gen_all_dummies.py map.txt shim/src/dll/xess_dummies.inc`, then rebuild the shim.
+4. `tools/gen_all_dummies.py map.txt shim/src/dll/xess_dummies.inc`, then rebuild the shim with
+   `-DXMX_STATIC_TABLE=ON`.
 5. `tools/check-kernels.py kernels/` must report 0 bad files. Run the game with `IGDEXT_STATIC=1`.
