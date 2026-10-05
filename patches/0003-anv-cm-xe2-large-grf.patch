@@ -1,0 +1,187 @@
+From 9bb1b9d437b421e6fb61a00b202b210141054f49 Mon Sep 17 00:00:00 2001
+From: xess-xmx-linux <xmx@localhost>
+Date: Sun, 4 Oct 2026 17:08:57 -0300
+Subject: [PATCH] anv: enable Large GRF Mode around CM kernels on Xe2
+ (xess-xmx-linux)
+
+The CM kernels are compiled with -doubleGRF (256 registers) and every
+kernel prologue uses r255. Xe3 sizes the register file per shader
+(variable register allocation, RegistersPerThread), but Xe2 has a single
+engine-wide switch, STATE_COMPUTE_MODE Large GRF Mode, which nothing
+enabled. A 256-GRF kernel then runs in 128-GRF mode, touches registers it
+does not own, its threads never retire and the engine hangs (rcs/ccs reset
+after the job timeout). Seen on an Arc B580 with every CM kernel, including
+a trivial one, in Cyberpunk 2077 and Wuthering Waves; the devcoredump
+showed "Large GRF Mode: false".
+
+genX(cmd_buffer_set_cm_large_grf)() switches the mode with an end-of-pipe
+sync and HDC/untyped flush, only when it changes; the last programmed state
+is tracked in anv_cmd_compute_state. It is turned on before CM walkers with
+more than 128 GRF and off before any other compute walker, at the end of
+every command buffer and before executing secondaries, so each command
+buffer starts and ends with it off. Ordinary shaders are correct in Large
+GRF mode (they only lose occupancy), so on is the safe direction.
+
+Toggling once per run of consecutive CM dispatches instead of around each
+one matters: Cyberpunk 2077 benchmark (2560x1440, XeSS SR, measured on
+the Mesa main version of this change) went from 110.0 fps (stall pair per
+dispatch) to 134.3 fps, against 126.0 fps on the DP4a path.
+
+Also skip direct CM walkers with a zero group count in one dimension (XeSS
+dispatches 0x720x1 for one kernel). The Vulkan spec makes such a dispatch a
+no-op; this was not shown to cause the hang and is kept only for spec
+conformance.
+
+Only touches code outside the XMX-DEBUG blocks, so it applies on top of
+0001 alone as well as on 0001 + 0002.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/intel/vulkan/anv_genX.h         |  3 ++
+ src/intel/vulkan/anv_private.h      |  4 +++
+ src/intel/vulkan/genX_cmd_buffer.c  | 12 +++++++
+ src/intel/vulkan/genX_cmd_compute.c | 55 +++++++++++++++++++++++++++++
+ 4 files changed, 74 insertions(+)
+
+diff --git a/src/intel/vulkan/anv_genX.h b/src/intel/vulkan/anv_genX.h
+index 920d479..1cb0f53 100644
+--- a/src/intel/vulkan/anv_genX.h
++++ b/src/intel/vulkan/anv_genX.h
+@@ -380,6 +380,9 @@ genX(batch_set_preemption)(struct anv_batch *batch,
+ void
+ genX(cmd_buffer_set_preemption)(struct anv_cmd_buffer *cmd_buffer, bool value);
+ 
++void
++genX(cmd_buffer_set_cm_large_grf)(struct anv_cmd_buffer *cmd_buffer, bool enable);
++
+ void
+ genX(batch_emit_pipe_control)(struct anv_batch *batch,
+                               const struct intel_device_info *devinfo,
+diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
+index 785a4b4..6205783 100644
+--- a/src/intel/vulkan/anv_private.h
++++ b/src/intel/vulkan/anv_private.h
+@@ -4754,6 +4754,10 @@ struct anv_cmd_compute_state {
+    uint8_t z_pass_async_compute_thread_limit;
+    uint8_t np_z_async_throttle_settings;
+ 
++   /* Xe2: STATE_COMPUTE_MODE Large GRF Mode as last programmed by this command buffer (xess-xmx-linux CM
++    * kernels need it). Every command buffer starts and ends with it off, so 0 = off is the initial state. */
++   bool cm_large_grf;
++
+    /* State tracking for Wa_14026570320. */
+    bool trace_rays_active;
+ };
+diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
+index 27ae6cb..ec460be 100644
+--- a/src/intel/vulkan/genX_cmd_buffer.c
++++ b/src/intel/vulkan/genX_cmd_buffer.c
+@@ -4313,6 +4313,12 @@ end_command_buffer(struct anv_cmd_buffer *cmd_buffer)
+     */
+    genX(apply_task_urb_workaround)(cmd_buffer);
+ 
++   /* Leave STATE_COMPUTE_MODE Large GRF Mode off (CM kernels may have left it on), so the next command
++    * buffer on this context can assume it starts off. */
++#if GFX_VER == 20
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, false);
++#endif
++
+    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+ 
+    if (cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+@@ -4375,6 +4381,12 @@ genX(CmdExecuteCommands)(
+     */
+    genX(cmd_buffer_enable_pma_fix)(container, false);
+ 
++   /* The secondaries likewise assume Large GRF Mode is off when they begin (and they turn it off again
++    * before they end), so the container's tracked state stays valid across them. */
++#if GFX_VER == 20
++   genX(cmd_buffer_set_cm_large_grf)(container, false);
++#endif
++
+    /* Turn on preemption in case it was toggled off. */
+    if (!container->state.gfx.object_preemption)
+       genX(cmd_buffer_set_preemption)(container, true);
+diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
+index 92e07ac..2411adb 100644
+--- a/src/intel/vulkan/genX_cmd_compute.c
++++ b/src/intel/vulkan/genX_cmd_compute.c
+@@ -364,6 +364,38 @@ get_interface_descriptor_data_tables(struct anv_cmd_buffer *cmd_buffer)
+    };
+ }
+ 
++void
++genX(cmd_buffer_set_cm_large_grf)(struct anv_cmd_buffer *cmd_buffer, bool enable)
++{
++#if GFX_VER == 20
++   /* CM kernels (xess-xmx-linux) are compiled with -doubleGRF: 256 registers, and every kernel's prologue
++    * uses r255. Xe3 sizes the register file per shader (variable register allocation), but Xe2 has one
++    * engine-wide switch, STATE_COMPUTE_MODE Large GRF Mode. Without it a 256-GRF kernel runs in 128-GRF
++    * mode, touches registers it does not own, its threads never retire and the engine hangs (seen on a
++    * B580 in every game using the CM path).
++    *
++    * The mode is only switched when it changes, so a run of consecutive CM dispatches (XeSS issues dozens
++    * per frame) pays for one transition instead of two per dispatch. Ordinary shaders are correct in Large
++    * GRF Mode (they only lose occupancy), so the mode is switched back off before the next non-CM compute
++    * walker and at the end of every command buffer, which also lets each command buffer assume it starts
++    * off. The stall on each side is needed because the mode applies to every thread in flight. */
++   if (cmd_buffer->state.compute.cm_large_grf == enable)
++      return;
++
++   anv_add_pending_pipe_bits(cmd_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
++                             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
++                             ANV_PIPE_END_OF_PIPE_SYNC_BIT | ANV_PIPE_HDC_PIPELINE_FLUSH_BIT |
++                             ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT,
++                             enable ? "CM large GRF on" : "CM large GRF off");
++   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
++   anv_batch_emit(&cmd_buffer->batch, GENX(STATE_COMPUTE_MODE), cm) {
++      cm.LargeGRFMode = enable;
++      cm.LargeGRFModeMask = true;
++   }
++   cmd_buffer->state.compute.cm_large_grf = enable;
++#endif
++}
++
+ static void
+ compute_update_async_threads_limit(struct anv_cmd_buffer *cmd_buffer,
+                                    const struct brw_cs_prog_data *prog_data,
+@@ -500,6 +532,9 @@ emit_indirect_compute_walker(struct anv_cmd_buffer *cmd_buffer,
+    const struct intel_cs_dispatch_info dispatch =
+       brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
+ 
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->uses_cm_kernel &&
++                                                 prog_data->base.grf_used > 128);
++
+    uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
+ 
+    uint64_t push_addr64 = anv_address_physical(
+@@ -575,6 +610,26 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
+                  num_wg[0], num_wg[1], num_wg[2], dispatch.threads);
+    }
+ 
++   /* XeSS issues direct dispatches with a zero group count in one dimension (seen in Cyberpunk 2077:
++    * kernel 94a4f8ea with 0x720x1). The Vulkan spec makes such a dispatch a no-op, so drop the walker
++    * instead of handing the hardware a zero ThreadGroupID*Dimension (it was suspected, but not shown,
++    * to be involved in the Xe2 hang that turned out to be Large GRF Mode). Keep the pre/post dispatch
++    * workaround pairing. */
++   if (prog_data->uses_cm_kernel && anv_address_is_null(indirect_addr) &&
++       (num_wg[0] == 0 || num_wg[1] == 0 || num_wg[2] == 0)) {
++      if (anv_cm_env()->trace)
++         fprintf(stderr, "ANV CM: skipping empty dispatch kernel %u,%u,%u groups %u,%u,%u\n",
++                 prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
++                 num_wg[0], num_wg[1], num_wg[2]);
++      cmd_buffer_post_dispatch_wa(cmd_buffer);
++      return;
++   }
++
++   /* Large GRF Mode on for 256-GRF CM kernels, off again for everything else (see
++    * genX(cmd_buffer_set_cm_large_grf)); a no-op unless the mode actually changes. */
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->uses_cm_kernel &&
++                                                 prog_data->base.grf_used > 128);
++
+    uint32_t num_workgroup_data[3];
+    if (!anv_address_is_null(indirect_addr)) {
+       uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
+-- 
+2.56.0
+
