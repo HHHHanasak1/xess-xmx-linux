@@ -2,18 +2,19 @@
 
 ## Symptoms
 
-| What you see | Likely cause | Check |
+| What you see | Cause | What to do |
 |---|---|---|
-| Image looks like the DP4a path (softer, no change after enabling) | The shim is not loaded (Proton replaced it, new prefix) | `IGDEXT_TRACE=1` produces no `C:\igdext_trace.log` in the prefix; re-run `install.sh` |
-| Patches of white noise or black areas in the XeSS output | A kernel ran as a no-op (compile failed or missing) | `~/.cache/xess-xmx/compile.log`, `drive_c/igdext_kernels/compile_failed.txt`; the next launch falls back to DP4a by itself |
-| XeSS is back to DP4a after a failed compile | Intended fallback after `compile_failed.txt` was written | the driver retries once at the next launch; after a second failure only a graphics component update, a game update, deleting `drive_c/igdext_kernels/compile_failed.txt` or running `install.sh` start another attempt; a missing compiler: `tools/get-igc.sh` |
-| XeSS is DP4a and the trace says `fallback: self-test failed` | the shim's self-test placeholder was not recognised in this game process: the stock driver is in use (session check fell back, the variables did not reach the game) or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; `drive_c/igdext_kernels/anv_canary` is written by the patched driver when it sees the test |
-| XMX gone after a system update, `driver-status` says FAILED | the patched driver cannot be loaded any more (library dependencies changed); the session check switched to the stock drivers | update the package / rebuild the driver; `journalctl --user -u xess-xmx-check` |
-| Generated frames are black, flicker between black and image | XeFG got the Xe-HPG kernel variant (only with `IGDEXT_OPTIONS2_FG=0,...`) | remove the override |
-| 30 fps with frame generation until you open and close the pause menu (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
-| The first launch hangs for a minute or two at XeSS initialisation | Every kernel is compiled once (about 1 s each) | `ANV CM: compiling kernel` lines in the game's stderr; only once per machine and XeSS version |
-| Another GPU (NVIDIA / AMD) disappeared from Vulkan | an old `install.sh` wrote only the Intel driver into `VK_DRIVER_FILES` | re-run the current `install.sh`, re-login |
-| 32-bit Vulkan games fail to start | same (the old `install.sh` left the 32-bit Intel driver out) | same |
+| Looks like the DP4a path; `IGDEXT_TRACE=1` writes no `C:\igdext_trace.log` | The shim is not loaded (new prefix, Proton replaced it) | re-run `install.sh` |
+| DP4a and often no XeSS frame generation option; no trace file; the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | The game ships XeSS older than 2.0.2.68, and DXVK then reports the GPU as an AMD one | replace the game's XeSS libraries: [games.md](games.md) |
+| Super resolution on DP4a while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU | `install.sh` / `enable.sh` set `force_vk_vendor=0` (re-run them after an update). By hand: `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
+| DP4a, the trace says `fallback: self-test failed` | The patched driver is not active in the game process (session check fell back, variables missing), or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; the patched driver writes `drive_c/igdext_kernels/anv_canary` when it sees the test |
+| Patches of white noise or black areas in the XeSS output | A kernel failed to compile in this launch and ran as a no-op | `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh`. The next launch retries |
+| DP4a after a failed compile | Intended: `drive_c/igdext_kernels/compile_failed.txt` exists | the driver retries once at the next launch; after a second failure only a graphics component update, a game update, deleting the marker or running `install.sh` start another attempt |
+| XMX gone after a system update, `driver-status` says FAILED | The patched driver cannot be loaded any more; the session check switched to the stock drivers | `tools/rebuild-driver.sh` ([building.md](building.md)); `journalctl --user -u xess-xmx-check` |
+| Generated frames are black or flicker between black and image | XeFG got the Xe-HPG kernel variant (only with `IGDEXT_OPTIONS2_FG=0,...`) | remove the override |
+| 30 fps with frame generation until the pause menu is opened and closed (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
+| The first launch hangs for a minute or two at XeSS initialisation | Every kernel is compiled once | `ANV CM: compiling kernel` lines in the game's stderr |
+| After updating from an older release: no image or a GPU hang with ray tracing; another GPU or 32-bit games without Vulkan; XMX gone in the games of one Proton after it updated | Bugs of older releases, fixed since | install the current release, run `install.sh`, re-login |
 
 ## Logs
 
@@ -25,9 +26,8 @@
   `xellSleep` timing, XeLL's own messages).
 * Driver: `ANV_CM_DEBUG=1` logs each placeholder and injection to the game's stderr; `ANV_CM_TRACE=1` logs every
   dispatch (`ANV CM: walker kernel x,y,z ...`), `=2` also the surface states. To get the game's stderr, put
-  `exec 2>>/some/file` into the launch wrapper's config.
-* Compiler: `~/.cache/xess-xmx/compile.log` (`CM_LOG` overrides; inside the Steam runtime container `$XDG_RUNTIME_DIR`
-  is private, so the log lives in the cache folder).
+  `exec 2>>/some/file` into the launch wrapper's config, or use `PROTON_LOG=1`.
+* Compiler: `~/.cache/xess-xmx/compile.log` (`CM_LOG` overrides).
 * Session check: `~/.cache/xess-xmx/driver-status`, `journalctl --user -u xess-xmx-check`.
 
 Counting dispatches per kernel from a `ANV_CM_TRACE=1` log shows what runs every frame:
@@ -62,7 +62,7 @@ Driver (patch 0001):
 | `ANV_CM_SPV_DIR` | where the shim's SPIR-V is (default `$WINEPREFIX/drive_c/igdext_kernels`) |
 | `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | logs (above) |
 
-Driver debug tools (patch 0002, not in release builds unless noted):
+Driver debug tools (patch 0002; the release driver includes it):
 
 | Variable | Effect |
 |---|---|
@@ -73,5 +73,3 @@ Driver debug tools (patch 0002, not in release builds unless noted):
 | `ANV_CM_ONLY="x,y ..."`, `ANV_CM_SKIP="x,y ..."` | inject only / never these kernels |
 | `ANV_CM_SYNC=1` | full flush and stall around every kernel dispatch |
 | `ANV_CM_MAXGROUPS=<n>`, `ANV_CM_PREEMPT=0\|1` | clamp the dispatch size / force thread preemption |
-
-The release driver is built with both patches, so every switch above is available.

@@ -9,11 +9,9 @@ vkd3d-proton:
 * a patched Mesa **ANV** Vulkan driver compiles those kernels with Intel's compiler (IGC) on first use and runs them in
   place of the placeholders, inside the normal vkd3d-proton queue.
 
-Developed and tested on an ONEXPLAYER 3 (Intel Core Ultra "Panther Lake", Arc B390, Xe3) with SteamOS, Mesa 26.1.2 and
-GE-Proton 11-6 / Proton Experimental. XeSS super resolution renders correctly and is temporally stable; frame
-generation runs at 2x/3x/4x with its network on XMX as well. Without the Intel extension (stock Proton, or this
-project's fallback) XeSS runs its DP4a super resolution and a generic frame generation that is limited to 2x; with it,
-the game's 3x/4x multi-frame generation works (see "Performance").
+Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 and GE-Proton 11-6 / Proton Experimental.
+Super resolution renders correctly and is temporally stable; frame generation runs at 2x/3x/4x on XMX as well
+(without the Intel extension, XeSS frame generation is limited to 2x).
 
 ## Install
 
@@ -22,31 +20,25 @@ Download the release archive, unpack it somewhere it can stay, and run:
     ./install.sh     # once; fetches the compiler bundle (about 230 MB), then reboot or log out and in
     ./uninstall.sh   # reverts everything
 
-That is all: every game started from Steam afterwards uses the patched driver, no launch options needed. In the game,
-select XeSS (and XeSS frame generation) on its **DX12** renderer. The first launch of a game (more exactly: of an XeSS
-version) compiles its kernels, a minute or two once; after that they come from `~/.cache/xess-xmx`.
+Every game started from Steam afterwards uses the patched driver, no launch options needed. In the game, select XeSS
+(and XeSS frame generation) on its **DX12** renderer. The first launch compiles the game's kernels, a minute or two
+once; after that they come from `~/.cache/xess-xmx`.
 
 What `install.sh` does:
 
-* writes `~/.config/environment.d/50-xess-xmx.conf`: the patched driver as the 64-bit Intel Vulkan driver (every other
-  driver, including other GPUs and the 32-bit Intel driver, stays in the list), the kernel compiler, and
-  `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`, which the kernel binding code needs (it applies to every D3D12
-  game of the session; see "Performance" below), and `force_vk_vendor=0` (Mesa has per-game profiles that hide the
-  Intel vendor id, which keeps XeSS super resolution on DP4a in those games; see "Troubleshooting");
-* puts the shim into every Proton that bundles an `igdext64.dll` (Proton Experimental copies it into each prefix at
-  launch) and into every existing prefix, keeping the original as `.stock`;
-* enables a user path unit that puts the shim back after a Proton update and into the prefix of a game started for
-  the first time;
-* enables `xess-xmx-check.service`, which loads the patched driver and lets `vulkaninfo` find the GPU through it
-  before every graphical session. If a system update broke it (library dependencies, kernel driver), the session is
-  pointed back to the stock drivers: everything keeps working, XeSS runs as DP4a (instead of the whole session losing
-  the Intel GPU). Result in `~/.cache/xess-xmx/driver-status`, which also notes when the system's Mesa version differs
-  from the patched driver's; `tools/rebuild-driver.sh` then rebuilds it for the new version.
+* writes `~/.config/environment.d/50-xess-xmx.conf`:
+  - the patched driver as the 64-bit Intel Vulkan driver (other GPUs' drivers and the 32-bit Intel driver stay in the
+    list) and the kernel compiler;
+  - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`, which the kernel binding code needs (it applies to every D3D12
+    game of the session);
+  - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
+* puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
+  `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
+* enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
+  the GPU. If a system update broke it, the session uses the stock drivers and XeSS runs as DP4a;
+  `~/.cache/xess-xmx/driver-status` says so, and `tools/rebuild-driver.sh` rebuilds the driver for the new Mesa version.
 
-(XeSS would also accept the shim's folder through
-`INTC_ALT_DRIVER_EXTENSIONS_PATH`, which would make the per-prefix copies unnecessary, but GE-Proton sets that variable
-to `C:\Windows\System32` for every game, so the copies stay.) It supports the native Steam client (SteamOS, distribution packages);
-Flatpak Steam is not supported (its sandbox sees neither the environment file nor the package folder).
+Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 
 **Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
 launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
@@ -54,13 +46,10 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 ### Requirements
 
-* Intel Xe3 (Panther Lake, Arc B390: tested) or Xe2 (Battlemage, Arc B580: tested by a contributor, #16; Lunar Lake:
-  untested) on the `xe` or `i915`
-  kernel driver. Xe-HPG (Alchemist) and Xe-LPG are detected and get the answers a Windows driver would give, but
-  nothing about them has been tested.
-* The driver in the archive is Mesa 26.1.2 with the patches (ray tracing enabled, like the stock driver); it replaces
-  the system's 64-bit ANV only for the user session. For another Mesa version, `tools/rebuild-driver.sh` rebuilds it
-  (see [docs/building.md](docs/building.md)).
+* Intel Xe3 (Panther Lake; tested on an Arc B390) or Xe2 (Battlemage; tested by a contributor on an Arc B580, #16) on
+  the `xe` or `i915` kernel driver. Lunar Lake is untested; Xe-HPG (Alchemist) and Xe-LPG are detected but untested.
+* The driver in the archive is Mesa 26.1.2 with the patches; it replaces the system's 64-bit ANV for the user session
+  only. For another Mesa version see [docs/building.md](docs/building.md).
 * vkd3d-proton as in Proton 11 / GE-Proton 11.
 
 ## Games
@@ -72,55 +61,36 @@ See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (
 
 | Symptom | Cause / fix |
 |---|---|
-| looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` (new prefix, Proton update without the watcher) |
-| noise or black patches in the image | a kernel failed to compile; the next launch retries once and uses the generic paths if it fails again. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
-| XMX gone after a SteamOS update, game mode otherwise fine | the patched driver no longer works on the updated system: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` in a distrobox (see docs/building.md) |
-| looks like DP4a, trace says `fallback: self-test failed` | the patched driver is not active in the game (session check fell back, variables missing) or no longer recognises the placeholders: `IGDEXT_TRACE=1`, docs/debugging.md |
-| no image / GPU hang with ray tracing on (Wuthering Waves) | drivers up to v1.3.1 were built with the wrong install prefix and ran every game without Mesa's per-game workarounds (`/usr/share/drirc.d`); fixed in v1.3.2. A self-built driver: rebuild with `tools/rebuild-driver.sh`. `~/.cache/xess-xmx/driver-status` notes a driver that does not read them |
-| XeSS super resolution stays on DP4a in one game while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...; Cyberpunk 2077 from Mesa 26.3) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU and `libxess.dll` never asks for the Intel extension. Releases after v1.3.2 set `force_vk_vendor=0` for the session (re-run `install.sh` / `enable.sh`); by hand: launch options `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
-| DP4a and no XeSS frame generation option in a game, the shim's trace stays empty, the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | the game ships XeSS older than 2.0.2.68 and DXVK then reports the GPU as an AMD one. Replace the game's XeSS libraries with newer ones: docs/games.md |
-| XMX gone in the games of one Proton after that Proton updated | `install.sh` up to v1.3.2 could miss the update's new `igdext64.dll` when Steam wrote it while the watcher was already running: re-run `install.sh` |
+| looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` |
+| DP4a in one game only, or no XeSS frame generation option | the game sees no Intel GPU (a Mesa game profile, or DXVK with XeSS older than 2.0.2.68): docs/debugging.md |
+| noise or black patches in the image | a kernel failed to compile; the next launch retries once and then uses XeSS' generic paths. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
+| XMX gone after a SteamOS update | the patched driver no longer loads: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` (docs/building.md) |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
-| 30 fps with FG until the pause menu (Wuthering Waves) | the game's XeLL cap; fixed by the shim |
-| another GPU or 32-bit games lost Vulkan | older `install.sh` versions listed only the patched 64-bit driver (found by reading the configuration, not seen on a machine): re-run the current one, re-login |
 
-More in [docs/debugging.md](docs/debugging.md) (logs, trace switches, how to see which kernels run).
+The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md).
 
 ## Performance
 
-* Wuthering Waves, Arc B390 at 22 W, frame generation set to 4x in the game, same driver and scene, alternating runs:
-  - XMX path: the game gets its 4x (3 generated frames per real frame): 22.4 / 23.2 real fps, about 90 displayed.
-  - generic path (`IGDEXT_FORCE_FALLBACK=1`, what stock Proton gets): XeSS frame generation falls back to 2x
-    (1 generated frame): 26.5 / 26.8 real fps, about 53 displayed.
-  The real frame rate and latency are not comparable across these two runs (different numbers of generated frames);
-  a same-multiplier comparison (both at 2x) has not been made.
-* XMX vs DP4a super resolution alone: not measured with an uncapped frame rate. The only numbers (September 2026, a
-  30 fps cap, GPU 94-95 % busy either way) show nothing beyond both being close to GPU-bound.
-* Image quality: not measured objectively. The XMX network is Intel's higher-quality model; the one metric taken here
-  (stray pixels in a fast camera pan) came out about equal for XMX and DP4a.
-* `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` (needed by the kernel binding code, set for the whole session by
-  `install.sh`): no reliable measurement yet. The Wuthering Waves numbers were taken on the title screen with a 30 fps
-  cap; the Forza Horizon 6 runs (43.7 / 41.2 fps disabled, 43.8 / 40.2 fps enabled) switched the variable through
-  Proton's `user_settings.py` without checking that the game process received it.
-* Kernel compile: about 0.2 s per kernel on an idle system, 0.3 s while a game loads; Wuthering Waves' 90 kernels
-  took 65-70 s in total, once per machine and XeSS version (31 s of that is the compiler itself; the rest was not
-  broken down).
+* Wuthering Waves, Arc B390 at 22 W, frame generation set to 4x in the game, same scene, alternating runs:
+  - XMX path: the game gets its 4x (3 generated frames per real frame): 22.4 / 23.2 real fps, about 90 displayed;
+  - generic path (`IGDEXT_FORCE_FALLBACK=1`, what stock Proton gets): frame generation falls back to 2x:
+    26.5 / 26.8 real fps, about 53 displayed.
+
+  The two runs generate different numbers of frames, so their real frame rates and latency are not comparable.
+* Not measured yet: XMX against DP4a super resolution alone, frame generation at the same multiplier on both paths,
+  image quality, and the cost of disabling `VK_EXT_descriptor_buffer`.
+* Kernel compile: Wuthering Waves' 90 kernels take 65-70 s in total, once per machine and XeSS version.
 
 ## Known limitations
 
-* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode. Its driver mode
-  appears to be a separate component of Intel's Windows driver (`igxell64.dll`, inferred from the disassembly) plus an
-  undocumented timing interface; neither exists on Linux. Details in [docs/how-it-works.md](docs/how-it-works.md).
-* Tested on Xe3 (Arc B390) and, by a contributor, on Xe2 (Arc B580: Cyberpunk 2077 and Wuthering Waves, super
-  resolution and frame generation). Lunar Lake is untested. The driver patches are written against Mesa 26.1.2.
+* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode; its driver mode needs
+  a component of Intel's Windows driver. Details in [docs/how-it-works.md](docs/how-it-works.md).
 * The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
   limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
-* The placeholder shaders use workgroup sizes on three reserved planes (z = 7, 11, 13) and a magic value; the driver
-  checks both, so a game shader is never replaced, but the check depends on vkd3d-proton compiling the placeholder
-  to a store of that constant.
-* The binding-table code relies on vkd3d-proton's descriptor heap layout (a mutable-type set with a large array, table
-  offsets at the end of the push constants). If a vkd3d-proton update changes that, the driver logs
-  `no vkd3d-style descriptor heap` and the kernels do nothing.
+* The driver patches are written against Mesa 26.1.2 and rely on vkd3d-proton internals: how it compiles the
+  placeholder shaders and how it lays out its descriptor heap. If a vkd3d-proton update changes the first, the
+  self-test turns the XMX path off; if it changes the second, the driver logs `no vkd3d-style descriptor heap` and the
+  kernels do nothing.
 
 ## How it works
 
@@ -131,17 +101,16 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
 
     install.sh, uninstall.sh      system-wide install / removal
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
-    patches/0001-*.patch          Mesa 26.1.2 ANV: CM kernel injection and run-time compilation
-    patches/0002-*.patch          Mesa 26.1.2 ANV: debug tools (captures, kernel selection, see docs/debugging.md)
-    patches/0003-*.patch          Mesa 26.1.2 ANV: Xe2 only, Large GRF Mode around CM kernels (without it the first
-                                  kernel hangs the GPU on Battlemage)
-    shim/                         igdext64.dll source: dxvk-igdext plus src/dll/ (D3D12Api.cpp feature answers and
-                                  placeholders, GpuInfo.cpp device detection, XellHook.cpp XeLL frame-cap fix,
-                                  XellDriver.cpp XeLL driver-mode probe, dyn_dummies.inc / xess_dummies.inc tables)
+    patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
+                                  0003 Large GRF Mode for Xe2
+    shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
+    tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
+    tools/session-check.sh        the driver check run before each session
     tools/cmk_pack.py             zebin -> .cmk packer;  tools/check-kernels.py validates a kernel folder
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check
+    tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
     docs/                         how it works, building, debugging, games
     .github/workflows/build.yml   CI: builds the shim and the driver, checks the scripts
