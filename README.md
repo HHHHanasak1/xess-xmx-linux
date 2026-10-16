@@ -10,9 +10,8 @@ vkd3d-proton:
   place of the placeholders, inside the normal vkd3d-proton queue.
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
-Experimental.
-Super resolution renders correctly and is temporally stable; frame generation runs at 2x/3x/4x on XMX as well
-(without the Intel extension, XeSS frame generation is limited to 2x).
+Experimental. Super resolution renders correctly and is temporally stable; frame generation runs at 2x/3x/4x on XMX
+as well (without the Intel extension, XeSS frame generation is limited to 2x).
 
 ## Install
 
@@ -36,8 +35,9 @@ What `install.sh` does:
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
   `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
 * enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
-  the GPU. If a system update broke it, the session uses the stock drivers and XeSS runs as DP4a;
-  `~/.cache/xess-xmx/driver-status` says so, and `tools/rebuild-driver.sh` rebuilds the driver for the new Mesa version.
+  the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
+  uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
+  `tools/rebuild-driver.sh` rebuilds a driver for the new Mesa version.
 
 Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 
@@ -99,15 +99,8 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
   | Cyberpunk 2077 | 61-62 fps | 91-96 fps |
 
   #19 has a Final Fantasy VII Rebirth comparison (about +15%, half of it from Jay).
-* Wuthering Waves, Arc B390 at 22 W, frame generation set to 4x in the game, same scene, alternating runs:
-  - XMX path: the game gets its 4x (3 generated frames per real frame): 22.4 / 23.2 real fps, about 90 displayed;
-  - generic path (`IGDEXT_FORCE_FALLBACK=1`, what stock Proton gets): frame generation falls back to 2x:
-    26.5 / 26.8 real fps, about 53 displayed.
-
-  The two runs generate different numbers of frames, so their real frame rates and latency are not comparable.
-* Not measured yet: XMX against DP4a super resolution alone, frame generation at the same multiplier on both paths,
-  image quality, and the cost of disabling `VK_EXT_descriptor_buffer`.
-* Kernel compile: Wuthering Waves' 90 kernels take 65-70 s in total, once per machine and XeSS version.
+* Not measured yet: XMX against DP4a super resolution alone, image quality, and the cost of disabling
+  `VK_EXT_descriptor_buffer`.
 
 ## Known limitations
 
@@ -143,10 +136,10 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
     docs/                         how it works, building, debugging, games
-    .github/workflows/build.yml   CI: builds the shim and the driver, checks the scripts
+    .github/workflows/build.yml   CI: builds the shim, the ICD and both drivers, checks the scripts
 
-The release archive holds the two binaries (`igdext64.dll`, `lib/libvulkan_intel.so`) and the scripts. It contains no
-Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, the drivers in `lib/mesa-<version>/`, the ICD
+`lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
 
 ## License
 
