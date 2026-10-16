@@ -53,7 +53,7 @@ Shim (game environment):
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
 | `IGDEXT_XELL_PROBE=<version>` | experimental: claim XeLL driver-mode support and log XeLL's use of it (see how-it-works.md) |
 
-Driver choice: `XMX_MESA=<version>` (a prefix such as `26.1` is enough) makes a game use that driver of the package
+Driver choice: `MESA=<version>` (a prefix such as `26.1` is enough) makes a game use that driver of the package
 instead of the default; the game's stderr then says `xess-xmx: using the Mesa ... driver`.
 
 Driver (patch 0001):

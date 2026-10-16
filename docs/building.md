@@ -32,7 +32,7 @@ The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TAB
 
 The package carries one patched driver per Mesa version in `lib/mesa-<version>/`. `lib/libvulkan_intel.so`, the
 file the session's Vulkan driver list points at, is a small ICD built from `icd/xmx-icd.c` that loads one of them
-(`XMX_MESA`, else the version in `lib/active`, else any that loads) and passes the loader its three entry points:
+(`MESA`, else the version in `lib/active`, else any that loads) and passes the loader its three entry points:
 
     gcc -O2 -shared -fPIC -fvisibility=hidden -o lib/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
 

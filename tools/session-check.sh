@@ -63,7 +63,7 @@ rc=$?
 # 2. instance + device enumeration through the loader, with nothing but the patched driver
 ours=""
 if command -v vulkaninfo >/dev/null 2>&1; then
-  out=$(XMX_MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
+  out=$(MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
   ours=$(printf '%s\n' "$out" | grep -m1 "driverInfo" | sed 's/.*= *//')
   printf '%s\n' "$out" | grep -q "deviceName" || fail "vulkaninfo found no device ($(printf '%s' "$out" | grep -i -m1 "error" | cut -c1-120))"
 fi

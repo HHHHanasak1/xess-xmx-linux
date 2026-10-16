@@ -1,6 +1,6 @@
 /* xmx-icd.c - lib/libvulkan_intel.so of the package: a Vulkan ICD that loads one of the package's patched drivers
  * (lib/mesa-<version>/libvulkan_intel.so) and hands the loader its three entry points.
- * Which one: XMX_MESA=<version or prefix> in the process' environment (a game's launch options: XMX_MESA=26.1 %command%),
+ * Which one: MESA=<version or prefix> in the process' environment (a game's launch options: MESA=26.1 %command%),
  * else the version named in lib/active (tools/switch-driver.sh), else any. A driver that does not load is skipped.
  * A prefix picks the exact version if there is one, else a final release before a release candidate, else the newest.
  * Build: gcc -O2 -shared -fPIC -fvisibility=hidden -o libvulkan_intel.so xmx-icd.c -ldl -lpthread */
@@ -78,7 +78,7 @@ static void load(void)
 {
    Dl_info info;
    char self[PATH_MAX], libdir[PATH_MAX], active[256] = "", v[256], tried[256] = "";
-   const char *want = getenv("XMX_MESA");
+   const char *want = getenv("MESA");
    void *h = NULL;
    FILE *f;
 
@@ -92,7 +92,7 @@ static void load(void)
          h = open_version(libdir, v);
          snprintf(tried, sizeof(tried), "%s", v);
       } else {
-         fprintf(stderr, "xess-xmx: XMX_MESA=%s: no such driver in %s, using the default\n", want, libdir);
+         fprintf(stderr, "xess-xmx: MESA=%s: no such driver in %s, using the default\n", want, libdir);
       }
    }
    if (!h) {
