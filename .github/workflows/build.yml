@@ -21,10 +21,26 @@ jobs:
       - name: python syntax
         run: python3 -m py_compile tools/*.py
       - name: placeholder id layout matches the driver
-        run: python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
+        run: |
+          python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
+          python3 tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
       - name: debug tools stay out of the feature patch
         run: |
-          ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch
+          ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
+
+  icd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          mkdir -p out
+          gcc -O2 -Wall -shared -fPIC -fvisibility=hidden -o out/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
+          nm -D --defined-only out/libvulkan_intel.so | grep -c ' vk_icd' | grep -qx 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xmx-icd
+          path: out/libvulkan_intel.so
 
   shim:
     runs-on: windows-latest
@@ -45,9 +61,22 @@ jobs:
   mesa:
     runs-on: ubuntu-latest
     container: archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 26.1.2
+            mesa_ref: mesa-26.1.2
+            patches: patches
+            arch_snapshot: 2026/09/20
+          - name: 26.3.0-rc1
+            mesa_ref: mesa-26.3.0-rc1
+            patches: patches/mesa-26.3
+            arch_snapshot: 2026/10/14
     env:
-      MESA_TAG: mesa-26.1.2
-      ARCH_SNAPSHOT: 2026/09/20      # spirv-tools 1.4.350.1 as on the tested SteamOS build
+      MESA_REF: ${{ matrix.mesa_ref }}
+      PATCHES: ${{ matrix.patches }}
+      ARCH_SNAPSHOT: ${{ matrix.arch_snapshot }}
     steps:
       - name: toolchain (Arch Linux Archive snapshot, so every build uses the same package versions)
         run: |
@@ -57,11 +86,14 @@ jobs:
             wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf
       - uses: actions/checkout@v4
       - name: mesa source
-        run: git clone --depth 1 --branch "$MESA_TAG" https://gitlab.freedesktop.org/mesa/mesa.git mesa
+        run: |
+          git init -q mesa
+          git -C mesa fetch --depth 1 https://gitlab.freedesktop.org/mesa/mesa.git "$MESA_REF"
+          git -C mesa checkout -q FETCH_HEAD
       - name: apply patches
         run: |
           cd mesa
-          git -c user.name=ci -c user.email=ci@localhost am ../patches/0001-*.patch ../patches/0002-*.patch ../patches/0003-*.patch
+          git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0001-*.patch ../$PATCHES/0002-*.patch ../$PATCHES/0003-*.patch
       - name: configure
         run: |
           cd mesa
@@ -79,5 +111,5 @@ jobs:
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
       - uses: actions/upload-artifact@v4
         with:
-          name: libvulkan_intel
+          name: ${{ matrix.name == '26.1.2' && 'libvulkan_intel' || format('libvulkan_intel-{0}', matrix.name) }}
           path: mesa/build/src/intel/vulkan/libvulkan_intel.so

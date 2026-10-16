@@ -8,17 +8,34 @@
 #   2. lets vulkaninfo create an instance and enumerate the GPU with only the patched driver,
 # (plus two reports that change nothing: Mesa version against the system's, and whether the driver reads the system's
 # per-game workarounds in /usr/share/drirc.d) and if either of the first two fails points the session back to the stock drivers (games still run; the shim's self-test then makes
-# XeSS use DP4a). A Mesa version that differs from the system's is only reported (the patched driver is a complete
-# driver; rebuild it with tools/rebuild-driver.sh when convenient).
+# XeSS use DP4a) - unless another driver of the package (lib/mesa-<version>/) passes; that one is then activated.
+# A Mesa version that differs from the system's is only reported (the patched driver is a complete driver).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
 # Environment: XMX_CHECK_LIB / XMX_CHECK_ICD override the library / ICD file to test (tests only).
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
-LIB="${XMX_CHECK_LIB:-$PKG/lib/libvulkan_intel.so}"
+# the default driver (lib/libvulkan_intel.so only forwards to the one lib/active names)
+LIB="${XMX_CHECK_LIB:-$PKG/lib/mesa-$(cat "$PKG/lib/active" 2>/dev/null)/libvulkan_intel.so}"
+[ -f "$LIB" ] || LIB="$PKG/lib/libvulkan_intel.so"
 ICD="${XMX_CHECK_ICD:-$PKG/run/intel_icd.json}"
 STATUS="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status"
 mkdir -p "$(dirname "$STATUS")"
 
 fail() { # <reason>
+  # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers
+  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+    local d v
+    for d in "$PKG"/lib/mesa-*/; do
+      [ -f "$d/libvulkan_intel.so" ] || continue
+      cmp -s "$d/libvulkan_intel.so" "$LIB" && continue
+      v=$(basename "$d"); v=${v#mesa-}
+      if bash "$PKG/tools/switch-driver.sh" "$v" >/dev/null 2>&1; then
+        echo "patched ANV unusable ($1) - switched to the package's Mesa $v driver" >&2
+        printf '%s (the previous driver failed: %s; switched to Mesa %s)\n' "$(head -1 "$STATUS")" "$1" "$v" > "$STATUS.new" &&
+          mv -f "$STATUS.new" "$STATUS"
+        exit 0
+      fi
+    done
+  fi
   echo "FAILED $(date '+%F %T') $LIB: $1" > "$STATUS"
   echo "patched ANV unusable ($1) - using the stock Intel driver for this session (XeSS runs as DP4a)" >&2
   echo "fix: update the package or rebuild the driver (tools/rebuild-driver.sh); see docs/debugging.md" >&2
@@ -41,12 +58,12 @@ ctypes.CDLL(sys.argv[1], mode=ctypes.RTLD_LOCAL)   # CPython dlopens with RTLD_N
 EOF
 )
 rc=$?
-[ $rc -eq 0 ] || fail "$(printf '%s' "$err" | tail -1)"
+[ $rc -eq 0 ] || { err=$(printf '%s' "$err" | tail -1); fail "${err:-cannot be loaded (exit $rc)}"; }
 
 # 2. instance + device enumeration through the loader, with nothing but the patched driver
 ours=""
 if command -v vulkaninfo >/dev/null 2>&1; then
-  out=$(VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
+  out=$(MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
   ours=$(printf '%s\n' "$out" | grep -m1 "driverInfo" | sed 's/.*= *//')
   printf '%s\n' "$out" | grep -q "deviceName" || fail "vulkaninfo found no device ($(printf '%s' "$out" | grep -i -m1 "error" | cut -c1-120))"
 fi
@@ -57,7 +74,7 @@ if [ -n "$ours" ] && command -v vulkaninfo >/dev/null 2>&1; then
   sys=$(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>/dev/null \
         | grep -m1 "driverInfo" | sed 's/.*= *//')
   v_ours=$(printf '%s' "$ours" | grep -o 'Mesa [0-9.]*'); v_sys=$(printf '%s' "$sys" | grep -o 'Mesa [0-9.]*')
-  [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the patched driver is $v_ours - rebuild with tools/rebuild-driver.sh)"
+  [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the patched driver is $v_ours)"
 fi
 # 4. per-game workarounds: a driver built with meson's default /usr/local prefix never reads /usr/share/drirc.d
 #    (report only; e.g. Wuthering Waves with ray tracing hangs the GPU without them)
