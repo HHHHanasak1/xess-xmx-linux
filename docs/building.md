@@ -49,6 +49,10 @@ By hand, for Mesa **26.1.2** (the version the patches are written against; other
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
 
+For Mesa main (26.3-devel, where the Jay compiler is the default on Xe2+), use `patches/mesa-main/` instead. It is
+rebased onto commit `e793bd0fa9580da35def95a47d265fee225c023d`; fetch that commit instead of the tag, then apply the
+same three patches with the same meson options.
+
 Two of the options are easy to get wrong:
 
 * `-Dprefix=/usr -Dsysconfdir=/etc`, even though nothing is installed: the driver reads Mesa's per-game workarounds
