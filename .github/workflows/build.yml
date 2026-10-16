@@ -23,10 +23,10 @@ jobs:
       - name: placeholder id layout matches the driver
         run: |
           python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
-          python3 tools/check_dyn_ids.py patches/mesa-main/0001-anv-cm-kernel-injection.patch
+          python3 tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
       - name: debug tools stay out of the feature patch
         run: |
-          ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-main/0001-anv-cm-kernel-injection.patch
+          ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
   shim:
     runs-on: windows-latest
@@ -55,9 +55,9 @@ jobs:
             mesa_ref: mesa-26.1.2
             patches: patches
             arch_snapshot: 2026/09/20
-          - name: main
-            mesa_ref: e793bd0fa9580da35def95a47d265fee225c023d
-            patches: patches/mesa-main
+          - name: 26.3.0-rc1
+            mesa_ref: mesa-26.3.0-rc1
+            patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
     env:
       MESA_REF: ${{ matrix.mesa_ref }}

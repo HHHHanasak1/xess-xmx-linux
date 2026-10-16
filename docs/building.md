@@ -31,12 +31,13 @@ The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TAB
 ## The driver (`libvulkan_intel.so`)
 
 `tools/rebuild-driver.sh` does everything below for the system's Mesa version, for example after a SteamOS update:
-fetch the tag, apply the patches, build, check the result like the session check does, and install it into the
-package (the previous driver is kept as `lib/libvulkan_intel.so.prev`). If the patches do not apply to the new
-version, nothing is changed and the script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox
-with the Mesa build dependencies:
+fetch the tag, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise), build, check the result like
+the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so` and make it the active driver
+(`tools/switch-driver.sh`, see the README). If the patches do not apply to the new version, nothing is changed and the
+script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
-    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh
+    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
+    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc1  # or a given one
 
 By hand, for Mesa **26.1.2** (the version the patches are written against; other versions need a rebase):
 
@@ -49,9 +50,10 @@ By hand, for Mesa **26.1.2** (the version the patches are written against; other
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
 
-For Mesa main (26.3-devel, where the Jay compiler is the default on Xe2+), use `patches/mesa-main/` instead. It is
-rebased onto commit `e793bd0fa9580da35def95a47d265fee225c023d`; fetch that commit instead of the tag, then apply the
-same three patches with the same meson options.
+For Mesa 26.3 (where the Jay compiler is the default on Xe2 and Xe3), use `patches/mesa-26.3/` (contributed in #19)
+with the tag `mesa-26.3.0-rc1` and the same meson options. The kernel injection does not depend on the compiler: the
+placeholder is replaced before the Jay/brw branch. `INTEL_DEBUG=no-jay` in a game's environment switches that game's
+own shaders back to brw.
 
 Two of the options are easy to get wrong:
 
@@ -75,6 +77,9 @@ Two of the options are easy to get wrong:
 * `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: the new fields and the environment block (`struct anv_cm_env`).
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
+
+The 26.3 series has the same three patches; on top of the above, `0001` creates the general state pool (which holds
+the walker payload) on the direct-descriptor path too, where 26.3 no longer creates it.
 
 `0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe2 (see how-it-works.md) and drops CM
 dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation.
