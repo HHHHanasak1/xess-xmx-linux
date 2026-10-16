@@ -13,7 +13,9 @@
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
 # Environment: XMX_CHECK_LIB / XMX_CHECK_ICD override the library / ICD file to test (tests only).
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
-LIB="${XMX_CHECK_LIB:-$PKG/lib/libvulkan_intel.so}"
+# the default driver (lib/libvulkan_intel.so only forwards to the one lib/active names)
+LIB="${XMX_CHECK_LIB:-$PKG/lib/mesa-$(cat "$PKG/lib/active" 2>/dev/null)/libvulkan_intel.so}"
+[ -f "$LIB" ] || LIB="$PKG/lib/libvulkan_intel.so"
 ICD="${XMX_CHECK_ICD:-$PKG/run/intel_icd.json}"
 STATUS="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status"
 mkdir -p "$(dirname "$STATUS")"
@@ -61,7 +63,7 @@ rc=$?
 # 2. instance + device enumeration through the loader, with nothing but the patched driver
 ours=""
 if command -v vulkaninfo >/dev/null 2>&1; then
-  out=$(VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
+  out=$(XMX_MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
   ours=$(printf '%s\n' "$out" | grep -m1 "driverInfo" | sed 's/.*= *//')
   printf '%s\n' "$out" | grep -q "deviceName" || fail "vulkaninfo found no device ($(printf '%s' "$out" | grep -i -m1 "error" | cut -c1-120))"
 fi

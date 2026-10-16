@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """make-release.py <version> [out dir]
 Builds release/xess-xmx-linux-<version>.zip from the working tree: the binaries (igdext64.dll, the drivers
-lib/mesa-<version>/libvulkan_intel.so with the active one as lib/libvulkan_intel.so and its name in lib/active),
+lib/mesa-<version>/libvulkan_intel.so, the default's name in lib/active, and lib/libvulkan_intel.so built from
+icd/xmx-icd.c, which loads one of them),
 the scripts, tools, patches and docs. Shell and Python scripts get the executable bit.
 Kernels are not included (they are compiled on the user's machine). Refuses to run if a binary is missing."""
 import os, sys, zipfile
@@ -25,8 +26,10 @@ drivers = ["lib/%s/libvulkan_intel.so" % d for d in sorted(os.listdir(libdir))
 if not drivers or not os.path.isfile(os.path.join(libdir, "active")):
     sys.exit("lib/mesa-<version>/libvulkan_intel.so and lib/active are needed")
 active = "lib/mesa-%s/libvulkan_intel.so" % open(os.path.join(libdir, "active")).read().strip()
-if active not in drivers or open(os.path.join(root, active), "rb").read() != open(os.path.join(libdir, "libvulkan_intel.so"), "rb").read():
-    sys.exit("lib/libvulkan_intel.so is not the driver lib/active names")
+if active not in drivers:
+    sys.exit("lib/active names no driver in lib/")
+if b"xess-xmx: using the Mesa" not in open(os.path.join(libdir, "libvulkan_intel.so"), "rb").read():
+    sys.exit("lib/libvulkan_intel.so must be the ICD built from icd/xmx-icd.c")
 files += drivers + ["lib/active"]
 files += ["docs/" + d for d in sorted(os.listdir(os.path.join(root, "docs"))) if d.endswith(".md")]
 missing = [f for f in files if not os.path.isfile(os.path.join(root, f))]

@@ -28,6 +28,20 @@ jobs:
         run: |
           ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
+  icd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          mkdir -p out
+          gcc -O2 -Wall -shared -fPIC -fvisibility=hidden -o out/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
+          nm -D --defined-only out/libvulkan_intel.so | grep -c ' vk_icd' | grep -qx 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xmx-icd
+          path: out/libvulkan_intel.so
+
   shim:
     runs-on: windows-latest
     steps:

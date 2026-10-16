@@ -49,14 +49,15 @@ The archive carries the patched driver for two Mesa versions; both run the same 
   shaders much faster. Patches by @kas5852 (#19). A release candidate: tested in fewer games so far.
 * **Mesa 26.1.2**: the driver of the earlier releases, the same version as SteamOS' own.
 
-Switch at any time; the next game started uses the chosen driver, no re-login:
+Choose per game in its Steam launch options:
 
-    tools/switch-driver.sh          # list, * marks the active one
-    tools/switch-driver.sh 26.1     # Mesa 26.1.2
-    tools/switch-driver.sh 26.3     # Mesa 26.3.0-rc1
+    XMX_MESA=26.1 %command%         # this game uses Mesa 26.1.2
+    XMX_MESA=26.3 %command%         # this game uses Mesa 26.3
 
-If the active driver fails the check before a session (for example after a system update), the other one is used
-automatically. `INTEL_DEBUG=no-jay %command%` runs one game's shaders on the 26.3 driver with the old compiler.
+Games without `XMX_MESA` use the default, which `tools/switch-driver.sh` lists (`*`) and changes
+(`tools/switch-driver.sh 26.1`); both take effect at the next game start, no re-login. If the default driver fails the
+check before a session (for example after a system update), the other one becomes the default automatically.
+`INTEL_DEBUG=no-jay %command%` runs a game's own shaders on Mesa 26.3 with the old compiler.
 
 **Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
 launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
@@ -83,7 +84,7 @@ See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (
 | DP4a in one game only, or no XeSS frame generation option | the game sees no Intel GPU (a Mesa game profile, or DXVK with XeSS older than 2.0.2.68): docs/debugging.md |
 | noise or black patches in the image | a kernel failed to compile; the next launch retries once and then uses XeSS' generic paths. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
 | XMX gone after a SteamOS update | neither patched driver loads any more: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` (docs/building.md) |
-| a game misbehaves on Mesa 26.3 only | `tools/switch-driver.sh 26.1` and please report it |
+| a game misbehaves on Mesa 26.3 only | `XMX_MESA=26.1 %command%` in its launch options, and please report it |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 
 The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md).
@@ -134,7 +135,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
-    tools/switch-driver.sh        chooses which of the package's drivers the games use
+    tools/switch-driver.sh        sets the default among the package's drivers (per game: XMX_MESA)
+    icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver XMX_MESA or the default names
     tools/session-check.sh        the driver check run before each session
     tools/cmk_pack.py             zebin -> .cmk packer;  tools/check-kernels.py validates a kernel folder
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check

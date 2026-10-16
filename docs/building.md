@@ -30,9 +30,15 @@ The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TAB
 
 ## The driver (`libvulkan_intel.so`)
 
+The package carries one patched driver per Mesa version in `lib/mesa-<version>/`. `lib/libvulkan_intel.so`, the
+file the session's Vulkan driver list points at, is a small ICD built from `icd/xmx-icd.c` that loads one of them
+(`XMX_MESA`, else the version in `lib/active`, else any that loads) and passes the loader its three entry points:
+
+    gcc -O2 -shared -fPIC -fvisibility=hidden -o lib/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
+
 `tools/rebuild-driver.sh` does everything below for the system's Mesa version, for example after a SteamOS update:
 fetch the tag, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise), build, check the result like
-the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so` and make it the active driver
+the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so` and make it the default driver
 (`tools/switch-driver.sh`, see the README). If the patches do not apply to the new version, nothing is changed and the
 script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
