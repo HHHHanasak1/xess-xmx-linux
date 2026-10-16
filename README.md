@@ -41,6 +41,10 @@ What `install.sh` does:
 
 Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 
+**Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
+launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
+`/path/to/package/xmx-launch.sh %command%` into the game's launch options. `disable.sh` undoes it.
+
 ### Two drivers: Mesa 26.1.2 and Mesa 26.3
 
 The archive carries the patched driver for two Mesa versions; both run the same XeSS kernels:
@@ -58,10 +62,6 @@ Games without `MESA` use the default, which `tools/switch-driver.sh` lists (`*`)
 (`tools/switch-driver.sh 26.1`); both take effect at the next game start, no re-login. If the default driver fails the
 check before a session (for example after a system update), the other one becomes the default automatically.
 `INTEL_DEBUG=no-jay %command%` runs a game's own shaders on Mesa 26.3 with the old compiler.
-
-**Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
-launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
-`/path/to/package/xmx-launch.sh %command%` into the game's launch options. `disable.sh` undoes it.
 
 ### Requirements
 
