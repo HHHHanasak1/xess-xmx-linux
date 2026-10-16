@@ -1,9 +1,10 @@
 # Building from source
 
-The release archive contains two binaries built from this repository: the shim `igdext64.dll` and the patched Mesa
-ANV driver `lib/libvulkan_intel.so`. The kernels are compiled on the user's machine (see
-[how-it-works.md](how-it-works.md)). CI (`.github/workflows/build.yml`) builds both binaries on every push and keeps
-them as workflow artifacts; the release driver is built with `tools/rebuild-driver.sh` on the device it is tested on.
+The release archive contains binaries built from this repository: the shim `igdext64.dll`, the patched Mesa ANV
+drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD `lib/libvulkan_intel.so` that loads one of them.
+The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI
+(`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; the release
+drivers are built with `tools/rebuild-driver.sh` on the device they are tested on.
 
 ## The shim (`igdext64.dll`)
 
@@ -25,6 +26,7 @@ The two placeholder tables are generated, not written by hand (both need `fxc.ex
     python tools/gen_dyn_dummies.py shim/src/dll/dyn_dummies.inc                       # run-time kernel ids
     python tools/gen_all_dummies.py tools/kernel_map_xess_2.0.2.68.txt shim/src/dll/xess_dummies.inc   # static ids
     python tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch          # layout matches the driver
+    python tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
 The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TABLE=ON`.
 
@@ -45,7 +47,9 @@ script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox wi
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc1  # or a given one
 
-By hand, for Mesa **26.1.2** (the version the patches are written against; other versions need a rebase):
+There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` (contributed in #19) for
+`mesa-26.3.0-rc1`; other versions need a rebase. By hand, for 26.1.2 (for 26.3: that tag and that folder, the same
+meson options):
 
     git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
@@ -55,11 +59,6 @@ By hand, for Mesa **26.1.2** (the version the patches are written against; other
       -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
     ninja -C build src/intel/vulkan/libvulkan_intel.so
-
-For Mesa 26.3 (where the Jay compiler is the default on Xe2 and Xe3), use `patches/mesa-26.3/` (contributed in #19)
-with the tag `mesa-26.3.0-rc1` and the same meson options. The kernel injection does not depend on the compiler: the
-placeholder is replaced before the Jay/brw branch. `INTEL_DEBUG=no-jay` in a game's environment switches that game's
-own shaders back to brw.
 
 Two of the options are easy to get wrong:
 
@@ -84,11 +83,11 @@ Two of the options are easy to get wrong:
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-The 26.3 series has the same three patches; on top of the above, `0001` creates the general state pool (which holds
-the walker payload) on the direct-descriptor path too, where 26.3 no longer creates it.
-
 `0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe2 (see how-it-works.md) and drops CM
 dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation.
+
+The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
+direct-descriptor path, where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw branch.
 
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`

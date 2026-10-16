@@ -29,7 +29,8 @@ prefix, but GE-Proton sets that variable to `C:\Windows\System32` for every game
 
 The patched Mesa ANV (`patches/0001`) looks at every compute shader it compiles. A shader whose workgroup size lies on
 a reserved plane *and* which stores the magic value is a placeholder; any other shader, even with the same workgroup
-size, is compiled normally. For a placeholder the driver
+size, is compiled normally (on Mesa 26.3 by Jay or brw; the placeholder never reaches either). For a placeholder the
+driver
 
 1. reads the kernel's hash from the prefix's `map.txt` and looks for
    `~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk` (the toolchain part comes from the compiler in `igc/`
