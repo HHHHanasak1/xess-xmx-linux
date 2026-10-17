@@ -89,6 +89,12 @@ dispatches with a zero group count, which the Vulkan specification makes a no-op
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
 direct-descriptor path, where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw branch.
 
+`0004` (26.3 only) is a Mesa bug fix, not part of the XMX feature. Mesa's drirc turns on
+`anv_emulate_divergent_barriers` for Resident Evil Requiem and its demo, Pragmata and Monster Hunter Stories 3. That
+lowering only works with brw, and since Jay is the default on Xe2 and Xe3 those games crash at start with a NULL read
+in `jay_opt_propagate_forwards`. The patch compiles the workgroup-stage shaders of those games with brw and leaves Jay
+on for everything else. Drop it once the Mesa tag the series is based on includes the fix.
+
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
 writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
