@@ -123,7 +123,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     install.sh, uninstall.sh      system-wide install / removal
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
-                                  0003 Large GRF Mode for Xe2;  patches/mesa-26.3/: the same for Mesa 26.3
+                                  0003 Large GRF Mode for Xe2;  patches/mesa-26.3/: the same for Mesa 26.3,
+                                  plus 0004, the Jay crash fix for RE Engine games
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/

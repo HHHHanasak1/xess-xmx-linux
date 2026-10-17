@@ -93,7 +93,7 @@ jobs:
       - name: apply patches
         run: |
           cd mesa
-          git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0001-*.patch ../$PATCHES/0002-*.patch ../$PATCHES/0003-*.patch
+          git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0*.patch
       - name: configure
         run: |
           cd mesa
