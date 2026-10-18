@@ -1,0 +1,77 @@
+From cbf003bca82efa73c8a4c3ac3853dee70ced3162 Mon Sep 17 00:00:00 2001
+From: kas5852 <22402329+kas5852@users.noreply.github.com>
+Date: Fri, 16 Oct 2026 20:40:39 -0500
+Subject: [PATCH] anv: compile shaders with emulated divergent barriers using
+ brw
+
+drirc sets anv_emulate_divergent_barriers for a few RE Engine titles
+(Resident Evil Requiem and its demo, Pragmata, Monster Hunter Stories 3).
+The option makes anv run brw_nir_lower_divergent_barriers() on
+workgroup stages. That pass emits subgroup_barrier_index_intel, which
+only the brw backend implements, and asserts that Jay is not in use.
+
+Since Jay became the default on Xe2 and Xe3, release builds skip that
+assert and hand the lowered NIR to Jay, which hits the unknown intrinsic
+and crashes later in jay_opt_propagate_forwards (or in register
+allocation with JAY_DEBUG=noopt). Requiem crashes on every start on
+Panther Lake with Mesa 26.3.
+
+Add shader_info::force_brw_intel and have intel_use_jay() return false
+for shaders that set it. anv sets it on workgroup-stage shaders when the
+option is on, before brw_preprocess_nir(), because preprocessing already
+takes different paths for Jay and brw. The option is part of the shader
+cache key, and shader_info is serialized with the NIR, so cached
+shaders keep the same choice.
+
+Fixes: 0843a97ed55 ("intel: enable Jay by default on Xe2 and Xe3")
+---
+ src/compiler/shader_info.h            | 2 ++
+ src/intel/dev/intel_debug.c           | 3 +++
+ src/intel/vulkan/anv_shader_compile.c | 4 ++++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/src/compiler/shader_info.h b/src/compiler/shader_info.h
+index b788afceefe..f9eab2b174f 100644
+--- a/src/compiler/shader_info.h
++++ b/src/compiler/shader_info.h
+@@ -331,6 +331,8 @@ typedef struct shader_info {
+    /* Use ACO instead of LLVM on AMD. */
+    bool use_aco_amd:1;
+ 
++   bool force_brw_intel:1;
++
+    /**
+     * Whether image intrinsics have been lowered to global intrinsics
+     *
+diff --git a/src/intel/dev/intel_debug.c b/src/intel/dev/intel_debug.c
+index 69468b3196e..120d65e86ec 100644
+--- a/src/intel/dev/intel_debug.c
++++ b/src/intel/dev/intel_debug.c
+@@ -329,6 +329,9 @@ intel_use_jay(const struct intel_device_info *devinfo, nir_shader *nir)
+    /* For using nir_shader_bisect.py with toggling jay/brw: */
+    // return nir_shader_bisect_select(nir);
+ 
++   if (nir->info.force_brw_intel)
++      return false;
++
+    return intel_use_jay_for_stage(devinfo, nir->info.stage);
+ }
+ 
+diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
+index 70b85c10cb1..bd062640e60 100644
+--- a/src/intel/vulkan/anv_shader_compile.c
++++ b/src/intel/vulkan/anv_shader_compile.c
+@@ -383,6 +383,10 @@ anv_shader_preprocess_nir(struct vk_physical_device *device,
+    };
+    NIR_PASS(_, nir, nir_opt_access, &opt_access_options);
+ 
++   if (pdevice->drirc.debug.emulate_divergent_barriers &&
++       mesa_shader_stage_uses_workgroup(nir->info.stage))
++      nir->info.force_brw_intel = true;
++
+    struct brw_nir_compiler_opts opts = {
+       .robust_image_access = rs->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS ||
+                              rs->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2_EXT,
+-- 
+2.54.0 (Apple Git-157)
+
