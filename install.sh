@@ -119,7 +119,7 @@ if [ -n "$watch" ]; then
     printf '%s\n' "${watch#
 }"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path"
   { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
-    echo "ExecStart=/bin/bash $PKG/install.sh"; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service"
+    echo "ExecStart=/bin/bash \"$PKG/install.sh\""; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service"
   systemctl --user daemon-reload 2>/dev/null
   systemctl --user enable xess-xmx-shim.path >/dev/null 2>&1
   systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
@@ -135,7 +135,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "[Service]"
     echo "Type=oneshot"
     echo "RemainAfterExit=yes"
-    echo "ExecStart=/bin/bash $PKG/tools/session-check.sh"
+    echo "ExecStart=/bin/bash \"$PKG/tools/session-check.sh\""
     echo "[Install]"
     echo "WantedBy=graphical-session-pre.target default.target"
   } > "$UNITD/xess-xmx-check.service"

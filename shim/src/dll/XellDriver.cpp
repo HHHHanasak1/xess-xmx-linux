@@ -49,7 +49,7 @@ uint8_t* g_cpuBuf = nullptr;
 uint8_t* g_gpuBuf = nullptr;
 size_t g_bufSize = 0;
 volatile LONG g_accessLogged = 0;
-void* g_rearm = nullptr;          // page to re-guard after the single step
+thread_local void* t_rearm = nullptr;   // page this thread must re-guard after its single step (faults can overlap across threads)
 
 int ProbeVersion()
 {
@@ -87,14 +87,14 @@ LONG CALLBACK GuardHandler(EXCEPTION_POINTERS* ep)
             TraceF("XELLPROBE access %s %s +%#zx (slot %zu, in-slot %#zx) at %s", kind == 1 ? "write" : "read", which, off,
                    g_slots ? off / (g_bufSize / g_slots) : 0, g_slots ? off % (g_bufSize / g_slots) : off, where);
         }
-        g_rearm = (void*)((uintptr_t)a & ~(uintptr_t)0xfff);
+        t_rearm = (void*)((uintptr_t)a & ~(uintptr_t)0xfff);
         ep->ContextRecord->EFlags |= 0x100;   // single step, then guard the page again
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    if (code == EXCEPTION_SINGLE_STEP && g_rearm)
+    if (code == EXCEPTION_SINGLE_STEP && t_rearm)
     {
-        DWORD old; VirtualProtect(g_rearm, 1, PAGE_READWRITE | PAGE_GUARD, &old);
-        g_rearm = nullptr;
+        DWORD old; VirtualProtect(t_rearm, 1, PAGE_READWRITE | PAGE_GUARD, &old);
+        t_rearm = nullptr;
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     return EXCEPTION_CONTINUE_SEARCH;
@@ -162,13 +162,14 @@ bool PatchImport(HMODULE mod, const char* dllName, const char* funcName, void* h
 
 void HideWineFrom(HMODULE libxell)
 {
-    static HMODULE done = nullptr;
-    if (!libxell || libxell == done) return;
+    if (!libxell) return;
     void* orig = nullptr;
     if (PatchImport(libxell, "KERNEL32.dll", "GetProcAddress", (void*)XellGetProcAddress, &orig))
     {
-        if (!g_realGetProcAddress) g_realGetProcAddress = (PFN_GetProcAddress)orig;
-        done = libxell;
+        if (orig == (void*)XellGetProcAddress) return;   // this mapping was hooked already
+        // a reloaded libxell.dll (same or another address) has a fresh import table and is hooked again; the real
+        // GetProcAddress is the same kernel32 export each time
+        g_realGetProcAddress = (PFN_GetProcAddress)orig;
         TraceF("XELLPROBE libxell.dll %p: GetProcAddress import hooked (wine_get_version will be hidden)", libxell);
     }
     else TraceF("XELLPROBE libxell.dll %p: GetProcAddress import not found, cannot hide wine_get_version", libxell);
