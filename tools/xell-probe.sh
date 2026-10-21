@@ -35,8 +35,10 @@ rm -f ./libxell.log
 
 export IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 XELL_FORCE_LOGS_TO_FILE=1
 export IGDEXT_XELL_PROBE="${XELL_PROBE_VERSION:-1}"
-[ -n "${PROTON_LOG:-}" ] || export PROTON_LOG=1
-protonlog="$HOME/steam-${SteamAppId:-${SteamGameId:-0}}.log"
+# Proton writes $PROTON_LOG_DIR/steam-$SteamGameId.log (SteamGameId is set for non-Steam shortcuts too); PROTON_LOG=0
+# from the user's launch options would switch it off, so the probe always sets 1
+export PROTON_LOG=1
+protonlog="${PROTON_LOG_DIR:-$HOME}/steam-${SteamGameId:-${SteamAppId:-0}}.log"
 [ -f "$protonlog" ] && mv -f "$protonlog" "$protonlog.prev"
 [ "${XELL_PROBE_TELEMETRY:-0}" = 1 ] && export IGDEXT_XELL_TELEMETRY=1
 

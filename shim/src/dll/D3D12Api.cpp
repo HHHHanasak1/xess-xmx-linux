@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 static const unsigned char kDummyCS[] = {
 #include "dummy_cs_bytes.inc"
@@ -357,7 +358,12 @@ static bool CompileFailedStillValid(bool* xessLoaded)
 
 bool XmxFallbackActive(ID3D12Device* dev)
 {
+    // XeSS and XeFG open their contexts from different threads; the decision (and the self-test inside it) is made once,
+    // under a lock, so that a second caller neither sees "decided: no fallback" while the test is still running nor
+    // runs its own test and reads the first one's in-progress state as a failure.
+    static std::mutex mtx;
     static int decided = -1;
+    std::lock_guard<std::mutex> lock(mtx);
     if (decided >= 0) return decided == 1;
     char b[8];
     bool xessLoaded = false;
