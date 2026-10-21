@@ -36,6 +36,34 @@ Counting dispatches per kernel from a `ANV_CM_TRACE=1` log shows what runs every
 
     grep -a -o "walker kernel [0-9]*,[0-9]*,[0-9]*" stderr.log | sort | uniq -c
 
+## XeLL driver-mode probe
+
+XeLL runs in cross-vendor mode under Proton ([how-it-works.md](how-it-works.md) §4). To find out what it would need
+for driver mode, run one launch of a game with XeSS frame generation through the probe wrapper. Steam launch options:
+
+    /path/to/package/tools/xell-probe.sh %command%
+
+Play for a minute with frame generation on (the Wuthering Waves title screen with FG enabled is enough), quit, and
+look at the summary the wrapper prints; it also writes `~/xess-xmx-probe-<date>.tar.gz` with `libxell.log` (XeLL's own
+log: where it loaded the extension library from, the driver version it parsed, `Latency reduction enabled` or
+`... - Cross Vendor`), `igdext_trace.log` (`XELLPROBE` lines: every latency-reduction call with its arguments, each
+`RenderSubmitStart` with the time since the previous one, and every read or write XeLL makes to the timing buffers
+with the slot, the in-slot offset and the code address in `libxell.dll`), `igdext_xell.log` and the session's
+driver status. Attach the archive to the issue.
+
+How to read the first result:
+
+* `libxell.log` says `Cannot load Intel Extensions library` or shows no `Loading Intel Extensions` line: XeLL did not
+  find the shim. Check that `igdext64.dll` is in the prefix's `windows/system32` or wherever
+  `INTC_ALT_DRIVER_EXTENSIONS_PATH` points (GE-Proton sets it to `C:\Windows\System32`).
+* `Intel Extensions initialized` but `Latency reduction enabled - Cross Vendor` and no `XELLPROBE
+  LatencyReductionExt` line: XeLL rejected the shim before enabling; the usual suspects are the driver version in the
+  extension info and `GetLatencyReductionStatus.driverSupportedVersion`. Retry with `XELL_PROBE_VERSION=2` (and 3).
+* `XELLPROBE LatencyReductionExt(...)` followed by buffer accesses: driver mode started. The access log gives the
+  slot size and the fields; a read of `gpu +0x0` followed by a crash means XeLL treats the GPU buffer as a COM object
+  (an `ID3D12Resource` it maps), not as plain memory, which the next shim version must then provide.
+* `GetDisplayTelemetry` called and then cross-vendor: retry with `XELL_PROBE_TELEMETRY=1`.
+
 ## Switches
 
 Shim (game environment):
@@ -53,7 +81,8 @@ Shim (game environment):
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
-| `IGDEXT_XELL_PROBE=<version>` | experimental: claim XeLL driver-mode support and log XeLL's use of it (see how-it-works.md) |
+| `IGDEXT_XELL_PROBE=<version>` | claim XeLL driver-mode support (interface version), accept the Set* pacing calls, and log XeLL's use of it (`tools/xell-probe.sh`, "XeLL driver-mode probe" above) |
+| `IGDEXT_XELL_TELEMETRY=1` | with the probe: answer `GetDisplayTelemetry` with a zeroed buffer instead of E_NOTIMPL |
 
 Driver choice: `MESA=<version>` (a prefix such as `26.1` is enough) makes a game use that driver of the package
 instead of the default; the game's stderr then says `xess-xmx: using the Mesa ... driver`.

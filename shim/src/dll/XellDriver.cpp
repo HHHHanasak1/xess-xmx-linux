@@ -1,8 +1,21 @@
-// XellDriver.cpp - driver side of Intel XeLL's latency-reduction extension (_INTC_D3D12_*LatencyReduction*, RenderSubmitStart).
-// XeLL only uses these when it finds the extension library (INTC_ALT_DRIVER_EXTENSIONS_PATH or the device's driver store);
-// under Wine it does not, and runs in its cross-vendor mode. IGDEXT_XELL_PROBE=<version> makes the shim claim support for
-// that interface version and logs every call plus every access XeLL makes to the render-submit timing buffers (guard
-// pages), to work out the undocumented buffer layout. Without the variable the functions answer "not supported".
+// XellDriver.cpp - driver side of Intel XeLL's latency-reduction extension (_INTC_D3D12_*LatencyReduction*, RenderSubmitStart,
+// SetNumGeneratedFrames, SetPresentSequenceNumber, GetDisplayTelemetry).
+//
+// What libxell.dll (XeSS SDK 2.x) does with these, from its own strings: it loads igdext64.dll itself (env var
+// INTC_ALT_DRIVER_EXTENSIONS_PATH, the device's driver folder, or the current folder), creates an extension context,
+// and decides between "Latency reduction enabled." (driver timings) and "Latency reduction enabled - Cross Vendor."
+// (its own CPU-side pacing). In driver mode it polls the render-submit timing buffers for the CPU and GPU timestamps of
+// each frame's submission ("[Driver] Driver timestamps not available for frame", "[RenderSubmitTimingsTimestamps]
+// GetRenderStartTimestamp failed Map") and reports the present sequence / generated-frame count through the two Set*
+// calls. XELL_FORCE_LOGS_TO_FILE=1 makes it write that decision path to libxell.log; XELL_FORCE_CROSS_VENDOR=1 forces the
+// fallback. There is no separate driver DLL in this path (igxell.dll is XeLL's optional "driver DLL context", a newer
+// XeLL carried by the Windows driver, and is not needed for driver timings).
+//
+// IGDEXT_XELL_PROBE=<version> makes the shim claim support for that interface version, answer the Set* calls with S_OK,
+// stamp a QPC timestamp per RenderSubmitStart, and log every call plus every access XeLL makes to the render-submit
+// timing buffers (guard pages), to work out the undocumented buffer layout. IGDEXT_XELL_TELEMETRY=1 additionally
+// answers GetDisplayTelemetry with a zeroed buffer instead of E_NOTIMPL (to see whether XeLL requires it for driver
+// mode). Without IGDEXT_XELL_PROBE every function answers "not supported", as before.
 #include "Stdafx.h"
 #include "Trace.h"
 #include <cstdio>
@@ -124,12 +137,52 @@ HRESULT _INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers(INTCExtensionC
 HRESULT _INTC_D3D12_RenderSubmitStart(INTCExtensionContext*, uint32_t frameId)
 {
     static LONG n = 0;
-    if (InterlockedIncrement(&n) <= 40)
+    static LARGE_INTEGER prev = {};
+    LARGE_INTEGER now, freq; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq);
+    const double sincePrevMs = prev.QuadPart ? (now.QuadPart - prev.QuadPart) * 1000.0 / freq.QuadPart : 0.0;
+    prev = now;
+    const LONG k = InterlockedIncrement(&n);
+    if (k <= 40 || (k % 600) == 0)
     {
         char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
-        TraceF("XELLPROBE RenderSubmitStart(frame %u) from %s", frameId, where);
+        TraceF("XELLPROBE RenderSubmitStart(frame %u) #%ld +%.2f ms from %s", frameId, (long)k, sincePrevMs, where);
     }
     return ProbeVersion() > 0 ? S_OK : E_NOTIMPL;
+}
+
+// XeLL / XeSS-FG pacing information. On Windows the driver uses these to pace generated frames and to match
+// present sequence numbers against render-submit timings. The probe accepts them (S_OK) so that a failed call here
+// cannot be the reason XeLL stays in cross-vendor mode; the values are logged to see how XeLL uses them.
+HRESULT _INTC_D3D12_SetNumGeneratedFrames(INTCExtensionContext*, UINT NumFrames)
+{
+    static LONG n = 0; static UINT last = ~0u;
+    const LONG k = InterlockedIncrement(&n);
+    if (NumFrames != last || k <= 8) { TraceF("XELLPROBE SetNumGeneratedFrames(%u) #%ld", NumFrames, (long)k); last = NumFrames; }
+    return ProbeVersion() > 0 ? S_OK : E_NOTIMPL;
+}
+
+HRESULT _INTC_D3D12_SetPresentSequenceNumber(INTCExtensionContext*, UINT PresentSequenceNumber)
+{
+    static LONG n = 0;
+    const LONG k = InterlockedIncrement(&n);
+    if (k <= 40 || (k % 600) == 0) TraceF("XELLPROBE SetPresentSequenceNumber(%u) #%ld", PresentSequenceNumber, (long)k);
+    return ProbeVersion() > 0 ? S_OK : E_NOTIMPL;
+}
+
+HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext*, void* pTelemetryData, UINT size)
+{
+    static LONG n = 0;
+    static int telemetry = -1;
+    if (telemetry < 0) { char b[8]; telemetry = GetEnvironmentVariableA("IGDEXT_XELL_TELEMETRY", b, sizeof(b)) > 0 ? atoi(b) : 0; }
+    const LONG k = InterlockedIncrement(&n);
+    if (k <= 8 || (k % 600) == 0)
+    {
+        char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
+        TraceF("XELLPROBE GetDisplayTelemetry(size %u) #%ld from %s -> %s", size, (long)k, where, telemetry ? "zeroed S_OK" : "E_NOTIMPL");
+    }
+    if (!telemetry || ProbeVersion() <= 0) return E_NOTIMPL;
+    if (pTelemetryData && size) memset(pTelemetryData, 0, size);
+    return S_OK;
 }
 
 } // extern "C"

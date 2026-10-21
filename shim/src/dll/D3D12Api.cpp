@@ -135,11 +135,7 @@ HRESULT _INTC_D3D12_GetCurrentShaderHeapUsage(INTCExtensionContext* pExtensionCo
     return E_NOTIMPL;
 }
 
-HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext* pExtensionContext, void* pTelemetryData, UINT size)
-{
-    TraceF("GetDisplayTelemetry (not implemented)");
-    return E_NOTIMPL;
-}
+// _INTC_D3D12_GetDisplayTelemetry: XellDriver.cpp (XeLL calls it from its latency-reduction path)
 
 void _INTC_D3D12_GetRaytracingAccelerationStructurePrebuildInfo(INTCExtensionContext* pExtensionContext, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS* pDesc, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO* pInfo, const INTC_D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_INSTANCE_COMPARISON_DATA* pComparisonDataDesc)
 {
@@ -173,17 +169,7 @@ void _INTC_D3D12_SetEventMarker(INTCExtensionContext* pExtensionContext, ID3D12G
     TraceF("SetEventMarker (not implemented)");
 }
 
-HRESULT _INTC_D3D12_SetNumGeneratedFrames(INTCExtensionContext* pExtensionContext, UINT NumFrames)
-{
-    TraceF("SetNumGeneratedFrames (not implemented)");
-    return E_NOTIMPL;
-}
-
-HRESULT _INTC_D3D12_SetPresentSequenceNumber(INTCExtensionContext* pExtensionContext, UINT PresentSequenceNumber)
-{
-    TraceF("SetPresentSequenceNumber (not implemented)");
-    return E_NOTIMPL;
-}
+// _INTC_D3D12_SetNumGeneratedFrames, _INTC_D3D12_SetPresentSequenceNumber: XellDriver.cpp (XeLL / XeFG pacing calls)
 
 void _INTC_D3D12_TransferHostRTAS(INTCExtensionContext* pExtensionContext, ID3D12GraphicsCommandList* pCommandList, D3D12_GPU_VIRTUAL_ADDRESS DestAccelerationStructureData, D3D12_GPU_VIRTUAL_ADDRESS SrcAccelerationStructureData, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode)
 {
