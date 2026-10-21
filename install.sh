@@ -11,6 +11,8 @@
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
+. "$PKG/tools/steam-libraries.sh"
+LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk): prefixes live under each steamapps/
 ENVD="$HOME/.config/environment.d"
 UNITD="$HOME/.config/systemd/user"
 SHIM="$PKG/igdext64.dll"
@@ -60,7 +62,7 @@ fi
 mkdir -p "$PKG/kernels" "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/kernels"
 # a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, try again
 if [ -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
-  rm -f "$STEAM"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels/compile_failed.txt
+  while IFS= read -r lib; do rm -f "$lib"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels/compile_failed.txt; done <<< "$LIBS"
 fi
 if [ -d "$HOME/.var/app/com.valvesoftware.Steam" ]; then
   echo "!! Flatpak Steam found: its games see neither ~/.config/environment.d nor this folder (sandbox)."
@@ -88,10 +90,13 @@ shim_pass() { # every Proton that bundles the library, and every prefix that has
   local f d
   for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
            "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
-  for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
+  local lib
+  while IFS= read -r lib; do
+  for d in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
     [ -d "$d" ] || continue
     if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
   done
+  done <<< "$LIBS"
 }
 shim_pass
 echo "== shim: $n file(s) updated"
@@ -112,8 +117,10 @@ mkdir -p "$UNITD"
 watch=""
 for p in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do [ -f "$p" ] && watch="$watch
 PathChanged=$p"; done
-for p in "$STEAM/steamapps/compatdata" "$STEAM/steamapps/common" "$STEAM/compatibilitytools.d"; do [ -d "$p" ] && watch="$watch
+for p in "$STEAM/steamapps/common" "$STEAM/compatibilitytools.d"; do [ -d "$p" ] && watch="$watch
 PathModified=$p"; done
+while IFS= read -r lib; do p="$lib/steamapps/compatdata"; [ -d "$p" ] && watch="$watch
+PathModified=$p"; done <<< "$LIBS"
 if [ -n "$watch" ]; then
   { echo "[Unit]"; echo "Description=Re-install the XeSS XMX shim after a Proton update or for a new prefix"; echo "[Path]";
     printf '%s\n' "${watch#
@@ -131,7 +138,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   {
     echo "[Unit]"
     echo "Description=Check that the XeSS XMX Vulkan driver loads (falls back to the stock driver if not)"
-    echo "Before=graphical-session-pre.target gamescope-session.service steam-launcher.service plasma-workspace.target"
+    echo "Before=graphical-session-pre.target gamescope-session.service gamescope-session-plus@steam.service steam-launcher.service plasma-workspace.target"
     echo "[Service]"
     echo "Type=oneshot"
     echo "RemainAfterExit=yes"

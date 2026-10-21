@@ -13,7 +13,10 @@ PKG="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${XMX_MESA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/mesa-src}"
 VER="${1:-}"
 if [ -z "$VER" ]; then
-  for f in /run/host/usr/lib/libvulkan_intel.so /usr/lib/libvulkan_intel.so /usr/lib/x86_64-linux-gnu/libvulkan_intel.so; do
+  # the host's 64-bit driver first (Fedora/Bazzite: /usr/lib64; inside a distrobox the host is under /run/host);
+  # /usr/lib/libvulkan_intel.so on Fedora is the 32-bit one, and inside a box /usr/lib* is the box's own Mesa
+  for f in /run/host/usr/lib64/libvulkan_intel.so /run/host/usr/lib/x86_64-linux-gnu/libvulkan_intel.so /run/host/usr/lib/libvulkan_intel.so \
+           /usr/lib64/libvulkan_intel.so /usr/lib/x86_64-linux-gnu/libvulkan_intel.so /usr/lib/libvulkan_intel.so; do
     [ -f "$f" ] && VER=$(grep -a -o -m1 'Mesa [0-9]*\.[0-9]*\.[0-9]*' "$f" | head -1 | cut -d' ' -f2) && [ -n "$VER" ] && break
   done
 fi
