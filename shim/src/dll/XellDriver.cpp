@@ -1,21 +1,36 @@
 // XellDriver.cpp - driver side of Intel XeLL's latency-reduction extension (_INTC_D3D12_*LatencyReduction*, RenderSubmitStart,
-// SetNumGeneratedFrames, SetPresentSequenceNumber, GetDisplayTelemetry).
+// SetNumGeneratedFrames, SetPresentSequenceNumber, GetDisplayTelemetry), and what it takes for libxell.dll to use it.
 //
-// What libxell.dll (XeSS SDK 2.x) does with these, from its own strings: it loads igdext64.dll itself (env var
-// INTC_ALT_DRIVER_EXTENSIONS_PATH, the device's driver folder, or the current folder), creates an extension context,
-// and decides between "Latency reduction enabled." (driver timings) and "Latency reduction enabled - Cross Vendor."
-// (its own CPU-side pacing). In driver mode it polls the render-submit timing buffers for the CPU and GPU timestamps of
-// each frame's submission ("[Driver] Driver timestamps not available for frame", "[RenderSubmitTimingsTimestamps]
-// GetRenderStartTimestamp failed Map") and reports the present sequence / generated-frame count through the two Set*
-// calls. XELL_FORCE_LOGS_TO_FILE=1 makes it write that decision path to libxell.log; XELL_FORCE_CROSS_VENDOR=1 forces the
-// fallback. There is no separate driver DLL in this path (igxell.dll is XeLL's optional "driver DLL context", a newer
-// XeLL carried by the Windows driver, and is not needed for driver timings).
+// How libxell.dll (XeSS SDK 2.x, 1.3.x) decides between driver timings and its own cross-vendor pacing, from the code of
+// 1.3.2.10 (SDK bin/libxell.dll; whether the 1.3.0.5 that games ship has the same check shows in its strings,
+// `strings libxell.dll | grep wine_get_version`, and in the probe's "hid wine_get_version" line):
 //
-// IGDEXT_XELL_PROBE=<version> makes the shim claim support for that interface version, answer the Set* calls with S_OK,
-// stamp a QPC timestamp per RenderSubmitStart, and log every call plus every access XeLL makes to the render-submit
-// timing buffers (guard pages), to work out the undocumented buffer layout. IGDEXT_XELL_TELEMETRY=1 additionally
-// answers GetDisplayTelemetry with a zeroed buffer instead of E_NOTIMPL (to see whether XeLL requires it for driver
-// mode). Without IGDEXT_XELL_PROBE every function answers "not supported", as before.
+//  1. At context creation it takes the DXGI adapter of the device and sets an "Intel GPU" flag only if VendorId == 0x8086
+//     AND GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version") returns nothing. Under Wine that export
+//     exists, so the flag is never set and libxell goes straight to "[XeLL] Using built-in context" without loading
+//     igdext64.dll at all: no GetSupportedVersions, no LatencyReductionExt, nothing for the shim to see. Nothing in
+//     Proton hides that export; the shim does it for libxell alone (below).
+//  2. With the flag set it loads igdext64.dll (INTC_ALT_DRIVER_EXTENSIONS_PATH, the driver folder, the current folder),
+//     asks GetSupportedVersions for HW feature level 5 or 4 with API version 13 (exact match on both; the shim lists
+//     5/13 and 4/13), creates an extension context, and requires
+//       - the driver version string >= 31.0.101.6252 (the shim says 32.0.101.9999), else "unsupported driver";
+//       - INTCDeviceInfo::GTGeneration to be an XeSS-capable Intel PRODUCT_FAMILY: 1270 DG2, 1272 MTL, 1273 ARL,
+//         1274 BMG, 1275 LNL, 1276, 1300 PTL or anything >= 1340 (gmmlib igfxfmid.h), else "unsupported device".
+//         The shim reports 30 on Panther Lake; with the probe on it reports the family id (GpuInfo.cpp, IGDEXT_FAMILY).
+//  3. Only then "Intel Extensions initialized." and "Latency reduction enabled." (else "... - Cross Vendor."): it polls the
+//     render-submit timing buffers for the CPU and GPU timestamps of each frame's submission ("[Driver] Driver timestamps
+//     not available for frame", "GetRenderStartTimestamp failed Map") and reports the present sequence / generated-frame
+//     count through the two Set* calls. XELL_FORCE_CROSS_VENDOR=1 (also HKLM\SOFTWARE\Intel\XeLL) forces the fallback;
+//     XELL_FORCE_LOGS_TO_FILE=1 writes libxell.log in 1.3.2.10 (1.3.0.5 only has OutputDebugString: the Proton log).
+//     igxell.dll is a different, optional mechanism (XeLL's "driver DLL context", a newer XeLL carried by the Windows
+//     driver) and is not needed for driver timings.
+//
+// IGDEXT_XELL_PROBE=<version> makes the shim hide wine_get_version from libxell.dll (an import-table hook of GetProcAddress
+// in libxell.dll only, installed when the DLL loads), claim support for that latency-reduction interface version, answer
+// the Set* calls with S_OK, stamp a QPC timestamp per RenderSubmitStart, and log every call plus every access XeLL makes
+// to the render-submit timing buffers (guard pages), to work out the undocumented buffer layout. IGDEXT_XELL_TELEMETRY=1
+// additionally answers GetDisplayTelemetry with a zeroed buffer instead of E_NOTIMPL. Without IGDEXT_XELL_PROBE nothing
+// here is active and every function answers "not supported", as before.
 #include "Stdafx.h"
 #include "Trace.h"
 #include <cstdio>
@@ -23,6 +38,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <intrin.h>
+#include <winternl.h>
 
 namespace
 {
@@ -92,6 +108,99 @@ uint8_t* GuardedBuffer(size_t size)
     DWORD old; VirtualProtect(p, size, PAGE_READWRITE | PAGE_GUARD, &old);
     return p;
 }
+}
+
+
+// ---- hiding wine_get_version from libxell.dll ----------------------------------------------------------------------
+namespace
+{
+typedef FARPROC (WINAPI* PFN_GetProcAddress)(HMODULE, LPCSTR);
+PFN_GetProcAddress g_realGetProcAddress = nullptr;
+volatile LONG g_wineHidden = 0;
+
+FARPROC WINAPI XellGetProcAddress(HMODULE m, LPCSTR name)
+{
+    if (((uintptr_t)name >> 16) != 0 && strcmp(name, "wine_get_version") == 0)
+    {
+        if (InterlockedIncrement(&g_wineHidden) == 1) TraceF("XELLPROBE hid wine_get_version from libxell.dll");
+        SetLastError(ERROR_PROC_NOT_FOUND);
+        return nullptr;
+    }
+    return g_realGetProcAddress(m, name);
+}
+
+// Replace one entry of a module's import address table. Walks the PE import directory of the mapped image.
+bool PatchImport(HMODULE mod, const char* dllName, const char* funcName, void* hook, void** orig)
+{
+    auto base = (uint8_t*)mod;
+    auto dos = (IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    auto nt = (IMAGE_NT_HEADERS64*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!dir.VirtualAddress) return false;
+    for (auto desc = (IMAGE_IMPORT_DESCRIPTOR*)(base + dir.VirtualAddress); desc->Name; ++desc)
+    {
+        if (_stricmp((const char*)(base + desc->Name), dllName) != 0) continue;
+        auto names = (IMAGE_THUNK_DATA64*)(base + (desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk));
+        auto iat = (IMAGE_THUNK_DATA64*)(base + desc->FirstThunk);
+        for (; names->u1.AddressOfData; ++names, ++iat)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal)) continue;
+            auto byName = (IMAGE_IMPORT_BY_NAME*)(base + names->u1.AddressOfData);
+            if (strcmp((const char*)byName->Name, funcName) != 0) continue;
+            DWORD old;
+            if (!VirtualProtect(iat, sizeof(*iat), PAGE_READWRITE, &old)) return false;
+            if (orig) *orig = (void*)iat->u1.Function;
+            iat->u1.Function = (ULONGLONG)hook;
+            VirtualProtect(iat, sizeof(*iat), old, &old);
+            return true;
+        }
+    }
+    return false;
+}
+
+void HideWineFrom(HMODULE libxell)
+{
+    static HMODULE done = nullptr;
+    if (!libxell || libxell == done) return;
+    void* orig = nullptr;
+    if (PatchImport(libxell, "KERNEL32.dll", "GetProcAddress", (void*)XellGetProcAddress, &orig))
+    {
+        if (!g_realGetProcAddress) g_realGetProcAddress = (PFN_GetProcAddress)orig;
+        done = libxell;
+        TraceF("XELLPROBE libxell.dll %p: GetProcAddress import hooked (wine_get_version will be hidden)", libxell);
+    }
+    else TraceF("XELLPROBE libxell.dll %p: GetProcAddress import not found, cannot hide wine_get_version", libxell);
+}
+
+// LdrRegisterDllNotification: called by the loader for every DLL as it is mapped, before the game can call into it.
+// Not in the SDK headers; the structures are documented in the Windows SDK (ntddk) and implemented by Wine.
+struct LDR_DLL_LOADED_NOTIFICATION_DATA_ { ULONG Flags; const UNICODE_STRING* FullDllName; const UNICODE_STRING* BaseDllName; PVOID DllBase; ULONG SizeOfImage; };
+typedef VOID (CALLBACK* PFN_LdrDllNotification)(ULONG reason, const LDR_DLL_LOADED_NOTIFICATION_DATA_* data, PVOID ctx);
+typedef NTSTATUS (NTAPI* PFN_LdrRegisterDllNotification)(ULONG flags, PFN_LdrDllNotification fn, PVOID ctx, PVOID* cookie);
+
+VOID CALLBACK OnDllLoaded(ULONG reason, const LDR_DLL_LOADED_NOTIFICATION_DATA_* data, PVOID)
+{
+    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !data || !data->BaseDllName || !data->BaseDllName->Buffer) return;
+    if (_wcsnicmp(data->BaseDllName->Buffer, L"libxell.dll", data->BaseDllName->Length / sizeof(wchar_t)) == 0 &&
+        data->BaseDllName->Length == sizeof(L"libxell.dll") - sizeof(wchar_t))
+        HideWineFrom((HMODULE)data->DllBase);
+}
+}
+
+// Called once from DllMain (Trace.cpp). With IGDEXT_XELL_PROBE set: hook libxell.dll now if it is already loaded, and
+// watch for it loading later. If the game created its XeLL context before the shim was loaded, that context stays
+// cross-vendor; toggling frame generation off and on in the game recreates it.
+void StartXellDriverProbe()
+{
+    if (ProbeVersion() <= 0) return;
+    HideWineFrom(GetModuleHandleW(L"libxell.dll"));
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto reg = ntdll ? (PFN_LdrRegisterDllNotification)GetProcAddress(ntdll, "LdrRegisterDllNotification") : nullptr;
+    PVOID cookie = nullptr;
+    if (!reg || reg(0, OnDllLoaded, nullptr, &cookie) != 0)
+        TraceF("XELLPROBE LdrRegisterDllNotification unavailable: libxell.dll must already be loaded when the shim loads");
 }
 
 extern "C" {

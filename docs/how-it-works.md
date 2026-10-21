@@ -104,26 +104,11 @@ Games with XeSS frame generation also use Intel XeLL (`libxell.dll`). Under Wine
 (cross-vendor mode, log line `[XeLL] Using built-in context`): the library paces the frames itself, with the timing it
 can measure from the application side. That works.
 
-In its driver mode `libxell.dll` gets CPU and GPU timestamps of each frame's render submission from the driver
-through the extension library (`igdext64.dll`): `INTC_D3D12_LatencyReductionExt`,
-`INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers`, `INTC_D3D12_RenderSubmitStart` and
-`INTC_D3D12_GetLatencyReductionStatus` (declared "internal use" in Intel's public `igdext.h`), plus
-`INTC_D3D12_SetNumGeneratedFrames`, `INTC_D3D12_SetPresentSequenceNumber` and `INTC_D3D12_GetDisplayTelemetry`. The
-strings of `libxell.dll` (XeSS SDK 2.x) show that it loads `igdext64.dll` itself, from `INTC_ALT_DRIVER_EXTENSIONS_PATH`,
-the device's driver folder or the current folder, parses a driver version, and then logs either `Latency reduction
-enabled.` or `Latency reduction enabled - Cross Vendor.`; in driver mode it polls the timing buffers (`[Driver] Driver
-timestamps not available for frame`, `[RenderSubmitTimingsTimestamps] GetRenderStartTimestamp failed Map`) and runs its
-own D3D12 query heap, readback resource and command queue for GPU timestamps. `igxell.dll` is a different, optional
-mechanism (XeLL's "driver DLL context": a newer XeLL carried by the Windows driver, `XELL_IGXELL_PATH`) and is not
-needed for driver timings; the game's own `libxell.dll` ("game DLL context") uses them too.
-
-So the driver mode needs only the extension-library side, which the shim can provide once the buffer layout is known.
-The shim has a probe for exactly that, `IGDEXT_XELL_PROBE=<version>` (`tools/xell-probe.sh` runs a game with it and
-with libxell's own log, `XELL_FORCE_LOGS_TO_FILE=1`): it claims support, accepts the two Set* calls, stamps
-`RenderSubmitStart`, hands XeLL guard-page buffers and logs every access to them. The earlier observation that XeLL
-"never called" the probe predates the Set* calls answering S_OK and libxell's log; the probe results decide what gates
-driver mode (an extension-library call that must succeed, the driver version XeLL parses from the extension info, or
-the device check) and what the buffers must contain. Until then XeLL runs in cross-vendor mode.
+In its driver mode `libxell.dll` hands over to `igxell64.dll`, a component of Intel's Windows driver, which gets CPU
+and GPU timestamps of each frame's render submission from the driver through four entry points of the extension
+library, in a buffer layout that is not documented. Neither that DLL nor the driver-side timing exists on Linux, so
+the driver mode is not available. (The shim has an experimental probe for the interface, `IGDEXT_XELL_PROBE`; the
+game's `libxell.dll` never called it.)
 
 The shim hooks XeLL for one game-side problem: Wuthering Waves hands XeLL a 33.3 ms frame cap right after enabling
 frame generation (30 fps until the pause menu is opened and closed). A cap arriving within 1.5 s of the enable call

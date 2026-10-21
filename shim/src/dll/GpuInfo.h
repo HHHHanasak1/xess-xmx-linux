@@ -7,6 +7,8 @@ struct XmxGpu
     const char* family;    // "Xe3-LPG", "Xe2-LPG", "Xe2-HPG", "Xe-HPG", "Xe-LPG", "Xe-LPG+"
     int gmdArch, gmdRel;   // graphics IP version (GMD ID)
     int gtGen;             // GTGeneration as XeSS reads it
+    int productFamily;     // Intel PRODUCT_FAMILY (gmmlib igfxfmid.h: IGFX_PTL 1300, IGFX_LUNARLAKE 1275, ...). libxell.dll
+                           // accepts driver timings only if INTCDeviceInfo::GTGeneration holds one of these (XellDriver.cpp)
     int eus, cores;        // execution units / Xe cores (typical SKU of the family; IGDEXT_EUS overrides)
     bool xmx;              // matrix engines present
     bool simd16;           // SIMD16-native (Xe2 and later): XeSS must hand out its SIMD16 kernel variant
