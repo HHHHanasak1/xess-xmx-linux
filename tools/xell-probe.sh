@@ -7,11 +7,15 @@
 # It turns on, for this launch only:
 #   IGDEXT_TRACE=1            shim trace            -> C:\igdext_trace.log      (prefix)
 #   IGDEXT_XELL_LOG=1         XeLL hook log         -> C:\igdext_xell.log       (prefix)
-#   IGDEXT_XELL_PROBE=1       the shim claims latency-reduction support v1 and logs every call and buffer access
-#   XELL_FORCE_LOGS_TO_FILE=1 libxell's own log     -> libxell.log              (game folder or working directory)
+#   IGDEXT_XELL_PROBE=1       the shim hides Wine from libxell.dll, claims latency-reduction support v1 and logs every
+#                             call and buffer access (shim/src/dll/XellDriver.cpp)
+#   XELL_FORCE_LOGS_TO_FILE=1 libxell's own log     -> libxell.log  (libxell 1.3.2+ only; 1.3.0.x has no file log)
+#   PROTON_LOG=1              Proton log            -> ~/steam-<appid>.log: libxell's OutputDebugString messages
+#                             ("[XeLL] Using built-in context", "Intel Extensions initialized.", "Latency reduction
+#                             enabled ...") land here with every libxell version; only the XeLL lines are kept
 # and after the game exits writes ~/xess-xmx-probe-<date>.tar.gz with those files plus the session's driver status,
-# and prints the lines that matter (which path XeLL loaded the extension library from, the mode it chose, what it
-# called on the shim). Send the archive with a bug report / probe result.
+# and prints the lines that matter (the mode XeLL chose, why, what it called on the shim). Send the archive with a bug
+# report / probe result.
 #
 # Variables:  XELL_PROBE_VERSION=<n>   interface version to claim (default 1; try 2, 3 if XeLL rejects 1)
 #             XELL_PROBE_TELEMETRY=1   also answer GetDisplayTelemetry with a zeroed buffer (IGDEXT_XELL_TELEMETRY)
@@ -31,6 +35,9 @@ rm -f ./libxell.log
 
 export IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 XELL_FORCE_LOGS_TO_FILE=1
 export IGDEXT_XELL_PROBE="${XELL_PROBE_VERSION:-1}"
+[ -n "${PROTON_LOG:-}" ] || export PROTON_LOG=1
+protonlog="$HOME/steam-${SteamAppId:-${SteamGameId:-0}}.log"
+[ -f "$protonlog" ] && mv -f "$protonlog" "$protonlog.prev"
 [ "${XELL_PROBE_TELEMETRY:-0}" = 1 ] && export IGDEXT_XELL_TELEMETRY=1
 
 echo "xell-probe: prefix $pfx, probe version $IGDEXT_XELL_PROBE, logs -> $out" >&2
@@ -44,6 +51,7 @@ for f in ./libxell.log "$pfx/libxell.log" "$(dirname "$(command -v "$1" 2>/dev/n
   [ -f "$f" ] && { cp -f "$f" "$out/libxell.log"; break; }
 done
 [ -f "$out/libxell.log" ] || find "$(pwd)" -maxdepth 3 -name libxell.log -newer "$out" -exec cp -f {} "$out/" \; 2>/dev/null
+[ -f "$protonlog" ] && grep -a -i -E 'xell|intel extensions|latency reduction|igdext' "$protonlog" > "$out/proton-xell.log"
 cp -f "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status" "$out/" 2>/dev/null
 {
   echo "date: $stamp"; echo "exit code: $rc"; echo "command: $*"; echo "prefix: $pfx"
@@ -53,14 +61,15 @@ cp -f "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status" "$out/" 2>/dev/nu
 } > "$out/environment.txt"
 
 echo >&2; echo "xell-probe: what XeLL did" >&2
-if [ -f "$out/libxell.log" ]; then
-  grep -a -i -E 'Loading Intel Extensions|Intel Extensions (initialized|initialization failed|library loaded)|Cannot load Intel|Driver version|Latency reduction|Using (built-in|external|driver DLL|game DLL) context|unsupported (device|driver)|Driver timestamps|Driver timings|GetRenderStartTimestamp' \
-    "$out/libxell.log" | head -40 >&2
-else
-  echo "  (no libxell.log found: the game may keep it elsewhere; look for '[XeLL] Logs output file' in its folder)" >&2
-fi
+pat='Loading Intel Extensions|Intel Extensions (initialized|initialization failed|library loaded)|Cannot load Intel|Driver version|Latency reduction|Using (built-in|external|driver DLL|game DLL) context|unsupported (device|driver)|Driver timestamps|Driver timings|GetRenderStartTimestamp|context creat'
+found=0
+for f in "$out/libxell.log" "$out/proton-xell.log"; do
+  [ -s "$f" ] || continue
+  echo "  [$(basename "$f")]" >&2; grep -a -i -E "$pat" "$f" | head -40 >&2; found=1
+done
+[ $found = 1 ] || echo "  (no libxell.log and no XeLL lines in $protonlog: did the game use XeSS frame generation?)" >&2
 echo >&2; echo "xell-probe: what the shim saw" >&2
-grep -a 'XELLPROBE' "$out/igdext_trace.log" 2>/dev/null | head -60 >&2
+grep -a -E 'XELLPROBE|GPU: PCI|device info' "$out/igdext_trace.log" 2>/dev/null | head -60 >&2
 [ -s "$out/igdext_trace.log" ] || echo "  (no igdext_trace.log: the shim is not installed in this prefix; run install.sh / enable.sh)" >&2
 
 tar -C "$HOME" -czf "$out.tar.gz" "$(basename "$out")" && rm -rf "$out"

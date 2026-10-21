@@ -51,7 +51,16 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
     di = {};
     // the detected GPU (GpuInfo.cpp); overrides: IGDEXT_GMD=<arch>,<release>  IGDEXT_GTGEN=<n>  IGDEXT_EUS=<eus>,<cores>  IGDEXT_GTNAME=<name>
     const XmxGpu& gpu = XmxDetectGpu();
-    const int gmdArch = gpu.gmdArch, gmdRel = gpu.gmdRel, gtGen = gpu.gtGen, eus = gpu.eus, cores = gpu.cores;
+    const int gmdArch = gpu.gmdArch, gmdRel = gpu.gmdRel, eus = gpu.eus, cores = gpu.cores;
+    // GTGeneration: the Windows driver reports Intel's PRODUCT_FAMILY here (libxell.dll checks it against the XeSS-capable
+    // families, XellDriver.cpp); the shim keeps its historical value for XeSS unless the XeLL driver-mode probe is on
+    int gtGen = gpu.gtGen;
+    {
+        char b[8];
+        if (GetEnvironmentVariableA("IGDEXT_XELL_PROBE", b, sizeof(b)) > 0 && atoi(b) > 0 && gpu.productFamily &&
+            GetEnvironmentVariableA("IGDEXT_GTGEN", b, sizeof(b)) == 0)
+            gtGen = gpu.productFamily;
+    }
     char gtName[64];
     if (GetEnvironmentVariableA("IGDEXT_GTNAME", gtName, sizeof(gtName)) == 0) strcpy_s(gtName, gpu.family);
     { wchar_t wn[64]; size_t n = 0; mbstowcs_s(&n, wn, gtName, _TRUNCATE); wcsncpy_s(di.GTGenerationName, wn, _TRUNCATE); }
