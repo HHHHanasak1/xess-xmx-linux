@@ -25,12 +25,34 @@
 //     igxell.dll is a different, optional mechanism (XeLL's "driver DLL context", a newer XeLL carried by the Windows
 //     driver) and is not needed for driver timings.
 //
-// IGDEXT_XELL_PROBE=<version> makes the shim hide wine_get_version from libxell.dll (an import-table hook of GetProcAddress
-// in libxell.dll only, installed when the DLL loads), claim support for that latency-reduction interface version, answer
-// the Set* calls with S_OK, stamp a QPC timestamp per RenderSubmitStart, and log every call plus every access XeLL makes
-// to the render-submit timing buffers (guard pages), to work out the undocumented buffer layout. IGDEXT_XELL_TELEMETRY=1
-// additionally answers GetDisplayTelemetry with a zeroed buffer instead of E_NOTIMPL. Without IGDEXT_XELL_PROBE nothing
-// here is active and every function answers "not supported", as before.
+// What XeLL does with the data (1.3.2.10; the author's reading of 1.3.0.5 on a B390 matches):
+//  - GetDisplayTelemetry(block, 928): 16 records of 56 bytes at 0: frame id (u32) at +0x08, flags at +0x20 (bit 2 =
+//    vsync on), the time the flip was queued at +0x28 and the vsync it was shown on at +0x30 ("Flip in queue" is their
+//    difference, "Last used vsync" the second); then at 0x388 a reference vsync time, at 0x390/0x398 that time plus the
+//    shortest and the longest refresh interval (equal: fixed refresh; different: VRR). All times in QPC ticks (XeLL
+//    multiplies by 100: Windows' QPC runs at 10 MHz, Wine's too). All three trailing values must be non-zero with
+//    0x398 >= 0x390 or the frame is skipped ("Display telemetry corrupted."). Two consecutive records with the same
+//    frame id tell XeLL that frame generation is on.
+//  - CPU timing buffer: 8 slots of 16 bytes, the second qword of slot (frameId & 7) = CPU time of the render submit in
+//    XeLL's own clock, std::chrono::steady_clock, i.e. QPC converted to nanoseconds (it is used raw against XeLL's
+//    other CPU times). GPU timing buffer: 8 slots of 8 bytes, slot (frameId & 7) = GPU timestamp of the submit in the
+//    D3D12 queue's timestamp ticks (XeLL divides by ID3D12CommandQueue::GetTimestampFrequency of its own queue). XeLL
+//    zeroes both after reading. A frame whose timings did not arrive is not paced at all ("Driver timings not
+//    available for last visible frame"), so driver mode must deliver every frame or not run.
+//
+// IGDEXT_XELL_PROBE=<version> turns the driver mode on: the shim hides wine_get_version from libxell.dll (an
+// import-table hook of GetProcAddress in libxell.dll only, installed when the DLL loads), reports the product family,
+// claims that latency-reduction interface version and provides the three things above:
+//  - RenderSubmitStart(frameId): CPU time = QPC in ns; GPU time = the GPU clock read with GetClockCalibration on a
+//    direct queue the shim creates on the game's device (same clock as every direct queue), i.e. "the GPU could start
+//    this submit now" - the queue depth is not known to the shim (first version);
+//  - display telemetry: a vsync model from the current display mode's refresh rate (IGDEXT_XELL_HZ overrides, and
+//    IGDEXT_XELL_VRR=<min>,<max> describes a VRR range), records from SetPresentSequenceNumber calls (one per present,
+//    flip queued = call time, shown = the next vsync after it);
+// and logs what XeLL does with it (XELLPROBE lines). IGDEXT_XELL_TELEMETRY=0 answers GetDisplayTelemetry with
+// E_NOTIMPL instead (A/B test); IGDEXT_XELL_GUARD=1 puts the timing buffers on guard pages and logs every access XeLL
+// makes to them (slot, offset, code address), as the first probe did. Without IGDEXT_XELL_PROBE nothing here is
+// active and every function answers "not supported", as before.
 #include "Stdafx.h"
 #include "Trace.h"
 #include <cstdio>
@@ -39,6 +61,8 @@
 #include <cstdlib>
 #include <intrin.h>
 #include <winternl.h>
+#include <mutex>
+#include "ExtensionContext.h"
 
 namespace
 {
@@ -204,7 +228,133 @@ void StartXellDriverProbe()
         TraceF("XELLPROBE LdrRegisterDllNotification unavailable: libxell.dll must already be loaded when the shim loads");
 }
 
+static ID3D12Device* DevOf(INTCExtensionContext* c) { return (c && c->m_pD3D12ExtensionContext) ? c->m_pD3D12ExtensionContext->m_pAppDevice.Get() : nullptr; }
+
 extern "C" {
+
+// ---- the provider ---------------------------------------------------------------------------------------------------
+namespace
+{
+constexpr uint32_t kSlots = 8;
+constexpr size_t kCpuSlot = 16, kGpuSlot = 8;
+
+struct PresentRecord { uint32_t frameId; uint64_t queued, shown; };   // QPC ticks
+
+LARGE_INTEGER g_qpf = {};
+ID3D12CommandQueue* g_queue = nullptr;     // shim-owned direct queue for GetClockCalibration
+INTCExtensionContext* g_ctx = nullptr;
+std::mutex g_mtx;
+PresentRecord g_presents[16] = {};
+uint32_t g_nPresents = 0, g_lastPresentId = 0;
+uint64_t g_vsyncAnchor = 0;                // QPC ticks of a vsync (modelled)
+uint64_t g_periodMin = 0, g_periodMax = 0; // QPC ticks
+bool g_vsyncOn = true;
+int g_telemetryMode = -1;                  // -1 unread, 0 E_NOTIMPL, 1 provide
+
+uint64_t Qpc() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
+uint64_t QpcToNs(uint64_t q) { const uint64_t f = (uint64_t)g_qpf.QuadPart; return q / f * 1000000000ull + (q % f) * 1000000000ull / f; }
+
+int TelemetryMode()
+{
+    if (g_telemetryMode < 0)
+    {
+        char b[8];
+        g_telemetryMode = GetEnvironmentVariableA("IGDEXT_XELL_TELEMETRY", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 1;
+    }
+    return g_telemetryMode;
+}
+
+// refresh interval(s) of the display, in QPC ticks: IGDEXT_XELL_VRR=<minHz>,<maxHz>, IGDEXT_XELL_HZ=<hz>, else the mode
+void InitDisplayModel()
+{
+    if (g_periodMin) return;
+    QueryPerformanceFrequency(&g_qpf);
+    double hzMin = 0, hzMax = 0;
+    char b[32];
+    if (GetEnvironmentVariableA("IGDEXT_XELL_VRR", b, sizeof(b)) > 0 && sscanf(b, "%lf,%lf", &hzMin, &hzMax) == 2 && hzMin > 0 && hzMax >= hzMin) {}
+    else if (GetEnvironmentVariableA("IGDEXT_XELL_HZ", b, sizeof(b)) > 0 && (hzMax = atof(b)) > 0) hzMin = hzMax;
+    else
+    {
+        DEVMODEW dm = {}; dm.dmSize = sizeof(dm);
+        if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) hzMin = hzMax = dm.dmDisplayFrequency;
+        else hzMin = hzMax = 60;
+    }
+    g_periodMax = (uint64_t)((double)g_qpf.QuadPart / hzMin + 0.5);   // longest interval = lowest rate
+    g_periodMin = (uint64_t)((double)g_qpf.QuadPart / hzMax + 0.5);
+    if (GetEnvironmentVariableA("IGDEXT_XELL_TEARING", b, sizeof(b)) > 0 && atoi(b)) g_vsyncOn = false;
+    g_vsyncAnchor = Qpc();
+    TraceF("XELLPROBE display model: %.2f-%.2f Hz (period %llu-%llu QPC ticks of %lld/s), vsync %s", hzMin, hzMax,
+           (unsigned long long)g_periodMin, (unsigned long long)g_periodMax, (long long)g_qpf.QuadPart, g_vsyncOn ? "on" : "off (tearing)");
+}
+
+// the next modelled vsync strictly after t (fixed refresh: the anchor advanced in whole periods)
+uint64_t NextVsyncAfter(uint64_t t)
+{
+    const uint64_t p = g_periodMax;
+    if (t < g_vsyncAnchor) return g_vsyncAnchor;
+    const uint64_t n = (t - g_vsyncAnchor) / p + 1;
+    return g_vsyncAnchor + n * p;
+}
+
+bool EnsureQueue(INTCExtensionContext* ctx)
+{
+    if (g_queue) return true;
+    ID3D12Device* dev = DevOf(ctx);
+    if (!dev) { TraceF("XELLPROBE no device on the extension context: no GPU clock"); return false; }
+    D3D12_COMMAND_QUEUE_DESC qd = {}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    HRESULT hr = dev->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&g_queue);
+    if (FAILED(hr) || !g_queue) { TraceF("XELLPROBE CreateCommandQueue for the GPU clock failed (hr=0x%08lx)", (unsigned long)hr); g_queue = nullptr; return false; }
+    UINT64 f = 0; g_queue->GetTimestampFrequency(&f);
+    TraceF("XELLPROBE GPU clock queue created: timestamp frequency %llu Hz", (unsigned long long)f);
+    return true;
+}
+
+// write the CPU and GPU time of a render submit into the slot of frameId
+void StampSubmit(uint32_t frameId)
+{
+    if (!g_cpuBuf || !g_gpuBuf) return;
+    UINT64 gpu = 0, cpu = 0;
+    if (g_queue && FAILED(g_queue->GetClockCalibration(&gpu, &cpu))) gpu = 0;
+    if (!cpu) cpu = Qpc();
+    if (gpu < 2) gpu = 2;          // XeLL ignores slots with gpu <= 1 (and would never pace the frame)
+    const uint32_t slot = frameId & (kSlots - 1);
+    *(uint64_t*)(g_cpuBuf + slot * kCpuSlot + 8) = QpcToNs(cpu);
+    *(uint64_t*)(g_gpuBuf + slot * kGpuSlot) = gpu;
+}
+
+void RecordPresent(uint32_t seq)
+{
+    const uint64_t now = Qpc();
+    std::lock_guard<std::mutex> lock(g_mtx);
+    PresentRecord& r = g_presents[g_nPresents % 16];
+    r.frameId = seq; r.queued = now; r.shown = NextVsyncAfter(now);
+    g_nPresents++; g_lastPresentId = seq;
+}
+
+// fill XeLL's 928-byte telemetry block
+void FillTelemetry(uint8_t* t, UINT size)
+{
+    memset(t, 0, size);
+    std::lock_guard<std::mutex> lock(g_mtx);
+    const uint32_t n = g_nPresents < 16 ? g_nPresents : 16;
+    // oldest first; XeLL takes the max frame id as the latest presented frame and the earliest times per id
+    for (uint32_t i = 0; i < n; i++)
+    {
+        const PresentRecord& r = g_presents[(g_nPresents - n + i) % 16];
+        uint8_t* rec = t + i * 56;
+        *(uint32_t*)(rec + 0x08) = r.frameId;
+        *(uint32_t*)(rec + 0x20) = g_vsyncOn ? 4u : 0u;
+        *(uint64_t*)(rec + 0x28) = r.queued;
+        *(uint64_t*)(rec + 0x30) = r.shown;
+    }
+    // reference vsync: the last modelled vsync before now
+    const uint64_t now = Qpc();
+    const uint64_t last = NextVsyncAfter(now) - g_periodMax;
+    *(uint64_t*)(t + 0x388) = last;
+    *(uint64_t*)(t + 0x390) = last + g_periodMin;
+    *(uint64_t*)(t + 0x398) = last + g_periodMax;
+}
+}
 
 HRESULT _INTC_D3D12_GetLatencyReductionStatus(INTCExtensionContext*, INTC_D3D12_LATENCY_REDUCTION_STATUS* st)
 {
@@ -218,19 +368,33 @@ HRESULT _INTC_D3D12_GetLatencyReductionStatus(INTCExtensionContext*, INTC_D3D12_
     return S_OK;
 }
 
-HRESULT _INTC_D3D12_LatencyReductionExt(INTCExtensionContext*, uint32_t version, BOOL latencyReductionEnabled, BOOL renderSubmitTimingsEnabled, uint32_t timingSlots)
+HRESULT _INTC_D3D12_LatencyReductionExt(INTCExtensionContext* ctx, uint32_t version, BOOL latencyReductionEnabled, BOOL renderSubmitTimingsEnabled, uint32_t timingSlots)
 {
     TraceF("XELLPROBE LatencyReductionExt(version %u, enabled %d, timings %d, slots %u)", version, latencyReductionEnabled, renderSubmitTimingsEnabled, timingSlots);
     if (ProbeVersion() <= 0) return E_NOTIMPL;
     g_used = version; g_enabled = latencyReductionEnabled; g_timings = renderSubmitTimingsEnabled;
+    g_ctx = ctx;
+    InitDisplayModel();
+    EnsureQueue(ctx);
     if (renderSubmitTimingsEnabled && timingSlots && !g_cpuBuf)
     {
         g_slots = timingSlots;
-        g_bufSize = ((size_t)timingSlots * 512 + 0xfff) & ~(size_t)0xfff;
-        AddVectoredExceptionHandler(1, GuardHandler);
-        g_cpuBuf = GuardedBuffer(g_bufSize);
-        g_gpuBuf = GuardedBuffer(g_bufSize);
-        TraceF("XELLPROBE buffers cpu %p gpu %p (%zu bytes each)", g_cpuBuf, g_gpuBuf, g_bufSize);
+        // XeLL 1.3 addresses the slots as (frameId & 7) regardless of the count it asks for; a page each is plenty
+        g_bufSize = 0x1000;
+        char b[8];
+        const bool guard = GetEnvironmentVariableA("IGDEXT_XELL_GUARD", b, sizeof(b)) > 0 && atoi(b);
+        if (guard)
+        {
+            AddVectoredExceptionHandler(1, GuardHandler);
+            g_cpuBuf = GuardedBuffer(g_bufSize);
+            g_gpuBuf = GuardedBuffer(g_bufSize);
+        }
+        else
+        {
+            g_cpuBuf = (uint8_t*)VirtualAlloc(nullptr, g_bufSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            g_gpuBuf = (uint8_t*)VirtualAlloc(nullptr, g_bufSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        }
+        TraceF("XELLPROBE buffers cpu %p gpu %p (%zu bytes each, %s)", g_cpuBuf, g_gpuBuf, g_bufSize, guard ? "guard pages" : "plain");
     }
     return S_OK;
 }
@@ -252,17 +416,22 @@ HRESULT _INTC_D3D12_RenderSubmitStart(INTCExtensionContext*, uint32_t frameId)
     const double sincePrevMs = prev.QuadPart ? (now.QuadPart - prev.QuadPart) * 1000.0 / freq.QuadPart : 0.0;
     prev = now;
     const LONG k = InterlockedIncrement(&n);
+    if (ProbeVersion() <= 0) return E_NOTIMPL;
+    StampSubmit(frameId);
     if (k <= 40 || (k % 600) == 0)
     {
         char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
-        TraceF("XELLPROBE RenderSubmitStart(frame %u) #%ld +%.2f ms from %s", frameId, (long)k, sincePrevMs, where);
+        const uint32_t slot = frameId & (kSlots - 1);
+        TraceF("XELLPROBE RenderSubmitStart(frame %u) #%ld +%.2f ms from %s -> slot %u cpu %llu ns gpu %llu", frameId, (long)k, sincePrevMs, where, slot,
+               g_cpuBuf ? (unsigned long long)*(uint64_t*)(g_cpuBuf + slot * kCpuSlot + 8) : 0ull,
+               g_gpuBuf ? (unsigned long long)*(uint64_t*)(g_gpuBuf + slot * kGpuSlot) : 0ull);
     }
-    return ProbeVersion() > 0 ? S_OK : E_NOTIMPL;
+    return S_OK;
 }
 
 // XeLL / XeSS-FG pacing information. On Windows the driver uses these to pace generated frames and to match
-// present sequence numbers against render-submit timings. The probe accepts them (S_OK) so that a failed call here
-// cannot be the reason XeLL stays in cross-vendor mode; the values are logged to see how XeLL uses them.
+// present sequence numbers against render-submit timings. SetPresentSequenceNumber is one call per present: it is
+// the source of the display telemetry's frame records.
 HRESULT _INTC_D3D12_SetNumGeneratedFrames(INTCExtensionContext*, UINT NumFrames)
 {
     static LONG n = 0; static UINT last = ~0u;
@@ -275,23 +444,25 @@ HRESULT _INTC_D3D12_SetPresentSequenceNumber(INTCExtensionContext*, UINT Present
 {
     static LONG n = 0;
     const LONG k = InterlockedIncrement(&n);
+    if (ProbeVersion() <= 0) return E_NOTIMPL;
+    if (g_periodMin) RecordPresent(PresentSequenceNumber);
     if (k <= 40 || (k % 600) == 0) TraceF("XELLPROBE SetPresentSequenceNumber(%u) #%ld", PresentSequenceNumber, (long)k);
-    return ProbeVersion() > 0 ? S_OK : E_NOTIMPL;
+    return S_OK;
 }
 
 HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext*, void* pTelemetryData, UINT size)
 {
     static LONG n = 0;
-    static int telemetry = -1;
-    if (telemetry < 0) { char b[8]; telemetry = GetEnvironmentVariableA("IGDEXT_XELL_TELEMETRY", b, sizeof(b)) > 0 ? atoi(b) : 0; }
     const LONG k = InterlockedIncrement(&n);
+    const bool provide = ProbeVersion() > 0 && TelemetryMode() && pTelemetryData && size >= 0x3a0 && g_periodMin;
     if (k <= 8 || (k % 600) == 0)
     {
         char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
-        TraceF("XELLPROBE GetDisplayTelemetry(size %u) #%ld from %s -> %s", size, (long)k, where, telemetry ? "zeroed S_OK" : "E_NOTIMPL");
+        TraceF("XELLPROBE GetDisplayTelemetry(size %u) #%ld from %s -> %s (presents recorded %u, last id %u)", size, (long)k, where,
+               provide ? "provided" : "E_NOTIMPL", g_nPresents, g_lastPresentId);
     }
-    if (!telemetry || ProbeVersion() <= 0) return E_NOTIMPL;
-    if (pTelemetryData && size) memset(pTelemetryData, 0, size);
+    if (!provide) return E_NOTIMPL;
+    FillTelemetry((uint8_t*)pTelemetryData, size);
     return S_OK;
 }
 
