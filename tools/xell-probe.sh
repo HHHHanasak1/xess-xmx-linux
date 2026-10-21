@@ -19,6 +19,7 @@
 #
 # Variables:  XELL_PROBE_VERSION=<n>   interface version to claim (default 1; try 2, 3 if XeLL rejects 1)
 #             XELL_PROBE_TELEMETRY=0   answer GetDisplayTelemetry with E_NOTIMPL instead of the display model (A/B)
+#             XELL_PROBE_GPUSTART=0    GPU start = clock at submit instead of the measured timestamp (A/B)
 #             XELL_PROBE_GUARD=1       timing buffers on guard pages: log every access XeLL makes to them
 #             XELL_PROBE_HZ=<hz>, XELL_PROBE_VRR=<min>,<max>   the display model's refresh rate(s) (default: current mode)
 #             XELL_PROBE_KEEP=1        do not delete the raw log files from the prefix afterwards
@@ -44,6 +45,7 @@ protonlog="${PROTON_LOG_DIR:-$HOME}/steam-${SteamGameId:-${SteamAppId:-0}}.log"
 [ -f "$protonlog" ] && mv -f "$protonlog" "$protonlog.prev"
 [ "${XELL_PROBE_TELEMETRY:-1}" = 0 ] && export IGDEXT_XELL_TELEMETRY=0
 [ "${XELL_PROBE_GUARD:-0}" = 1 ] && export IGDEXT_XELL_GUARD=1
+[ "${XELL_PROBE_GPUSTART:-1}" = 0 ] && export IGDEXT_XELL_GPUSTART=0
 [ -n "${XELL_PROBE_HZ:-}" ] && export IGDEXT_XELL_HZ="$XELL_PROBE_HZ"
 [ -n "${XELL_PROBE_VRR:-}" ] && export IGDEXT_XELL_VRR="$XELL_PROBE_VRR"
 
@@ -62,7 +64,7 @@ done
 cp -f "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status" "$out/" 2>/dev/null
 {
   echo "date: $stamp"; echo "exit code: $rc"; echo "command: $*"; echo "prefix: $pfx"
-  echo "probe version: $IGDEXT_XELL_PROBE  telemetry: ${IGDEXT_XELL_TELEMETRY:-1}  guard: ${IGDEXT_XELL_GUARD:-0}"
+  echo "probe version: $IGDEXT_XELL_PROBE  telemetry: ${IGDEXT_XELL_TELEMETRY:-1}  gpustart: ${IGDEXT_XELL_GPUSTART:-1}  guard: ${IGDEXT_XELL_GUARD:-0}"
   echo "kernel: $(uname -r)"; echo "mesa: $(grep -a -m1 -o 'Mesa [0-9.a-z-]*' "$out/driver-status" 2>/dev/null)"
   env | grep -a -E '^(INTC_|XELL_|IGDEXT_|PROTON_|VKD3D_|VK_DRIVER|STEAM_COMPAT_TOOL|STEAM_COMPAT_DATA)' | sort
 } > "$out/environment.txt"
