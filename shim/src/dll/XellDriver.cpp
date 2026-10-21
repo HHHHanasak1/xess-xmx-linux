@@ -43,9 +43,10 @@
 // IGDEXT_XELL_PROBE=<version> turns the driver mode on: the shim hides wine_get_version from libxell.dll (an
 // import-table hook of GetProcAddress in libxell.dll only, installed when the DLL loads), reports the product family,
 // claims that latency-reduction interface version and provides the three things above:
-//  - RenderSubmitStart(frameId): CPU time = QPC in ns; GPU time = the GPU clock read with GetClockCalibration on a
-//    direct queue the shim creates on the game's device (same clock as every direct queue), i.e. "the GPU could start
-//    this submit now" - the queue depth is not known to the shim (first version);
+//  - RenderSubmitStart(frameId): CPU time = QPC in ns; GPU time = provisionally the GPU clock read with
+//    GetClockCalibration on a direct queue the shim creates, replaced by a measured value: a timestamp query the shim
+//    executes in front of the frame's first ExecuteCommandLists from the game (vtable hook, see "real GPU start
+//    timestamps" below; IGDEXT_XELL_GPUSTART=0 keeps the provisional value);
 //  - display telemetry: a vsync model from the current display mode's refresh rate (IGDEXT_XELL_HZ overrides, and
 //    IGDEXT_XELL_VRR=<min>,<max> describes a VRR range), records from SetPresentSequenceNumber calls (one per present,
 //    flip queued = call time, shown = the next vsync after it);
@@ -309,6 +310,142 @@ bool EnsureQueue(INTCExtensionContext* ctx)
     return true;
 }
 
+// ---- real GPU start timestamps --------------------------------------------------------------------------------------
+// XeLL wants the GPU time at which the GPU began the frame's render submit. The shim cannot see the game's command
+// lists through the extension API, but it can see them go by: every vkd3d-proton command queue shares one vtable, so
+// hooking ExecuteCommandLists in the vtable of the shim's own queue hooks the game's queues too. After
+// RenderSubmitStart(frameId), the first ExecuteCommandLists on a direct queue from the game (not from XeLL / XeSS / the
+// shim) gets a tiny pre-recorded command list executed in front of it: one timestamp query resolved into a readback
+// buffer, and a fence signal right behind it. The timestamp is written as soon as the GPU has passed that point; when
+// the fence shows it is done, the value replaces the provisional "GPU clock at submit" in the slot, unless XeLL has
+// already consumed the slot (it zeroes it). IGDEXT_XELL_GPUSTART=0 switches this off (A/B).
+namespace
+{
+constexpr uint32_t kRing = 8;      // one per timing slot
+typedef HRESULT (STDMETHODCALLTYPE* PFN_ExecuteCommandLists)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+PFN_ExecuteCommandLists g_origECL = nullptr;
+ID3D12QueryHeap* g_qheap = nullptr;
+ID3D12Resource* g_readback = nullptr;
+uint64_t* g_readbackMap = nullptr;
+ID3D12CommandAllocator* g_alloc[kRing] = {};
+ID3D12GraphicsCommandList* g_list[kRing] = {};
+ID3D12Fence* g_fence = nullptr;
+uint64_t g_fenceValue = 0;
+struct Pending { uint32_t frameId; uint64_t fenceValue; bool armed, inflight; uint64_t cpuAtQuery; };
+Pending g_pending[kRing] = {};
+volatile LONG g_waitingFrame = -1;    // frame id whose first game submit is awaited, -1 none
+int g_gpuStartMode = -1;
+HMODULE g_self = nullptr;
+LONG g_hookLogged = 0;
+
+bool GpuStartEnabled()
+{
+    if (g_gpuStartMode < 0) { char b[8]; g_gpuStartMode = GetEnvironmentVariableA("IGDEXT_XELL_GPUSTART", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 1; }
+    return g_gpuStartMode == 1;
+}
+
+bool CallerIsGame(void* ret)
+{
+    HMODULE m = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)ret, &m) || !m) return true;
+    if (m == g_self) return false;
+    char path[MAX_PATH] = {}; GetModuleFileNameA(m, path, MAX_PATH);
+    const char* base = strrchr(path, '\\'); base = base ? base + 1 : path;
+    return _stricmp(base, "libxell.dll") != 0 && _stricmp(base, "libxess_fg.dll") != 0 && _stricmp(base, "libxess.dll") != 0 &&
+           _stricmp(base, "igxell.dll") != 0;
+}
+
+// a fence value reached: the timestamp of that ring entry is in the readback buffer
+void HarvestGpuStarts()
+{
+    if (!g_fence) return;
+    const uint64_t done = g_fence->GetCompletedValue();
+    for (uint32_t i = 0; i < kRing; i++)
+    {
+        Pending& p = g_pending[i];
+        if (!p.inflight || p.fenceValue > done) continue;
+        p.inflight = false;
+        const uint64_t gpu = g_readbackMap ? g_readbackMap[i] : 0;
+        const uint32_t slot = p.frameId & (kSlots - 1);
+        uint64_t* dst = (uint64_t*)(g_gpuBuf + slot * kGpuSlot);
+        static LONG n = 0; const LONG k = InterlockedIncrement(&n);
+        if (*dst != 0 && gpu > 1)
+        {
+            // not consumed yet: replace the provisional submit-time value
+            const int64_t deltaTicks = (int64_t)gpu - (int64_t)*dst;
+            *dst = gpu;
+            if (k <= 40 || (k % 600) == 0) TraceF("XELLPROBE gpu start frame %u: measured %llu (%+lld ticks after submit)", p.frameId, (unsigned long long)gpu, (long long)deltaTicks);
+        }
+        else if (k <= 40 || (k % 600) == 0)
+            TraceF("XELLPROBE gpu start frame %u: measured %llu but slot already consumed by XeLL (provisional value was used)", p.frameId, (unsigned long long)gpu);
+    }
+}
+
+HRESULT STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
+{
+    const LONG frame = g_waitingFrame;
+    if (frame >= 0 && n > 0 && lists && g_fence)
+    {
+        D3D12_COMMAND_QUEUE_DESC qd = q->GetDesc();
+        if (qd.Type == D3D12_COMMAND_LIST_TYPE_DIRECT && CallerIsGame(_ReturnAddress()) &&
+            InterlockedCompareExchange(&g_waitingFrame, -1, frame) == frame)
+        {
+            const uint32_t i = (uint32_t)frame & (kRing - 1);
+            Pending& p = g_pending[i];
+            if (!p.inflight && g_list[i])
+            {
+                ID3D12CommandList* mine[1] = { g_list[i] };
+                g_origECL(q, 1, mine);
+                const uint64_t fv = ++g_fenceValue;
+                q->Signal(g_fence, fv);
+                p.frameId = (uint32_t)frame; p.fenceValue = fv; p.inflight = true;
+                if (InterlockedIncrement(&g_hookLogged) <= 8)
+                {
+                    char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
+                    TraceF("XELLPROBE timestamp query queued ahead of frame %u's first submit (%u list(s), queue %p, from %s)", (unsigned)frame, n, q, where);
+                }
+            }
+        }
+    }
+    return g_origECL(q, n, lists);
+}
+
+bool SetupGpuStart(ID3D12Device* dev)
+{
+    if (g_fence || !GpuStartEnabled()) return g_fence != nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)&SetupGpuStart, &g_self);
+    D3D12_QUERY_HEAP_DESC qh = {}; qh.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qh.Count = kRing;
+    if (FAILED(dev->CreateQueryHeap(&qh, __uuidof(ID3D12QueryHeap), (void**)&g_qheap))) { TraceF("XELLPROBE gpu start: CreateQueryHeap failed"); return false; }
+    D3D12_HEAP_PROPERTIES hp = {}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC rd = {}; rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = kRing * sizeof(uint64_t); rd.Height = 1; rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1; rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, __uuidof(ID3D12Resource), (void**)&g_readback)))
+    { TraceF("XELLPROBE gpu start: readback buffer failed"); return false; }
+    D3D12_RANGE all = { 0, kRing * sizeof(uint64_t) };
+    if (FAILED(g_readback->Map(0, &all, (void**)&g_readbackMap))) { TraceF("XELLPROBE gpu start: Map failed"); return false; }
+    for (uint32_t i = 0; i < kRing; i++)
+    {
+        if (FAILED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&g_alloc[i])) ||
+            FAILED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_alloc[i], nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&g_list[i])))
+        { TraceF("XELLPROBE gpu start: command list %u failed", i); return false; }
+        // recorded once, executed many times: a closed list can be re-executed as long as it is never reset
+        g_list[i]->EndQuery(g_qheap, D3D12_QUERY_TYPE_TIMESTAMP, i);
+        g_list[i]->ResolveQueryData(g_qheap, D3D12_QUERY_TYPE_TIMESTAMP, i, 1, g_readback, i * sizeof(uint64_t));
+        if (FAILED(g_list[i]->Close())) { TraceF("XELLPROBE gpu start: Close failed"); return false; }
+    }
+    if (FAILED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), (void**)&g_fence))) { TraceF("XELLPROBE gpu start: CreateFence failed"); return false; }
+    // hook ExecuteCommandLists through the vtable shared by every command queue of this D3D12 implementation
+    void** vtbl = *(void***)g_queue;
+    DWORD old;
+    if (!VirtualProtect(&vtbl[10], sizeof(void*), PAGE_READWRITE, &old)) { TraceF("XELLPROBE gpu start: cannot write the command queue vtable"); return false; }
+    g_origECL = (PFN_ExecuteCommandLists)vtbl[10];
+    vtbl[10] = (void*)HookedExecuteCommandLists;
+    VirtualProtect(&vtbl[10], sizeof(void*), old, &old);
+    TraceF("XELLPROBE gpu start: ExecuteCommandLists hooked (vtable %p, original %p); timestamp queries go ahead of each frame's first submit", vtbl, (void*)g_origECL);
+    return true;
+}
+}
+
 // write the CPU and GPU time of a render submit into the slot of frameId
 void StampSubmit(uint32_t frameId)
 {
@@ -318,8 +455,10 @@ void StampSubmit(uint32_t frameId)
     if (!cpu) cpu = Qpc();
     if (gpu < 2) gpu = 2;          // XeLL ignores slots with gpu <= 1 (and would never pace the frame)
     const uint32_t slot = frameId & (kSlots - 1);
+    HarvestGpuStarts();
     *(uint64_t*)(g_cpuBuf + slot * kCpuSlot + 8) = QpcToNs(cpu);
-    *(uint64_t*)(g_gpuBuf + slot * kGpuSlot) = gpu;
+    *(uint64_t*)(g_gpuBuf + slot * kGpuSlot) = gpu;   // provisional; replaced by the measured GPU start when it arrives
+    if (g_fence) InterlockedExchange(&g_waitingFrame, (LONG)frameId);
 }
 
 void RecordPresent(uint32_t seq)
@@ -375,7 +514,7 @@ HRESULT _INTC_D3D12_LatencyReductionExt(INTCExtensionContext* ctx, uint32_t vers
     g_used = version; g_enabled = latencyReductionEnabled; g_timings = renderSubmitTimingsEnabled;
     g_ctx = ctx;
     InitDisplayModel();
-    EnsureQueue(ctx);
+    if (EnsureQueue(ctx)) SetupGpuStart(DevOf(ctx));
     if (renderSubmitTimingsEnabled && timingSlots && !g_cpuBuf)
     {
         g_slots = timingSlots;
@@ -462,6 +601,7 @@ HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext*, void* pTelemetryD
                provide ? "provided" : "E_NOTIMPL", g_nPresents, g_lastPresentId);
     }
     if (!provide) return E_NOTIMPL;
+    HarvestGpuStarts();   // XeLL reads the timing slots right after this call
     FillTelemetry((uint8_t*)pTelemetryData, size);
     return S_OK;
 }

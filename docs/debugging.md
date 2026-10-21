@@ -50,8 +50,11 @@ shim normally reports 30 there), and only then calls the latency-reduction funct
 `libxell.dll` (an import-table hook in that DLL only), reports the family id, claims that interface version, and then
 provides what XeLL reads (the layout, worked out on a B390 and from the DLL's code, is in `XellDriver.cpp`):
 
-* per `RenderSubmitStart`: the CPU time of the submit (QPC in nanoseconds, XeLL's own clock) and a GPU clock reading
-  from `GetClockCalibration` on a queue the shim creates (same clock as the game's direct queues);
+* per `RenderSubmitStart`: the CPU time of the submit (QPC in nanoseconds, XeLL's own clock) and the GPU time at
+  which the GPU began the frame: a timestamp query the shim executes in front of the frame's first
+  `ExecuteCommandLists` from the game (it hooks that call in the command-queue vtable), with the GPU clock at submit
+  from `GetClockCalibration` as the provisional value until the query lands (`XELLPROBE gpu start frame N: measured
+  ... (+N ticks after submit)` lines; the offset is the queue depth XeLL now sees);
 * display telemetry: a vsync model from the current display mode (`IGDEXT_XELL_HZ=<hz>`, or `IGDEXT_XELL_VRR=<min>,<max>`
   for a VRR range, `IGDEXT_XELL_TEARING=1` for vsync off), and one record per `SetPresentSequenceNumber` call (flip
   queued = the call, shown = the next modelled vsync).
@@ -84,8 +87,11 @@ How to read the result:
   from the shim's records do not match its frame ids.
 * `Driver timings not available for last visible frame.` every frame: XeLL found zero slots; the `RenderSubmitStart`
   lines show what was stored and in which slot.
-* `xell latency:` lower than the same scene without the probe: driver mode is paying off. Higher: the GPU time the shim
-  reports (the clock at submit, not when the GPU reached the work) is misleading XeLL; that is the next thing to fix.
+* `xell latency:` lower than the same scene without the probe: driver mode is paying off. Higher: compare with
+  `IGDEXT_XELL_GPUSTART=0` (submit-time GPU clock) and `IGDEXT_XELL_TELEMETRY=0` (no telemetry: XeLL paces nothing,
+  which is the cross-vendor behaviour) to see which input misleads it.
+* No `timestamp query queued ahead of frame` lines: the game's first submit after `RenderSubmitStart` was not seen
+  (not a direct queue, or the call came through a module the hook treats as XeSS's own); the provisional value stays.
 * `IGDEXT_XELL_GUARD=1` logs every read and write XeLL makes to the timing buffers with the slot, the offset and the
   code address in `libxell.dll`, for a new XeLL version.
 
@@ -111,6 +117,7 @@ Shim (game environment):
 | `IGDEXT_XELL_TELEMETRY=0` | with the probe: answer `GetDisplayTelemetry` with E_NOTIMPL instead of the display model |
 | `IGDEXT_XELL_HZ=<hz>`, `IGDEXT_XELL_VRR=<min>,<max>`, `IGDEXT_XELL_TEARING=1` | the display model (default: the current mode's refresh rate, vsync on) |
 | `IGDEXT_XELL_GUARD=1` | with the probe: timing buffers on guard pages, every access logged |
+| `IGDEXT_XELL_GPUSTART=0` | with the probe: keep the GPU clock at submit as the frame's GPU start instead of measuring it with a timestamp query ahead of the frame's first `ExecuteCommandLists` |
 
 Driver choice: `MESA=<version>` (a prefix such as `26.1` is enough) makes a game use that driver of the package
 instead of the default; the game's stderr then says `xess-xmx: using the Mesa ... driver`.
