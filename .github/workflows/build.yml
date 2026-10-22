@@ -59,6 +59,7 @@ jobs:
           path: shim/build/igdext64.dll
 
   mesa:
+    name: mesa ${{ matrix.name }}
     runs-on: ubuntu-latest
     container: archlinux:latest
     strategy:

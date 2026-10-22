@@ -6,7 +6,8 @@
 # libdrm, wayland, xcb headers). On SteamOS use an Arch Linux distrobox:
 #     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh
 # The version defaults to the system's Mesa (read from the host's stock driver). If the patches do not apply to that
-# version, nothing is changed and the script says so. Source and build tree: ${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}.
+# version, nothing is changed and the script says so. Source: the release tarball from archive.mesa3d.org; source and
+# build tree: ${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>.
 set -eu
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${XMX_MESA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/mesa-src}"
@@ -18,13 +19,24 @@ if [ -z "$VER" ]; then
 fi
 [ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0-rc1)"; exit 1; }
 echo "== Mesa $VER"
-if [ ! -d "$SRC/.git" ]; then
-  git clone --quiet https://gitlab.freedesktop.org/mesa/mesa.git "$SRC"
+# the release tarball, not the git tag: upstream can delete a tag (mesa-26.3.0-rc1 went, together with its commit,
+# when staging/26.3 was branched again). One tree per version, committed as "base" so the patches go on with git am.
+T="$SRC/$VER"
+if [ ! -d "$T/.git" ]; then
+  rm -rf "$T"; mkdir -p "$T"
+  if ! curl -sfL "https://archive.mesa3d.org/mesa-$VER.tar.xz" | tar -xJ -C "$T" --strip-components=1; then
+    rm -rf "$T"
+    echo "!! could not download https://archive.mesa3d.org/mesa-$VER.tar.xz (nothing was changed)"
+    exit 1
+  fi
+  git -C "$T" init -q
+  git -C "$T" add -A
+  git -C "$T" -c user.name=xess-xmx -c user.email=xmx@localhost commit -qm "mesa $VER"
+  git -C "$T" tag base
 fi
-cd "$SRC"
-git fetch --quiet origin "refs/tags/mesa-$VER:refs/tags/mesa-$VER" 2>/dev/null || true
+cd "$T"
 git am --abort 2>/dev/null || true
-git checkout --quiet -f -B xess-xmx "mesa-$VER"
+git checkout --quiet -f -B xess-xmx base
 PATCHES="$PKG/patches"
 MM=$(printf '%s' "$VER" | grep -o '^[0-9]*\.[0-9]*')
 [ -d "$PKG/patches/mesa-$MM" ] && PATCHES="$PKG/patches/mesa-$MM"
