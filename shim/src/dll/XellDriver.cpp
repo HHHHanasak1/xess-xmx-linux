@@ -43,7 +43,9 @@
 // IGDEXT_XELL_PROBE=<version> turns the driver mode on: the shim hides wine_get_version from libxell.dll (an
 // import-table hook of GetProcAddress in libxell.dll only, installed when the DLL loads), reports the product family,
 // claims that latency-reduction interface version and provides the three things above:
-//  - RenderSubmitStart(frameId): CPU time = QPC in ns; GPU time = provisionally the GPU clock read with
+//  - RenderSubmitStart(frameId): CPU time = QPC in ns, provisionally the marker time and replaced by the time of the
+//    frame's first ExecuteCommandLists (what the driver's "render submit timings" mean: XeLL's queue wait is GPU start
+//    minus this, and it logs marker->execute as "RenderSubmitStart to Execute delay"); GPU time = provisionally the GPU clock read with
 //    GetClockCalibration on a direct queue the shim creates, replaced by a measured value: a timestamp query the shim
 //    executes in front of the frame's first ExecuteCommandLists from the game (vtable hook, see "real GPU start
 //    timestamps" below; IGDEXT_XELL_GPUSTART=0 keeps the provisional value);
@@ -399,6 +401,11 @@ HRESULT STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* q, UINT 
                 const uint64_t fv = ++g_fenceValue;
                 q->Signal(g_fence, fv);
                 p.frameId = (uint32_t)frame; p.fenceValue = fv; p.inflight = true;
+                // the CPU slot means "when the work was handed to the GPU", not the marker: XeLL subtracts it from the
+                // GPU start to get the render-queue wait and logs marker->execute separately ("RenderSubmitStart to
+                // Execute delay"). Replace the provisional marker time unless XeLL already consumed the slot.
+                uint64_t* cslot = (uint64_t*)(g_cpuBuf + ((uint32_t)frame & (kSlots - 1)) * kCpuSlot + 8);
+                if (*cslot) *cslot = QpcToNs(Qpc());
                 if (InterlockedIncrement(&g_hookLogged) <= 8)
                 {
                     char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));

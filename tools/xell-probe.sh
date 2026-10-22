@@ -79,6 +79,13 @@ done
 [ $found = 1 ] || echo "  (no libxell.log and no XeLL lines in $protonlog: did the game use XeSS frame generation?)" >&2
 echo >&2; echo "xell-probe: what the shim saw" >&2
 grep -a -E 'XELLPROBE|GPU: PCI|device info' "$out/igdext_trace.log" 2>/dev/null | head -60 >&2
+echo >&2; echo "xell-probe: which pacing branch XeLL took (its own debug messages, via xellSetLoggingCallback; counts per run)" >&2
+if grep -a -q 'XeLL\[' "$out/igdext_xell.log" 2>/dev/null; then
+  grep -a -o -E 'CPU bound - GPU available quicker|GPU available in|GPU already available|Target already passed|Presentation time already passed|Gpu available sooner than guardband|\[Mode\] Align[A-Za-z]+|Display config: [A-Z]+ with VSync [a-z]+|Display telemetry corrupted|Driver timings not available|Driver timestamps not available|Failed to find GPU end timestamp|Frame timestamps not available|match not found|Slept for: skipping' "$out/igdext_xell.log" | sort | uniq -c | sort -rn >&2
+  grep -a -E 'RenderQueueWaitTime|GPU Time from last GPU begin|RenderSubmitStart to Execute delay|Sleep to render time|CPU submission time' "$out/igdext_xell.log" | tail -6 >&2
+else
+  echo "  (no XeLL[...] lines: XeLL's logging callback delivered nothing; its branch cannot be told from here)" >&2
+fi
 echo >&2; echo "xell-probe: latency XeLL measured (simulation start -> present end; compare with a run without the probe)" >&2
 grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -8 >&2
 [ -s "$out/igdext_trace.log" ] || echo "  (no igdext_trace.log: the shim is not installed in this prefix; run install.sh / enable.sh)" >&2
