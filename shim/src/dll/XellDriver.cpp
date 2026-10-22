@@ -245,6 +245,7 @@ struct PresentRecord { uint32_t frameId; uint64_t queued, shown; };   // QPC tic
 
 LARGE_INTEGER g_qpf = {};
 ID3D12CommandQueue* g_queue = nullptr;     // shim-owned direct queue for GetClockCalibration
+UINT64 g_tsFreq = 0;                       // its timestamp frequency (Hz), for readable queue-wait numbers
 INTCExtensionContext* g_ctx = nullptr;
 std::mutex g_mtx;
 PresentRecord g_presents[16] = {};
@@ -307,7 +308,7 @@ bool EnsureQueue(INTCExtensionContext* ctx)
     D3D12_COMMAND_QUEUE_DESC qd = {}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     HRESULT hr = dev->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&g_queue);
     if (FAILED(hr) || !g_queue) { TraceF("XELLPROBE CreateCommandQueue for the GPU clock failed (hr=0x%08lx)", (unsigned long)hr); g_queue = nullptr; return false; }
-    UINT64 f = 0; g_queue->GetTimestampFrequency(&f);
+    UINT64 f = 0; g_queue->GetTimestampFrequency(&f); g_tsFreq = f;
     TraceF("XELLPROBE GPU clock queue created: timestamp frequency %llu Hz", (unsigned long long)f);
     return true;
 }
@@ -376,7 +377,10 @@ void HarvestGpuStarts()
             // not consumed yet: replace the provisional submit-time value
             const int64_t deltaTicks = (int64_t)gpu - (int64_t)*dst;
             *dst = gpu;
-            if (k <= 40 || (k % 600) == 0) TraceF("XELLPROBE gpu start frame %u: measured %llu (%+lld ticks after submit)", p.frameId, (unsigned long long)gpu, (long long)deltaTicks);
+            // logged every frame: the probe script takes the median as the render-queue wait XeLL sees (GPU start minus
+            // the time the work was handed in) and sets it against XeLL's own sim->submit figure
+            TraceF("XELLPROBE gpu start frame %u: measured %llu (%+lld ticks = %+.2f ms after submit)", p.frameId, (unsigned long long)gpu,
+                   (long long)deltaTicks, g_tsFreq ? deltaTicks * 1000.0 / (double)g_tsFreq : 0.0);
         }
         else if (k <= 40 || (k % 600) == 0)
             TraceF("XELLPROBE gpu start frame %u: measured %llu but slot already consumed by XeLL (provisional value was used)", p.frameId, (unsigned long long)gpu);

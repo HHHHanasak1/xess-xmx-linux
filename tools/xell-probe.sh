@@ -79,12 +79,14 @@ done
 [ $found = 1 ] || echo "  (no libxell.log and no XeLL lines in $protonlog: did the game use XeSS frame generation?)" >&2
 echo >&2; echo "xell-probe: what the shim saw" >&2
 grep -a -E 'XELLPROBE|GPU: PCI|device info' "$out/igdext_trace.log" 2>/dev/null | head -60 >&2
-echo >&2; echo "xell-probe: which pacing branch XeLL took (its own debug messages, via xellSetLoggingCallback; counts per run)" >&2
-if grep -a -q 'XeLL\[' "$out/igdext_xell.log" 2>/dev/null; then
-  grep -a -o -E 'CPU bound - GPU available quicker|GPU available in|GPU already available|Target already passed|Presentation time already passed|Gpu available sooner than guardband|\[Mode\] Align[A-Za-z]+|Display config: [A-Z]+ with VSync [a-z]+|Display telemetry corrupted|Driver timings not available|Driver timestamps not available|Failed to find GPU end timestamp|Frame timestamps not available|match not found|Slept for: skipping' "$out/igdext_xell.log" | sort | uniq -c | sort -rn >&2
-  grep -a -E 'RenderQueueWaitTime|GPU Time from last GPU begin|RenderSubmitStart to Execute delay|Sleep to render time|CPU submission time' "$out/igdext_xell.log" | tail -6 >&2
+echo >&2; echo "xell-probe: what XeLL's driver-mode sleep sees (its decision messages never reach any log: derived from the measurements)" >&2
+qw=$(grep -a -o -E '[-+][0-9.]+ ms after submit' "$out/igdext_trace.log" 2>/dev/null | awk '{print $1+0}' | sort -n | awk '{a[NR]=$1} END{if(NR) printf "%.1f", a[int((NR+1)/2)]}')
+ss=$(grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -1 | grep -a -o -E 'sim -> render submit [0-9.]+' | awk '{print $NF}')
+if [ -n "$qw" ] && [ -n "$ss" ]; then
+  echo "  render-queue wait (GPU start - hand-in, median): $qw ms; CPU prepare (sim -> render submit, XeLL): $ss ms" >&2
+  awk -v q="$qw" -v s="$ss" 'BEGIN{ if (q+0 < s+0) printf "  -> CPU bound: the GPU is free %.1f ms before the CPU has the next frame ready; XeLL sleeps nothing, same as the Windows driver path would\n", s-q; else printf "  -> GPU bound by %.1f ms: XeLL should sleep that much at simulation start; if Sleep blocked stays ~0.5 ms, pacing is not acting on the timings\n", q-s }' >&2
 else
-  echo "  (no XeLL[...] lines: XeLL's logging callback delivered nothing; its branch cannot be told from here)" >&2
+  echo "  (needs the gpu start lines in igdext_trace.log and a 'xell latency' line in igdext_xell.log)" >&2
 fi
 echo >&2; echo "xell-probe: latency XeLL measured (simulation start -> present end; compare with a run without the probe)" >&2
 grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -8 >&2
