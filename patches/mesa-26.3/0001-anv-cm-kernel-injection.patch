@@ -1103,7 +1103,7 @@ diff --git a/src/vulkan/runtime/vk_shader.h b/src/vulkan/runtime/vk_shader.h
 index bdf57681..5115fc4b 100644
 --- a/src/vulkan/runtime/vk_shader.h
 +++ b/src/vulkan/runtime/vk_shader.h
-@@ -129,7 +129,9 @@ struct vk_shader {
+@@ -129,6 +129,9 @@ struct vk_shader {
      */
     uint32_t ray_queries;
  
