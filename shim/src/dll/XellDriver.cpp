@@ -51,7 +51,12 @@
 //    timestamps" below; IGDEXT_XELL_GPUSTART=0 keeps the provisional value);
 //  - display telemetry: a vsync model from the current display mode's refresh rate (IGDEXT_XELL_HZ overrides, and
 //    IGDEXT_XELL_VRR=<min>,<max> describes a VRR range), records from SetPresentSequenceNumber calls (one per present,
-//    flip queued = call time, shown = the next vsync after it);
+//    flip queued = call time). Shown = the first vsync at which the frame can be on screen: after its GPU work is done
+//    (a timestamp the shim executes on the game's queue at that call), after the frame before it was shown, and not
+//    before now while it is still in flight. That is the present queue a real driver reports ("Flip in queue"): with
+//    the GPU the limit, frames wait there, and that wait is what XeLL's sleep is for. Under vkd3d-proton the game
+//    thread otherwise blocks on the full swapchain inside its own frame, so XeLL sees a slow CPU instead.
+//    IGDEXT_XELL_FLIPQ=0 goes back to "shown at the next vsync after the call" (A/B);
 // and logs what XeLL does with it (XELLPROBE lines). IGDEXT_XELL_TELEMETRY=0 answers GetDisplayTelemetry with
 // E_NOTIMPL instead (A/B test); IGDEXT_XELL_GUARD=1 puts the timing buffers on guard pages and logs every access XeLL
 // makes to them (slot, offset, code address), as the first probe did. Without IGDEXT_XELL_PROBE nothing here is
@@ -241,7 +246,7 @@ namespace
 constexpr uint32_t kSlots = 8;
 constexpr size_t kCpuSlot = 16, kGpuSlot = 8;
 
-struct PresentRecord { uint32_t frameId; uint64_t queued, shown; };   // QPC ticks
+struct PresentRecord { uint32_t frameId; uint64_t queued, shown, gpuDone; };   // QPC ticks; gpuDone 0 = not known yet
 
 LARGE_INTEGER g_qpf = {};
 ID3D12CommandQueue* g_queue = nullptr;     // shim-owned direct queue for GetClockCalibration
@@ -254,8 +259,25 @@ uint64_t g_vsyncAnchor = 0;                // QPC ticks of a vsync (modelled)
 uint64_t g_periodMin = 0, g_periodMax = 0; // QPC ticks
 bool g_vsyncOn = true;
 int g_telemetryMode = -1;                  // -1 unread, 0 E_NOTIMPL, 1 provide
+int g_flipqMode = -1;                      // -1 unread, 0 shown = next vsync after the call, 1 present-queue model
+uint64_t g_calGpu = 0, g_calCpu = 0;       // latest GetClockCalibration pair (GPU ticks, QPC ticks)
 
 uint64_t Qpc() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
+
+bool FlipQueueModel()
+{
+    if (g_flipqMode < 0) { char b[8]; g_flipqMode = GetEnvironmentVariableA("IGDEXT_XELL_FLIPQ", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 1; }
+    return g_flipqMode == 1;
+}
+
+// a GPU timestamp of the D3D12 queues in QPC ticks, through the latest calibration pair (0 if there is none)
+uint64_t GpuToQpc(uint64_t gpu)
+{
+    if (!g_calGpu || !g_calCpu || !g_tsFreq || !g_qpf.QuadPart) return 0;
+    const double dq = ((double)(int64_t)(gpu - g_calGpu)) * (double)g_qpf.QuadPart / (double)g_tsFreq;
+    const double q = (double)g_calCpu + dq;
+    return q > 0 ? (uint64_t)q : 0;
+}
 uint64_t QpcToNs(uint64_t q) { const uint64_t f = (uint64_t)g_qpf.QuadPart; return q / f * 1000000000ull + (q % f) * 1000000000ull / f; }
 
 int TelemetryMode()
@@ -337,6 +359,21 @@ uint64_t g_fenceValue = 0;
 struct Pending { uint32_t frameId; uint64_t fenceValue; bool armed, inflight; uint64_t cpuAtQuery; };
 Pending g_pending[kRing] = {};
 volatile LONG g_waitingFrame = -1;    // frame id whose first game submit is awaited, -1 none
+uint64_t g_markerQpc[kSlots] = {};    // QPC at RenderSubmitStart per slot, for marker->execute
+
+// end of each presented frame's GPU work: a timestamp executed on the game's direct queue at SetPresentSequenceNumber
+constexpr uint32_t kEndRing = 16;     // one per present record
+ID3D12QueryHeap* g_qheapEnd = nullptr;
+ID3D12Resource* g_readbackEnd = nullptr;
+uint64_t* g_readbackEndMap = nullptr;
+ID3D12CommandAllocator* g_allocEnd[kEndRing] = {};
+ID3D12GraphicsCommandList* g_listEnd[kEndRing] = {};
+struct PendingEnd { uint32_t present, frameId; uint64_t fenceValue; bool inflight; };   // present: index into g_presents
+PendingEnd g_pendingEnd[kEndRing] = {};
+ID3D12CommandQueue* volatile g_gameQueue = nullptr;   // the game's direct queue (the last one it submitted to)
+ID3D12Fence* g_fenceEnd = nullptr;    // its own fence: the start stamps may go to another queue
+uint64_t g_fenceEndValue = 0;
+std::mutex g_endMtx;
 int g_gpuStartMode = -1;
 HMODULE g_self = nullptr;
 LONG g_hookLogged = 0;
@@ -387,8 +424,34 @@ void HarvestGpuStarts()
     }
 }
 
+// presented frames whose GPU work is done: their completion time goes into the present record
+void HarvestGpuEnds()
+{
+    if (!g_fenceEnd || !g_readbackEndMap) return;
+    const uint64_t done = g_fenceEnd->GetCompletedValue();
+    std::lock_guard<std::mutex> lock(g_endMtx);
+    for (uint32_t i = 0; i < kEndRing; i++)
+    {
+        PendingEnd& p = g_pendingEnd[i];
+        if (!p.inflight || p.fenceValue > done) continue;
+        p.inflight = false;
+        const uint64_t q = GpuToQpc(g_readbackEndMap[i]);
+        std::lock_guard<std::mutex> l2(g_mtx);
+        PresentRecord& r = g_presents[p.present % 16];
+        // the record is still this present's (16 presents later it is reused)
+        if (g_nPresents - p.present <= 16 && r.frameId == p.frameId && q) r.gpuDone = q > r.queued ? q : r.queued;
+    }
+}
+
 HRESULT STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
 {
+    if (g_listEnd[0] && n > 0 && lists && q != g_gameQueue && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT && CallerIsGame(_ReturnAddress()))
+    {
+        // the queue the game renders on, for the end-of-frame timestamps (queues live as long as the device)
+        q->AddRef();
+        ID3D12CommandQueue* old = (ID3D12CommandQueue*)InterlockedExchangePointer((PVOID volatile*)&g_gameQueue, q);
+        if (old) old->Release();
+    }
     const LONG frame = g_waitingFrame;
     if (frame >= 0 && n > 0 && lists && g_fence)
     {
@@ -402,14 +465,18 @@ HRESULT STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* q, UINT 
             {
                 ID3D12CommandList* mine[1] = { g_list[i] };
                 g_origECL(q, 1, mine);
-                const uint64_t fv = ++g_fenceValue;
+                const uint64_t fv = InterlockedIncrement64((volatile LONG64*)&g_fenceValue);
                 q->Signal(g_fence, fv);
                 p.frameId = (uint32_t)frame; p.fenceValue = fv; p.inflight = true;
                 // the CPU slot means "when the work was handed to the GPU", not the marker: XeLL subtracts it from the
                 // GPU start to get the render-queue wait and logs marker->execute separately ("RenderSubmitStart to
                 // Execute delay"). Replace the provisional marker time unless XeLL already consumed the slot.
                 uint64_t* cslot = (uint64_t*)(g_cpuBuf + ((uint32_t)frame & (kSlots - 1)) * kCpuSlot + 8);
-                if (*cslot) *cslot = QpcToNs(Qpc());
+                const uint64_t ex = Qpc(), mk = g_markerQpc[(uint32_t)frame & (kSlots - 1)];
+                if (*cslot) *cslot = QpcToNs(ex);
+                // XeLL's "RenderSubmitStart to Execute delay" (its own message never leaves the DLL): logged every frame
+                if (mk && ex >= mk && g_qpf.QuadPart)
+                    TraceF("XELLPROBE execute delay frame %u: %.2f ms", (unsigned)frame, (ex - mk) * 1000.0 / (double)g_qpf.QuadPart);
                 if (InterlockedIncrement(&g_hookLogged) <= 8)
                 {
                     char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
@@ -444,6 +511,32 @@ bool SetupGpuStart(ID3D12Device* dev)
         g_list[i]->ResolveQueryData(g_qheap, D3D12_QUERY_TYPE_TIMESTAMP, i, 1, g_readback, i * sizeof(uint64_t));
         if (FAILED(g_list[i]->Close())) { TraceF("XELLPROBE gpu start: Close failed"); return false; }
     }
+    if (FlipQueueModel())
+    {
+        D3D12_QUERY_HEAP_DESC qe = {}; qe.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qe.Count = kEndRing;
+        D3D12_RESOURCE_DESC re = rd; re.Width = kEndRing * sizeof(uint64_t);
+        D3D12_RANGE allEnd = { 0, kEndRing * sizeof(uint64_t) };
+        bool ok = SUCCEEDED(dev->CreateQueryHeap(&qe, __uuidof(ID3D12QueryHeap), (void**)&g_qheapEnd)) &&
+                  SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &re, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, __uuidof(ID3D12Resource), (void**)&g_readbackEnd)) &&
+                  SUCCEEDED(g_readbackEnd->Map(0, &allEnd, (void**)&g_readbackEndMap));
+        for (uint32_t i = 0; ok && i < kEndRing; i++)
+        {
+            ok = SUCCEEDED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&g_allocEnd[i])) &&
+                 SUCCEEDED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_allocEnd[i], nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&g_listEnd[i]));
+            if (!ok) break;
+            g_listEnd[i]->EndQuery(g_qheapEnd, D3D12_QUERY_TYPE_TIMESTAMP, i);
+            g_listEnd[i]->ResolveQueryData(g_qheapEnd, D3D12_QUERY_TYPE_TIMESTAMP, i, 1, g_readbackEnd, i * sizeof(uint64_t));
+            ok = SUCCEEDED(g_listEnd[i]->Close());
+        }
+        ok = ok && SUCCEEDED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), (void**)&g_fenceEnd));
+        if (ok) TraceF("XELLPROBE flip queue: end-of-frame timestamps on the game's queue; shown = first vsync after the GPU is done");
+        if (!ok)
+        {
+            TraceF("XELLPROBE flip queue: end-of-frame timestamps unavailable, shown = next vsync after the present");
+            for (uint32_t i = 0; i < kEndRing; i++) g_listEnd[i] = nullptr;   // (leaked: a failed setup happens once)
+            g_readbackEndMap = nullptr;
+        }
+    }
     if (FAILED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), (void**)&g_fence))) { TraceF("XELLPROBE gpu start: CreateFence failed"); return false; }
     // hook ExecuteCommandLists through the vtable shared by every command queue of this D3D12 implementation
     void** vtbl = *(void***)g_queue;
@@ -457,17 +550,36 @@ bool SetupGpuStart(ID3D12Device* dev)
 }
 }
 
+// at a present: a timestamp behind the frame's GPU work on the game's queue; when it is done, the record learns when
+// the frame could first be shown
+void StampPresentEnd(uint32_t present, uint32_t frameId)
+{
+    ID3D12CommandQueue* q = g_gameQueue;
+    if (!q || !g_listEnd[0] || !g_origECL || !g_fenceEnd) return;
+    const uint32_t i = present % kEndRing;
+    std::lock_guard<std::mutex> lock(g_endMtx);
+    PendingEnd& p = g_pendingEnd[i];
+    if (p.inflight) return;           // 16 presents behind: the GPU is far behind, leave this one unknown
+    ID3D12CommandList* mine[1] = { g_listEnd[i] };
+    g_origECL(q, 1, mine);
+    const uint64_t fv = ++g_fenceEndValue;     // under g_endMtx
+    q->Signal(g_fenceEnd, fv);
+    p.present = present; p.frameId = frameId; p.fenceValue = fv; p.inflight = true;
+}
+
 // write the CPU and GPU time of a render submit into the slot of frameId
 void StampSubmit(uint32_t frameId)
 {
     if (!g_cpuBuf || !g_gpuBuf) return;
     UINT64 gpu = 0, cpu = 0;
     if (g_queue && FAILED(g_queue->GetClockCalibration(&gpu, &cpu))) gpu = 0;
+    if (gpu > 1 && cpu) { g_calGpu = gpu; g_calCpu = cpu; }
     if (!cpu) cpu = Qpc();
     if (gpu < 2) gpu = 2;          // XeLL ignores slots with gpu <= 1 (and would never pace the frame)
     const uint32_t slot = frameId & (kSlots - 1);
     HarvestGpuStarts();
     *(uint64_t*)(g_cpuBuf + slot * kCpuSlot + 8) = QpcToNs(cpu);
+    g_markerQpc[slot] = cpu;
     *(uint64_t*)(g_gpuBuf + slot * kGpuSlot) = gpu;   // provisional; replaced by the measured GPU start when it arrives
     if (g_fence) InterlockedExchange(&g_waitingFrame, (LONG)frameId);
 }
@@ -475,30 +587,55 @@ void StampSubmit(uint32_t frameId)
 void RecordPresent(uint32_t seq)
 {
     const uint64_t now = Qpc();
-    std::lock_guard<std::mutex> lock(g_mtx);
-    PresentRecord& r = g_presents[g_nPresents % 16];
-    r.frameId = seq; r.queued = now; r.shown = NextVsyncAfter(now);
-    g_nPresents++; g_lastPresentId = seq;
+    uint32_t idx;
+    {
+        std::lock_guard<std::mutex> lock(g_mtx);
+        idx = g_nPresents;
+        PresentRecord& r = g_presents[idx % 16];
+        r.frameId = seq; r.queued = now; r.shown = NextVsyncAfter(now); r.gpuDone = 0;
+        g_nPresents++; g_lastPresentId = seq;
+    }
+    if (FlipQueueModel()) StampPresentEnd(idx, seq);
 }
 
 // fill XeLL's 928-byte telemetry block
 void FillTelemetry(uint8_t* t, UINT size)
 {
     memset(t, 0, size);
+    HarvestGpuEnds();
+    const uint64_t now = Qpc();
     std::lock_guard<std::mutex> lock(g_mtx);
     const uint32_t n = g_nPresents < 16 ? g_nPresents : 16;
+    const bool fq = FlipQueueModel() && g_readbackEndMap && g_fenceEnd && g_gameQueue;
+    uint64_t prevShown = 0, inQueue = 0;
     // oldest first; XeLL takes the max frame id as the latest presented frame and the earliest times per id
     for (uint32_t i = 0; i < n; i++)
     {
-        const PresentRecord& r = g_presents[(g_nPresents - n + i) % 16];
+        PresentRecord& r = g_presents[(g_nPresents - n + i) % 16];
+        if (fq)
+        {
+            // ready when its GPU work is done (still in flight: not before now), one flip per vsync after the one before
+            const uint64_t ready = r.gpuDone ? r.gpuDone : (now > r.queued ? now : r.queued);
+            uint64_t shown = g_vsyncOn ? NextVsyncAfter(ready) : ready;
+            if (g_vsyncOn && prevShown && shown <= prevShown) shown = prevShown + g_periodMin;
+            r.shown = shown;
+            prevShown = shown;
+            if (!r.gpuDone || shown > now) inQueue++;
+        }
         uint8_t* rec = t + i * 56;
         *(uint32_t*)(rec + 0x08) = r.frameId;
         *(uint32_t*)(rec + 0x20) = g_vsyncOn ? 4u : 0u;
         *(uint64_t*)(rec + 0x28) = r.queued;
         *(uint64_t*)(rec + 0x30) = r.shown;
     }
+    if (fq && n)
+    {
+        // logged every call: the probe script takes the median as the present queue XeLL is told about
+        const PresentRecord& last = g_presents[(g_nPresents - 1) % 16];
+        TraceF("XELLPROBE flip queue: %llu frame(s) waiting, last flip in queue %.2f ms", (unsigned long long)inQueue,
+               last.shown > last.queued ? (last.shown - last.queued) * 1000.0 / (double)g_qpf.QuadPart : 0.0);
+    }
     // reference vsync: the last modelled vsync before now
-    const uint64_t now = Qpc();
     const uint64_t last = NextVsyncAfter(now) - g_periodMax;
     *(uint64_t*)(t + 0x388) = last;
     *(uint64_t*)(t + 0x390) = last + g_periodMin;
