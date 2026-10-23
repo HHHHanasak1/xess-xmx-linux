@@ -57,7 +57,9 @@ fail() { # <reason>
 #    system without another 64-bit Mesa Vulkan driver (radeon, nouveau) leaves the patched ANV unloadable in games, and
 #    a system whose SPIRV-Tools has another name (libSPIRV-Tools-shared.so on Void Linux, libSPIRV-Tools-<version>.so
 #    on openSUSE) has no libSPIRV-Tools.so at all. The driver uses only SPIRV-Tools' stable C API, so any of them does.
-#    Refreshed every session, so a system update of either library reaches the copy.
+#    Refreshed every session, so a system update of either library reaches the copy. A system without the library
+#    (Debian, Ubuntu and Fedora ship libdisplay-info 0.1/0.2; Debian and Ubuntu have no shared SPIRV-Tools) gets the
+#    package's own build from lib/bundled/ (tools/build-deps.sh).
 hostlib() { # <soname, or an awk regex with -r> -> path of the host's 64-bit library
   local p d
   if [ "$1" = -r ]; then
@@ -76,6 +78,7 @@ for n in $(cat "$PKG"/lib/mesa-*/libvulkan_intel.so 2>/dev/null | grep -aoE 'lib
   src=$(hostlib "$n")
   [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib libSPIRV-Tools-shared.so)
   [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib -r '^libSPIRV-Tools-[0-9][^ ]*\.so$')
+  [ -z "$src" ] && [ -f "$PKG/lib/bundled/$n" ] && src="$PKG/lib/bundled/$n"
   [ -n "$src" ] || continue
   cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
 done
