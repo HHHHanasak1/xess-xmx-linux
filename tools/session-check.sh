@@ -55,10 +55,16 @@ fail() { # <reason>
 #    Inside the Steam Linux Runtime container the host's /usr is not visible; pressure-vessel brings in only the
 #    libraries the host's own Vulkan drivers need, and the runtime has neither libSPIRV-Tools nor libdisplay-info. So a
 #    system without another 64-bit Mesa Vulkan driver (radeon, nouveau) leaves the patched ANV unloadable in games, and
-#    a system whose SPIRV-Tools is called libSPIRV-Tools-shared.so (Void Linux) has no libSPIRV-Tools.so at all.
+#    a system whose SPIRV-Tools has another name (libSPIRV-Tools-shared.so on Void Linux, libSPIRV-Tools-<version>.so
+#    on openSUSE) has no libSPIRV-Tools.so at all. The driver uses only SPIRV-Tools' stable C API, so any of them does.
 #    Refreshed every session, so a system update of either library reaches the copy.
-hostlib() { # <soname> -> path of the host's 64-bit library
+hostlib() { # <soname, or an awk regex with -r> -> path of the host's 64-bit library
   local p d
+  if [ "$1" = -r ]; then
+    p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v r="$2" '$1 ~ r && /x86-64/ { print $NF; exit }')
+    [ -n "$p" ] && [ -f "$p" ] && echo "$p"
+    return
+  fi
   p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v n="$1" '$1 == n && /x86-64/ { print $NF; exit }')
   [ -n "$p" ] && [ -f "$p" ] && { echo "$p"; return; }
   for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /lib64 /lib/x86_64-linux-gnu /usr/lib; do
@@ -69,6 +75,7 @@ mkdir -p "$PKG/lib/deps"
 for n in $(cat "$PKG"/lib/mesa-*/libvulkan_intel.so 2>/dev/null | grep -aoE 'lib(SPIRV-Tools[A-Za-z-]*|display-info)\.so[.0-9]*' | sort -u); do
   src=$(hostlib "$n")
   [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib libSPIRV-Tools-shared.so)
+  [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib -r '^libSPIRV-Tools-[0-9][^ ]*\.so$')
   [ -n "$src" ] || continue
   cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
 done
