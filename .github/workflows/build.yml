@@ -107,14 +107,15 @@ jobs:
           cd mesa
           meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
             -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
-            -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+            -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools= '-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps'
       - name: build
         run: ninja -C mesa/build src/intel/vulkan/libvulkan_intel.so
       - name: the driver reads the system's driconf (/usr/share/drirc.d)
         run: grep -aq '/usr/share/drirc.d' mesa/build/src/intel/vulkan/libvulkan_intel.so
-      - name: dependencies of the driver (glibc / libstdc++ floor, unversioned sonames)
+      - name: dependencies of the driver (glibc / libstdc++ floor, unversioned sonames, run path lib/deps)
         run: |
-          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep NEEDED
+          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -E "NEEDED|RUNPATH"
+          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -q 'RUNPATH *[$]ORIGIN/[.][.]/deps$'
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBC_2\.[0-9]*" | sort -t. -k2 -n -u | tail -1
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
       - uses: actions/upload-artifact@v4
