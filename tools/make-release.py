@@ -3,7 +3,7 @@
 Builds release/xess-xmx-linux-<version>.zip from the working tree: the binaries (igdext64.dll, the drivers
 lib/mesa-<version>/libvulkan_intel.so, the default's name in lib/active, and lib/libvulkan_intel.so built from
 icd/xmx-icd.c, which loads one of them),
-the scripts, tools, patches and docs. Shell and Python scripts get the executable bit.
+lib/bundled/ (tools/build-deps.sh), the scripts, tools, patches and docs. Shell and Python scripts get the executable bit.
 Kernels are not included (they are compiled on the user's machine). Refuses to run if a binary is missing."""
 import os, sys, zipfile
 
@@ -13,7 +13,7 @@ outdir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(root, "release")
 name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-tools = ["cm-compile.sh", "get-igc.sh", "session-check.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
+tools = ["cm-compile.sh", "get-igc.sh", "session-check.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
          "gen_all_dummies.py", "gen_dyn_dummies.py", "check_dyn_ids.py"]
 files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):
@@ -31,6 +31,10 @@ if active not in drivers:
 if b"xess-xmx: using the Mesa" not in open(os.path.join(libdir, "libvulkan_intel.so"), "rb").read():
     sys.exit("lib/libvulkan_intel.so must be the ICD built from icd/xmx-icd.c")
 files += drivers + ["lib/active"]
+# lib/bundled/: SPIRV-Tools and libdisplay-info for systems that lack them, with licenses (tools/build-deps.sh)
+bundled = ["lib/bundled/" + f for f in ("libSPIRV-Tools.so", "libdisplay-info.so.3", "LICENSE.SPIRV-Tools",
+                                         "LICENSE.libdisplay-info", "SOURCES.txt")]
+files += bundled
 files += ["docs/" + d for d in sorted(os.listdir(os.path.join(root, "docs"))) if d.endswith(".md")]
 missing = [f for f in files if not os.path.isfile(os.path.join(root, f))]
 if missing:

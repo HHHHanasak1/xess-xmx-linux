@@ -71,6 +71,10 @@ check before a session (for example after a system update), the other one become
   the `xe` or `i915` kernel driver. Lunar Lake is untested; Xe-HPG (Alchemist) and Xe-LPG are detected but untested.
 * The drivers in the archive (Mesa 26.1.2 and 26.3.0-rc1 with the patches) replace the system's 64-bit ANV for the user
   session only. For another Mesa version see [docs/building.md](docs/building.md).
+* The drivers are built on Arch Linux and need glibc 2.38 and libwayland-client 1.24 or newer. SPIRV-Tools and
+  libdisplay-info 0.3 come with the archive (`lib/bundled/`) for systems that lack them. Checked to load on SteamOS,
+  Arch, openSUSE Tumbleweed, Void Linux, Fedora 43 and Ubuntu 25.10; Debian 13 and Ubuntu 24.04 have libwayland-client
+  1.23 and need a driver built on the system (`tools/rebuild-driver.sh`).
 * vkd3d-proton as in Proton 11 / GE-Proton 11.
 
 ## Games

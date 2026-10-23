@@ -42,6 +42,29 @@ jobs:
           name: xmx-icd
           path: out/libvulkan_intel.so
 
+  # lib/bundled/ of the release: SPIRV-Tools and libdisplay-info for systems without them, built on Debian 12 so they
+  # run on anything with glibc >= 2.36 (the drivers need 2.38)
+  deps:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: bash tools/build-deps.sh out
+      - name: glibc floor at most 2.38, sonames the drivers ask for
+        run: |
+          cat out/SOURCES.txt
+          for f in out/libSPIRV-Tools.so out/libdisplay-info.so.3; do
+            v=$(objdump -T "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n -u | tail -1 | cut -d. -f2)
+            echo "$f: GLIBC_2.$v"; [ "$v" -le 38 ]
+          done
+          objdump -p out/libdisplay-info.so.3 | grep -q 'SONAME *libdisplay-info\.so\.3$'
+          objdump -T out/libSPIRV-Tools.so | grep -q ' spvContextCreate$'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundled-deps
+          path: out/
+
   shim:
     runs-on: windows-latest
     steps:
