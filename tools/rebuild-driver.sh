@@ -47,13 +47,14 @@ if ! git -c user.name=xess-xmx -c user.email=xmx@localhost am --quiet "$PATCHES"
   exit 2
 fi
 # prefix/sysconfdir as the system's Mesa: the driver reads its per-game workarounds from <datadir>/drirc.d, and without
-# the vkd3d entries there Wuthering Waves hangs the GPU with ray tracing on
+# the vkd3d entries there Wuthering Waves hangs the GPU with ray tracing on.
+# Run path lib/deps: copies of the host libraries the Steam Linux Runtime does not have (tools/session-check.sh fills it)
 OPTS="-Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= -Dglx=disabled -Dgbm=disabled -Degl=disabled
       -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers=
-      -Dtools="
+      -Dtools= -Dcpp_link_args=-Wl,-rpath,\$ORIGIN/../deps"
 if [ -d build ]; then meson setup --reconfigure build $OPTS >/dev/null; else meson setup build $OPTS >/dev/null; fi
 ninja -C build src/intel/vulkan/libvulkan_intel.so
-NEW="$SRC/build/src/intel/vulkan/libvulkan_intel.so"
+NEW="$T/build/src/intel/vulkan/libvulkan_intel.so"
 if ! grep -aq '/usr/share/drirc.d' "$NEW"; then
   echo "!! the new driver does not read /usr/share/drirc.d (wrong prefix); not installed"
   exit 3

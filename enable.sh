@@ -56,6 +56,10 @@ export force_vk_vendor=0
 # <<< XESS-XMX <<<
 EOF
 
+# 3. the driver check; it also copies the host libraries the Steam Linux Runtime lacks into lib/deps
+bash "$ROOT/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "driver check: loads fine" \
+  || echo "!! the patched driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
+
 echo "XeSS XMX enabled for prefix $PFXROOT"
 echo "These variables must be in the game's environment (written to $CONF; Steam launch options:"
 echo "  $ROOT/xmx-launch.sh %command%   ):"
