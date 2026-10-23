@@ -56,7 +56,9 @@
 //    before now while it is still in flight. That is the present queue a real driver reports ("Flip in queue"): with
 //    the GPU the limit, frames wait there, and that wait is what XeLL's sleep is for. Under vkd3d-proton the game
 //    thread otherwise blocks on the full swapchain inside its own frame, so XeLL sees a slow CPU instead.
-//    IGDEXT_XELL_FLIPQ=0 goes back to "shown at the next vsync after the call" (A/B);
+//    Off by default: on a B390 with 4x FG at an output-paced spot (36 fps = 144 Hz / 4) reporting the queue made XeLL
+//    sleep less (4 ms instead of 11-16) and sim->present 10-19 ms longer at the same frame rate. IGDEXT_XELL_FLIPQ=1
+//    turns it on for testing; the default is "shown at the next vsync after the call";
 // and logs what XeLL does with it (XELLPROBE lines). IGDEXT_XELL_TELEMETRY=0 answers GetDisplayTelemetry with
 // E_NOTIMPL instead (A/B test); IGDEXT_XELL_GUARD=1 puts the timing buffers on guard pages and logs every access XeLL
 // makes to them (slot, offset, code address), as the first probe did. Without IGDEXT_XELL_PROBE nothing here is
@@ -266,7 +268,7 @@ uint64_t Qpc() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return (uint64_t)
 
 bool FlipQueueModel()
 {
-    if (g_flipqMode < 0) { char b[8]; g_flipqMode = GetEnvironmentVariableA("IGDEXT_XELL_FLIPQ", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 1; }
+    if (g_flipqMode < 0) { char b[8]; g_flipqMode = GetEnvironmentVariableA("IGDEXT_XELL_FLIPQ", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 0; }
     return g_flipqMode == 1;
 }
 
