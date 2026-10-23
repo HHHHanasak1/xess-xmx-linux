@@ -56,9 +56,15 @@
 //    before now while it is still in flight. That is the present queue a real driver reports ("Flip in queue"): with
 //    the GPU the limit, frames wait there, and that wait is what XeLL's sleep is for. Under vkd3d-proton the game
 //    thread otherwise blocks on the full swapchain inside its own frame, so XeLL sees a slow CPU instead.
-//    Off by default: on a B390 with 4x FG at an output-paced spot (36 fps = 144 Hz / 4) reporting the queue made XeLL
-//    sleep less (4 ms instead of 11-16) and sim->present 10-19 ms longer at the same frame rate. IGDEXT_XELL_FLIPQ=1
-//    turns it on for testing; the default is "shown at the next vsync after the call";
+//    Off by default. The first version (cd4c672) made XeLL sleep less on a B390 with 4x FG (4 ms instead of 11-16,
+//    sim->present +10-19 ms): it also reported frames still in flight with a predicted vsync, so XeLL's "latest
+//    presented frame" was the one just submitted and its target vsync landed right away. Read from libxell 1.3.2.10
+//    (xellSleep 0x17c80, parser 0x17060, AlignToVsync in 0x120c0): XeLL keeps, per frame id, the earliest +0x28 as the
+//    frame's GPU end and the earliest +0x30 as the vsync it anchors on, takes the largest id as the latest presented
+//    frame, and with vsync sleeps until  L.shown + q*T - A - guardband  (q = frames since L, T = refresh x (FG+1),
+//    A = mean sim start -> GPU end). So the model now reports only flips already scanned out, +0x28 = ready (GPU
+//    done), +0x30 = the vsync it went out on (FIFO). IGDEXT_XELL_FLIPQ=1 turns it on for testing; the default is
+//    "flip queued = the call, shown = the next vsync after it";
 // and logs what XeLL does with it (XELLPROBE lines). IGDEXT_XELL_TELEMETRY=0 answers GetDisplayTelemetry with
 // E_NOTIMPL instead (A/B test); IGDEXT_XELL_GUARD=1 puts the timing buffers on guard pages and logs every access XeLL
 // makes to them (slot, offset, code address), as the first probe did. Without IGDEXT_XELL_PROBE nothing here is
@@ -609,20 +615,33 @@ void FillTelemetry(uint8_t* t, UINT size)
     std::lock_guard<std::mutex> lock(g_mtx);
     const uint32_t n = g_nPresents < 16 ? g_nPresents : 16;
     const bool fq = FlipQueueModel() && g_readbackEndMap && g_fenceEnd && g_gameQueue;
-    uint64_t prevShown = 0, inQueue = 0;
+    uint64_t prevShown = 0, inQueue = 0, fiq = 0;
+    const uint64_t stale = (uint64_t)g_qpf.QuadPart / 10;   // 100 ms: a present whose GPU end never arrived counts as ready then
+    uint32_t w = 0;
     // oldest first; XeLL takes the max frame id as the latest presented frame and the earliest times per id
     for (uint32_t i = 0; i < n; i++)
     {
         PresentRecord& r = g_presents[(g_nPresents - n + i) % 16];
         if (fq)
         {
-            // ready when its GPU work is done (still in flight: not before now), one flip per vsync after the one before
-            const uint64_t ready = r.gpuDone ? r.gpuDone : (now > r.queued ? now : r.queued);
+            // What XeLL 1.3.2.10 reads (see the comment at FlipQueueModel): per frame id the earliest +0x28 is its
+            // "GPU end", the earliest +0x30 the vsync it anchors the sleep on, and the largest id the latest
+            // presented frame. So: +0x28 = when the flip became ready (its GPU work done), +0x30 = the vsync it was
+            // actually scanned out on (one flip per vsync, in present order), and only flips already shown: a
+            // frame still in flight is not "presented" yet, and a guessed time would stick in XeLL's per-id minimum.
+            uint64_t ready = r.gpuDone ? (r.gpuDone > r.queued ? r.gpuDone : r.queued) : (now - r.queued > stale ? r.queued : 0);
+            if (!ready) { inQueue += n - i; break; }               // flips go out in order: nothing after it is shown yet
             uint64_t shown = g_vsyncOn ? NextVsyncAfter(ready) : ready;
-            if (g_vsyncOn && prevShown && shown <= prevShown) shown = prevShown + g_periodMin;
-            r.shown = shown;
+            if (g_vsyncOn && prevShown && shown < prevShown + g_periodMin) shown = prevShown + g_periodMin;
+            if (shown > now) { inQueue += n - i; break; }
             prevShown = shown;
-            if (!r.gpuDone || shown > now) inQueue++;
+            fiq = shown - ready;
+            uint8_t* rec = t + w++ * 56;
+            *(uint32_t*)(rec + 0x08) = r.frameId;
+            *(uint32_t*)(rec + 0x20) = g_vsyncOn ? 4u : 0u;   // on every record: XeLL takes the bit from each
+            *(uint64_t*)(rec + 0x28) = ready;
+            *(uint64_t*)(rec + 0x30) = shown;
+            continue;
         }
         uint8_t* rec = t + i * 56;
         *(uint32_t*)(rec + 0x08) = r.frameId;
@@ -632,10 +651,9 @@ void FillTelemetry(uint8_t* t, UINT size)
     }
     if (fq && n)
     {
-        // logged every call: the probe script takes the median as the present queue XeLL is told about
-        const PresentRecord& last = g_presents[(g_nPresents - 1) % 16];
-        TraceF("XELLPROBE flip queue: %llu frame(s) waiting, last flip in queue %.2f ms", (unsigned long long)inQueue,
-               last.shown > last.queued ? (last.shown - last.queued) * 1000.0 / (double)g_qpf.QuadPart : 0.0);
+        // logged every call: the probe script takes the medians
+        TraceF("XELLPROBE flip queue: %llu frame(s) waiting, last flip in queue %.2f ms (%u shown flips reported)", (unsigned long long)inQueue,
+               fiq * 1000.0 / (double)g_qpf.QuadPart, w);
     }
     // reference vsync: the last modelled vsync before now
     const uint64_t last = NextVsyncAfter(now) - g_periodMax;
