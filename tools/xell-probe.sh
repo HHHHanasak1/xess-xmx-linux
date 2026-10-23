@@ -20,8 +20,9 @@
 # Variables:  XELL_PROBE_VERSION=<n>   interface version to claim (default 1; try 2, 3 if XeLL rejects 1)
 #             XELL_PROBE_TELEMETRY=0   answer GetDisplayTelemetry with E_NOTIMPL instead of the display model (A/B)
 #             XELL_PROBE_GPUSTART=0    GPU start = clock at submit instead of the measured timestamp (A/B)
-#             XELL_PROBE_FLIPQ=1       display telemetry with the present queue (frames waiting for the GPU and for
-#                                      their vsync); off by default, it made XeLL sleep less in the first test (A/B)
+#             XELL_PROBE_FLIPQ=1       display telemetry from the flips actually shown: ready = GPU done, shown =
+#                                      the vsync it went out on (what libxell's sleep reads, see XellDriver.cpp);
+#                                      off by default until it beats the default in a run (A/B)
 #             XELL_PROBE_GUARD=1       timing buffers on guard pages: log every access XeLL makes to them
 #             XELL_PROBE_HZ=<hz>, XELL_PROBE_VRR=<min>,<max>   the display model's refresh rate(s) (default: current mode)
 #             XELL_PROBE_KEEP=1        do not delete the raw log files from the prefix afterwards
