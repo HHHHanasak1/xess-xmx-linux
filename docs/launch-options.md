@@ -59,7 +59,7 @@ Above 4x XeSS frame generation ignores the override, so the shim raises the numb
 `libxess_fg.dll` keeps the number by watching it follow a second, probe context, sets the wanted number there and checks
 through the public API that the game's context now reports it. If anything does not match, the game keeps 4x. This
 changes a value inside Intel's library while it runs, which Intel does not support, so 5x to 8x are **experimental**.
-8x is the maximum. 5x to 8x all work (tested in Cyberpunk 2077 on an Arc B390). Every step above 4x lowers the real
+8x is the maximum. 5x to 8x all work (tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390). Every step above 4x lowers the real
 frame rate and raises the latency, so 7x and 8x are not recommended; they are there only as an option.
 
 Whatever the multiplier, keep a frame rate limiter on (the game's own, or gamescope's): without one the generated
