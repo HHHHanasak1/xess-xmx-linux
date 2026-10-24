@@ -7,11 +7,15 @@ vkd3d-proton:
 * `igdext64.dll`, a shim built on Intel's open source [dxvk-igdext](https://github.com/GameTechDev/dxvk-igdext), answers
   XeSS' driver queries like an Intel driver and hands every C-for-Metal (CM) kernel XeSS submits over as a placeholder;
 * a patched Mesa **ANV** Vulkan driver compiles those kernels with Intel's compiler (IGC) on first use and runs them in
-  place of the placeholders, inside the normal vkd3d-proton queue.
+  place of the placeholders, inside the normal vkd3d-proton queue;
+* `ControlLib.dll`, a stand-in for Intel's Control Library, gives XeSS frame generation the override that Intel
+  Graphics Software sets on Windows: `XESS_FG=<n>` in a game's launch options.
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
 Experimental. Super resolution renders correctly and is temporally stable; frame generation runs at 2x/3x/4x on XMX
-as well (without the Intel extension, XeSS frame generation is limited to 2x).
+as well (without the Intel extension, XeSS frame generation is limited to 2x). With `XESS_FG` a game runs frame
+generation at a fixed multiplier, also above what its menu offers: up to 4x as Intel's override does, and
+experimentally up to **8x** ([docs/launch-options.md](docs/launch-options.md)).
 
 ## Install
 
@@ -34,7 +38,13 @@ What `install.sh` does:
     game of the session);
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
-  `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
+  `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix. Every Steam library
+  counts (SD card, second disk: `steamapps/libraryfolders.vdf`). A Proton installed by a distribution package (CachyOS'
+  `proton-cachyos` in `/usr/share/steam/compatibilitytools.d`) belongs to root: `install.sh` lists it with the `sudo`
+  commands that put the shim in, and games on it run on DP4a until then;
+* puts `ControlLib.dll`, a small stand-in for Intel's Control Library, into every prefix: with `XESS_FG=4 %command%` XeSS
+  frame generation runs at 4x in a game that offers 2x, like Intel Graphics Software's override on Windows
+  (`XESS_FG=5` to `8`: experimental);
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
   each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
   runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));
@@ -84,7 +94,8 @@ check before a session (for example after a system update), the other one become
 ## Games
 
 See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
-2077 (SR + FG after replacing its older XeSS libraries), notes on OptiScaler and on a game without XeSS.
+2077 (SR + FG with `XESS=latest`, which replaces its older XeSS libraries while it runs; 4x and more with `XESS_FG`),
+notes on OptiScaler and on a game without XeSS.
 
 ## Troubleshooting
 
@@ -96,6 +107,8 @@ See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (
 | XMX gone after a SteamOS update | neither patched driver loads any more: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` (docs/building.md) |
 | a game misbehaves on Mesa 26.3 only | `MESA=26.1 %command%` in its launch options, and please report it |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
+| the game offers only 2x frame generation | `XESS_FG=4 %command%` (docs/launch-options.md) |
+| `XESS_FG` changes nothing | frame generation must be switched on in the game, and the game's XeSS frame generation must be 1.2 or newer (`XESS=latest`) |
 
 Steam launch options for one game (driver choice, Jay off, XMX off, logs): [docs/launch-options.md](docs/launch-options.md).
 The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md).
@@ -119,6 +132,8 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
   a component of Intel's Windows driver. Details in [docs/how-it-works.md](docs/how-it-works.md).
 * The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
   limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
+* `XESS_FG=5` to `8` raise the number of generated frames by changing a value inside Intel's frame generation library
+  while the game runs; Intel does not support more than 4x. Experimental, and 7x/8x add a lot of latency.
 * The driver patches are written against Mesa 26.1.2 and 26.3 and rely on vkd3d-proton internals: how it compiles the
   placeholder shaders and how it lays out its descriptor heap. If a vkd3d-proton update changes the first, the
   self-test turns the XMX path off; if it changes the second, the driver logs `no vkd3d-style descriptor heap` and the
@@ -137,10 +152,12 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
                                   0003 Large GRF Mode for Xe2;  patches/mesa-26.3/: the same for Mesa 26.3,
                                   plus 0004, the Jay crash fix for RE Engine games
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
+    controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
     tools/proton-hook.py          XESS / XESS_LOG launch options, run by Proton through user_settings.py
+    tools/steam-libraries.sh      every Steam library (libraryfolders.vdf), for the scripts
     tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
     tools/switch-driver.sh        sets the default among the package's drivers (per game: MESA)
     icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
@@ -150,10 +167,10 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
     docs/                         how it works, building, debugging, games, Steam launch options
-    .github/workflows/build.yml   CI: builds the shim, the ICD and both drivers, checks the scripts
+    .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the ICD and both drivers, checks the scripts
 
-The release archive holds the binaries (`igdext64.dll`, the drivers in `lib/mesa-<version>/`, the ICD
-`lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the drivers in `lib/mesa-<version>/`, the
+ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
 
 ## License
 

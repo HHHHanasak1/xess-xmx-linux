@@ -5,6 +5,7 @@
 | What you see | Cause | What to do |
 |---|---|---|
 | Looks like the DP4a path; `IGDEXT_TRACE=1` writes no `C:\igdext_trace.log` | The shim is not loaded (new prefix, Proton replaced it) | re-run `install.sh` |
+| The same, only with a Proton from a distribution package (CachyOS' `proton-cachyos`) | That Proton is in `/usr/share/steam/compatibilitytools.d`, which only root can write to; Proton copies its stock `igdext64.dll` into the prefix | the `sudo` commands `install.sh` prints (again after each update of the package), or a Proton in `~/.local/share/Steam/compatibilitytools.d` |
 | DP4a and no XeSS frame generation option; no trace file; the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | The game ships XeSS older than 2.0.2.68, and DXVK then reports the GPU as an AMD one | `XESS=latest %command%`: Intel's newer libraries while the game runs ([launch-options.md](launch-options.md)). Making DXVK report the Intel GPU to the old libraries instead (`DXVK_CONFIG="dxgi.customVendorId = 8086"`) crashes Cyberpunk 2077's XeSS-FG 1.1.0.19 |
 | Super resolution on DP4a while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU | `install.sh` / `enable.sh` set `force_vk_vendor=0` (re-run them after an update). By hand: `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
 | DP4a, the trace says `fallback: self-test failed` | The patched driver is not active in the game process (session check fell back, variables missing), or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; the patched driver writes `drive_c/igdext_kernels/anv_canary` when it sees the test |
@@ -59,7 +60,7 @@ into every Proton; [launch-options.md](launch-options.md)):
 |---|---|
 | `XESS=latest` | the game runs with Intel's XeSS SDK libraries (`xess/`, `tools/get-xess.sh`) in place of its older ones; originals back when it exits |
 | `XESS=dp4a` | `IGDEXT_FORCE_FALLBACK=1` |
-| `XESS_LOG=1` | `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1` |
+| `XESS_LOG=1` | `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1` |
 
 A variable the launch options set themselves wins over the one a shorthand stands for.
 
@@ -85,6 +86,9 @@ Shim (game environment):
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
+| `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: all work, 7 and 8 not recommended (latency). launch-options.md |
+| `IGDEXT_XEFG_LOG=1` | `C:\igdext_xefg.log`: XeSS frame generation's own log (public `xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, every change of the number |
+| `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
 | `IGDEXT_XELL_PROBE=<version>` | experimental: claim XeLL driver-mode support and log XeLL's use of it (see how-it-works.md) |
 
 Driver (patch 0001):

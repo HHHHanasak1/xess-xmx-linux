@@ -80,6 +80,16 @@ jobs:
         with:
           name: igdext64
           path: shim/build/igdext64.dll
+      # XESS_FG (frame generation override): the stand-in for Intel's Control Library runtime
+      - name: ControlLib.dll
+        run: |
+          mkdir controllib\build
+          cl /nologo /O2 /W3 /MT /LD controllib\ControlLib.c /Focontrollib\build\ /Fe:controllib\build\ControlLib.dll /link dxgi.lib dxguid.lib
+        shell: cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ControlLib
+          path: controllib/build/ControlLib.dll
 
   mesa:
     name: mesa ${{ matrix.name }}

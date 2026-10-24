@@ -98,6 +98,24 @@ them use `dpas` (the XMX instruction), and at 4x twelve of them run once per gen
 in Forza Horizon 6 requests a further 24 kernels, also on XMX. `IGDEXT_TRACE=1` logs the calling module of every
 context, query and pipeline, which tells SR and XeFG kernels apart.
 
+### The number of generated frames (`XESS_FG`)
+
+On Windows, Intel Graphics Software can override how many frames XeSS frame generation generates. When a game creates
+its frame generation context, `libxess_fg.dll` loads Intel's Control Library (`ControlLib.dll` from `system32`), asks
+it for the 3D feature "frame generation" globally and for the game's executable, and uses the answer as its maximum
+number of interpolated frames instead of the game's choice. The package's `controllib/ControlLib.c` answers exactly
+these calls (device enumeration through DXGI, the feature query) from `XESS_FG`; `install.sh` puts it into every
+prefix. XeSS frame generation accepts the values of Intel's public enum, 2x to 4x.
+
+Above 4x it ignores the override, so the shim (`shim/src/dll/XellHook.cpp`, hooks on `libxess_fg`'s exports) raises
+the number itself, by observation and through the public API only: after the game's context creation (override 4x)
+it collects the 32-bit values 3 in `libxess_fg`'s writable sections, creates a probe context with the override at 3x
+and keeps the one value that followed it, sets the wanted number there, and checks that
+`xefgSwapChainGetProperties` of the game's context now reports it; otherwise the value goes back and the game keeps
+4x. This happens before the game sizes or initializes frame generation (at creation, or at the first call after it
+when `libxess_fg` loaded the shim itself during that creation). A game that sets the number while it runs (Wuthering
+Waves, from its 2x/3x/4x menu) gets `XESS_FG`'s number through `xefgSwapChainSetNumInterpolatedFrames` instead.
+
 ## 4. XeLL (latency reduction)
 
 Games with XeSS frame generation also use Intel XeLL (`libxell.dll`). Under Wine it runs in its built-in context

@@ -68,6 +68,7 @@ const char* SafeStr(const void* p, char* buf, size_t cap)
 }
 
 void StartXellHook();
+void StartXefgHook();
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -75,6 +76,7 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
         char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
         TraceF("==== igdext64 (tracing build) attached to %s", exe);
         StartXellHook();
+        StartXefgHook();
     }
     return TRUE;
 }
