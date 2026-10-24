@@ -21,6 +21,10 @@ fetch() { # <repo> <tag> <name regex> <exclude regex> <dest>
 }
 fetch intel/intel-graphics-compiler "$IGC_TAG" "igc-core-2_|igc-opencl-2_" "devel" "$W/igc"
 fetch intel/compute-runtime "$NEO_TAG" "ocloc" "dbgsym|devel|sha|ddeb" "$W/neo"
+# verify the download before touching the installed compiler (an empty GitHub API answer - offline, rate limited -
+# makes fetch() do nothing without an error)
+[ -d "$W/igc/usr" ] && [ -n "$(find "$W/igc/usr" -name 'libigc.so*' -print -quit)" ] || { echo "get-igc: IGC $IGC_TAG not downloaded (offline, or GitHub API rate limit); the installed compiler is unchanged" >&2; exit 1; }
+[ -d "$W/neo/usr" ] && [ -n "$(find "$W/neo/usr" -name 'ocloc*' -print -quit)" ] || { echo "get-igc: ocloc $NEO_TAG not downloaded; the installed compiler is unchanged" >&2; exit 1; }
 mkdir -p "$PKG/igc"
 rm -rf "$PKG/igc/igc" "$PKG/igc/neo"
 mv "$W/igc/usr" "$PKG/igc/igc"

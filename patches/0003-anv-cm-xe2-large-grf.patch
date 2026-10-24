@@ -1,7 +1,7 @@
-From 9bb1b9d437b421e6fb61a00b202b210141054f49 Mon Sep 17 00:00:00 2001
+From 994e7543085b1f40a587225cc7316ce8e2682bc4 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Sun, 4 Oct 2026 17:08:57 -0300
-Subject: [PATCH] anv: enable Large GRF Mode around CM kernels on Xe2
+Subject: [PATCH 3/3] anv: enable Large GRF Mode around CM kernels on Xe2
  (xess-xmx-linux)
 
 The CM kernels are compiled with -doubleGRF (256 registers) and every
@@ -183,5 +183,5 @@ index 92e07ac..2411adb 100644
     if (!anv_address_is_null(indirect_addr)) {
        uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
 -- 
-2.56.0
+2.43.0
 

@@ -1,7 +1,7 @@
-From a905414157e5b2d2fa2436cd826bf8515247522e Mon Sep 17 00:00:00 2001
+From 584d3c4da9f90b72b777d3349447fac2c078d43b Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
-Subject: [PATCH 2/2] anv: debug tools for the C-for-Metal kernel injection
+Subject: [PATCH 2/3] anv: debug tools for the C-for-Metal kernel injection
  (xess-xmx-linux)
 
 ---
@@ -52,10 +52,10 @@ index 9637962..785a4b4 100644
  const struct anv_cm_env *anv_cm_env(void);
  void anv_cm_retry_failed(struct anv_device *device);
 diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index 43adc98..08f6042 100644
+index 4ea58f7..ff91cdf 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1239,6 +1239,18 @@ anv_cm_env_init(void)
+@@ -1240,6 +1240,18 @@ anv_cm_env_init(void)
     e->debug = getenv("ANV_CM_DEBUG") != NULL;
     const char *t = getenv("ANV_CM_TRACE");
     e->trace = t ? (t[0] == '2' ? 2 : 1) : 0;
@@ -74,7 +74,7 @@ index 43adc98..08f6042 100644
  }
  
  const struct anv_cm_env *
-@@ -1635,6 +1647,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1669,6 +1681,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
     const struct anv_cm_env *env = anv_cm_env();
     const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
     char path[512] = "";
@@ -90,7 +90,7 @@ index 43adc98..08f6042 100644
     if (wx == 1 && wy == 1 && wz == 17 && anv_cm_is_placeholder(nir)) {
        /* the shim's self-test: proves to it that this process runs the patched driver and that placeholders still
         * reach the driver recognisably (a vkd3d-proton change could break that); the shim checks the time stamp */
-@@ -1681,6 +1702,17 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1717,6 +1738,17 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
           fprintf(stderr, "ANV CM:   set %u: type %d bindings %u descriptors %u\n", i, (int)l->type, l->binding_count, l->descriptor_count);
        }
     }
@@ -309,10 +309,10 @@ index 5b36b54..92e07ac 100644
           fprintf(stderr, "ANV CM: walker kernel %u,%u,%u groups %u,%u,%u threads %u\n",
                   prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
 diff --git a/src/intel/vulkan/genX_shader.c b/src/intel/vulkan/genX_shader.c
-index 220ce2b..14a3652 100644
+index b4a1406..a5c83d7 100644
 --- a/src/intel/vulkan/genX_shader.c
 +++ b/src/intel/vulkan/genX_shader.c
-@@ -1234,6 +1234,10 @@ emit_cs_shader(struct anv_batch *batch,
+@@ -1235,6 +1235,10 @@ emit_cs_shader(struct anv_batch *batch,
        walker.IndirectDataLength = total;
        if (cs_prog_data->cm_has_sampler)
           walker.InterfaceDescriptor.SamplerCount = 1;
@@ -323,3 +323,6 @@ index 220ce2b..14a3652 100644
        if (cs_prog_data->cm_nsurf > 0)
           walker.InterfaceDescriptor.BindingTableEntryCount = MIN2(cs_prog_data->cm_max_bti + 1, 31);
        walker.IndirectDataStartAddress = shader->cm_indirect.offset;
+-- 
+2.43.0
+
