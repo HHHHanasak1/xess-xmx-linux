@@ -10,6 +10,8 @@ CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
 GAME="${XMX_GAME:-}"
 if [ -n "$GAME" ] && pgrep -i "^${GAME:0:15}" >/dev/null; then echo "The game is running - close it first."; exit 1; fi
 [ -f "$PFX/igdext64.dll.stock" ] && cp "$PFX/igdext64.dll.stock" "$PFX/igdext64.dll" && echo "stock igdext64.dll restored"
+C="$PFXROOT/drive_c/windows/system32/ControlLib.dll"
+[ -f "$C" ] && grep -aq 'XESS_FG' "$C" && rm -f "$C" && echo "ControlLib.dll removed"
 [ -f "$CONF" ] && sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF" && echo "launcher config block removed from $CONF"
 rm -rf "$PFXROOT/drive_c/igdext_kernels"
 echo "XeSS XMX disabled."

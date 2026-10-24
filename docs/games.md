@@ -4,7 +4,7 @@
 |---|---|---|---|---|---|
 | Wuthering Waves | 2.0.2.68, XeFG 1.3.1.78 | yes | yes, 2x / 3x / 4x | `install.sh` | the XeLL frame-cap fix applies here |
 | Forza Horizon 6 | 2.0.2.68 | yes | only through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
-| Cyberpunk 2077 (2.31) | ships 2.0.1.41, XeFG 1.1.0.19 | yes, with newer XeSS libraries | yes, with newer XeSS libraries | `install.sh` + `XESS=latest %command%` (below) | with the shipped libraries: DP4a, no XeSS FG option |
+| Cyberpunk 2077 (2.31) | ships 2.0.1.41, XeFG 1.1.0.19 | yes, with newer XeSS libraries | yes, with newer XeSS libraries | `install.sh` + `XESS=latest %command%` (below); `XESS_FG=4` for 4x | with the shipped libraries: DP4a, no XeSS FG option. The game offers 2x; benchmark 81.9 fps at 2x, 118.4 with `XESS_FG=4`, 143 with `XESS_FG=6` (experimental) |
 | Resident Evil 4 (RE Engine) | none | yes, technically | no | REFramework (below) | worse than the game's FSR2; not recommended |
 
 All on Mesa 26.1.2; Wuthering Waves and Cyberpunk 2077 also on Mesa 26.3.0-rc1 (the default driver).

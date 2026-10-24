@@ -35,6 +35,8 @@ What `install.sh` does:
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
   `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
+* puts `ControlLib.dll`, a small stand-in for Intel's Control Library, into every prefix: with `XESS_FG=4 %command%` XeSS
+  frame generation runs at 4x in a game that offers 2x, like Intel Graphics Software's override on Windows;
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
   each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
   runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));

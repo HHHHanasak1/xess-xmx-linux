@@ -19,13 +19,16 @@ for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/
   if [ -f "$f.stock" ]; then mv -f "$f.stock" "$f" && n=$((n + 1)); elif cmp -s "$f" "$PKG/igdext64.dll"; then rm -f "$f" && n=$((n + 1)); fi
 done
 rm -rf "$STEAM"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels
+for c in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/ControlLib.dll; do
+  [ -f "$c" ] && grep -aq 'XESS_FG' "$c" && rm -f "$c"
+done
 # the XESS=latest hook in every Proton; the user's own Proton settings back under their name
 for u in "$STEAM"/steamapps/common/Proton*/user_settings.py "$STEAM"/compatibilitytools.d/*/user_settings.py; do
   [ -f "$u" ] && grep -q 'xess-xmx proton hook' "$u" || continue
   rm -f "$u"
   [ -f "${u%.py}.user.py" ] && mv -f "${u%.py}.user.py" "$u"
 done
-rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/xess-swapped"
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/xess-swap"
 # XeSS libraries a killed XESS=latest run left as links into the package (tools/proton-hook.py): originals back
 while IFS= read -r -d '' o; do
   f="${o%.xmx-orig}"

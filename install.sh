@@ -115,6 +115,13 @@ if _os.path.isfile(_u):
 EOF
   if cmp -s "$u.new" "$u"; then rm -f "$u.new"; else mv -f "$u.new" "$u" && echo "   XESS hook -> $u"; fi
 }
+install_controllib() { # <prefix system32>: ControlLib.dll, the stand-in for Intel's Control Library (XESS_FG)
+  local s="$1/ControlLib.dll"
+  [ -f "$PKG/ControlLib.dll" ] || return
+  [ -f "$s" ] && ! grep -aq 'XESS_FG' "$s" && return   # a ControlLib.dll that is not ours stays
+  cmp -s "$PKG/ControlLib.dll" "$s" && return
+  cp "$PKG/ControlLib.dll" "$s" && n=$((n + 1)) && echo "   ControlLib.dll -> $s"
+}
 shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder
   local f d
   for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
@@ -125,6 +132,7 @@ shim_pass() { # every Proton that bundles the library, and every prefix that has
   for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
     [ -d "$d" ] || continue
     if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
+    install_controllib "${d%/driverstore/filerepository/igd_faux.inf_1}"
   done
 }
 shim_pass

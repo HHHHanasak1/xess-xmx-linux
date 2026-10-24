@@ -29,6 +29,11 @@ mkdir -p "$PFX"
 # 1. shim DLL
 [ -f "$PFX/igdext64.dll.stock" ] || { [ -f "$PFX/igdext64.dll" ] && cp "$PFX/igdext64.dll" "$PFX/igdext64.dll.stock"; }
 cp "$ROOT/igdext64.dll" "$PFX/igdext64.dll"
+# ControlLib.dll: the stand-in for Intel's Control Library, for XESS_FG (frame generation override)
+S32="$PFXROOT/drive_c/windows/system32"
+if [ -f "$ROOT/ControlLib.dll" ] && { [ ! -f "$S32/ControlLib.dll" ] || grep -aq 'XESS_FG' "$S32/ControlLib.dll"; }; then
+  cp "$ROOT/ControlLib.dll" "$S32/ControlLib.dll"
+fi
 rm -f "$PFXROOT/drive_c/igdext_kernels/compile_failed.txt"
 
 # 2. driver: ICD json with an absolute library path; every non-Intel driver stays visible
