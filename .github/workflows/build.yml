@@ -42,6 +42,29 @@ jobs:
           name: xmx-icd
           path: out/libvulkan_intel.so
 
+  # lib/bundled/ of the release: SPIRV-Tools and libdisplay-info for systems without them, built on Debian 12 so they
+  # run on anything with glibc >= 2.36 (the drivers need 2.38)
+  deps:
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: bash tools/build-deps.sh out
+      - name: glibc floor at most 2.38, sonames the drivers ask for
+        run: |
+          cat out/SOURCES.txt
+          for f in out/libSPIRV-Tools.so out/libdisplay-info.so.3; do
+            v=$(objdump -T "$f" | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n -u | tail -1 | cut -d. -f2)
+            echo "$f: GLIBC_2.$v"; [ "$v" -le 38 ]
+          done
+          objdump -p out/libdisplay-info.so.3 | grep -q 'SONAME *libdisplay-info\.so\.3$'
+          objdump -T out/libSPIRV-Tools.so | grep -q ' spvContextCreate$'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundled-deps
+          path: out/
+
   shim:
     runs-on: windows-latest
     steps:
@@ -57,8 +80,19 @@ jobs:
         with:
           name: igdext64
           path: shim/build/igdext64.dll
+      # XESS_FG (frame generation override): the stand-in for Intel's Control Library runtime
+      - name: ControlLib.dll
+        run: |
+          mkdir controllib\build
+          cl /nologo /O2 /W3 /MT /LD controllib\ControlLib.c /Focontrollib\build\ /Fe:controllib\build\ControlLib.dll /link dxgi.lib dxguid.lib
+        shell: cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ControlLib
+          path: controllib/build/ControlLib.dll
 
   mesa:
+    name: mesa ${{ matrix.name }}
     runs-on: ubuntu-latest
     container: archlinux:latest
     strategy:
@@ -66,15 +100,16 @@ jobs:
       matrix:
         include:
           - name: 26.1.2
-            mesa_ref: mesa-26.1.2
+            mesa_sha256: bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0
             patches: patches
             arch_snapshot: 2026/09/20
           - name: 26.3.0-rc1
-            mesa_ref: mesa-26.3.0-rc1
+            mesa_sha256: 63327d58a51d189c1d1600746c505609bba5c495123b4e51de4e0c038b745542
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
     env:
-      MESA_REF: ${{ matrix.mesa_ref }}
+      MESA_VERSION: ${{ matrix.name }}
+      MESA_SHA256: ${{ matrix.mesa_sha256 }}
       PATCHES: ${{ matrix.patches }}
       ARCH_SNAPSHOT: ${{ matrix.arch_snapshot }}
     steps:
@@ -85,11 +120,17 @@ jobs:
             python-ply glslang spirv-tools spirv-headers spirv-llvm-translator llvm clang libclc libdrm \
             wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf
       - uses: actions/checkout@v4
-      - name: mesa source
+      # the release tarball, not the git tag: upstream deleted the mesa-26.3.0-rc1 tag and its commit when staging/26.3
+      # was branched again, and a tag can move; the tarball is checked against a fixed sha256
+      - name: mesa source (release tarball from archive.mesa3d.org)
         run: |
-          git init -q mesa
-          git -C mesa fetch --depth 1 https://gitlab.freedesktop.org/mesa/mesa.git "$MESA_REF"
-          git -C mesa checkout -q FETCH_HEAD
+          curl -sfLO "https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz"
+          echo "${MESA_SHA256}  mesa-${MESA_VERSION}.tar.xz" | sha256sum -c -
+          mkdir mesa
+          tar -xf "mesa-${MESA_VERSION}.tar.xz" -C mesa --strip-components=1
+          git -C mesa init -q
+          git -C mesa add -A
+          git -C mesa -c user.name=ci -c user.email=ci@localhost commit -qm "mesa ${MESA_VERSION}"
       - name: apply patches
         run: |
           cd mesa
@@ -99,14 +140,15 @@ jobs:
           cd mesa
           meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
             -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
-            -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+            -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools= '-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps'
       - name: build
         run: ninja -C mesa/build src/intel/vulkan/libvulkan_intel.so
       - name: the driver reads the system's driconf (/usr/share/drirc.d)
         run: grep -aq '/usr/share/drirc.d' mesa/build/src/intel/vulkan/libvulkan_intel.so
-      - name: dependencies of the driver (glibc / libstdc++ floor, unversioned sonames)
+      - name: dependencies of the driver (glibc / libstdc++ floor, unversioned sonames, run path lib/deps)
         run: |
-          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep NEEDED
+          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -E "NEEDED|RUNPATH"
+          objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -q 'RUNPATH *[$]ORIGIN/[.][.]/deps$'
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBC_2\.[0-9]*" | sort -t. -k2 -n -u | tail -1
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
       - uses: actions/upload-artifact@v4

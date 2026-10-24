@@ -39,7 +39,7 @@ file the session's Vulkan driver list points at, is a small ICD built from `icd/
     gcc -O2 -shared -fPIC -fvisibility=hidden -o lib/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
 
 `tools/rebuild-driver.sh` does everything below for the system's Mesa version, for example after a SteamOS update:
-fetch the tag, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise), build, check the result like
+download the release tarball from archive.mesa3d.org, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise), build, check the result like
 the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so` and make it the default driver
 (`tools/switch-driver.sh`, see the README). If the patches do not apply to the new version, nothing is changed and the
 script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
@@ -48,10 +48,12 @@ script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox wi
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc1  # or a given one
 
 There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` (contributed in #19) for
-`mesa-26.3.0-rc1`; other versions need a rebase. By hand, for 26.1.2 (for 26.3: that tag and that folder, the same
-meson options):
+Mesa 26.3.0-rc1; other versions need a rebase. Both are built from the release tarballs, not the git tags: upstream
+deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branched again. By hand, for 26.1.2 (for
+26.3: that tarball and that folder, the same meson options):
 
-    git clone --branch mesa-26.1.2 https://gitlab.freedesktop.org/mesa/mesa.git && cd mesa
+    mkdir mesa && curl -sfL https://archive.mesa3d.org/mesa-26.1.2.tar.xz | tar -xJ -C mesa --strip-components=1
+    cd mesa && git init -q && git add -A && git commit -qm "mesa 26.1.2"
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
     git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe2: needed; Xe3: no effect (applies with or without 0002)

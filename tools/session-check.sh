@@ -51,6 +51,38 @@ fail() { # <reason>
 }
 [ "${1:-}" = --dry-run ] && DRY=1
 
+# 0. lib/deps (the drivers' run path): copies of the host libraries that games under Proton cannot reach otherwise.
+#    Inside the Steam Linux Runtime container the host's /usr is not visible; pressure-vessel brings in only the
+#    libraries the host's own Vulkan drivers need, and the runtime has neither libSPIRV-Tools nor libdisplay-info. So a
+#    system without another 64-bit Mesa Vulkan driver (radeon, nouveau) leaves the patched ANV unloadable in games, and
+#    a system whose SPIRV-Tools has another name (libSPIRV-Tools-shared.so on Void Linux, libSPIRV-Tools-<version>.so
+#    on openSUSE) has no libSPIRV-Tools.so at all. The driver uses only SPIRV-Tools' stable C API, so any of them does.
+#    Refreshed every session, so a system update of either library reaches the copy. A system without the library
+#    (Debian, Ubuntu and Fedora ship libdisplay-info 0.1/0.2; Debian and Ubuntu have no shared SPIRV-Tools) gets the
+#    package's own build from lib/bundled/ (tools/build-deps.sh).
+hostlib() { # <soname, or an awk regex with -r> -> path of the host's 64-bit library
+  local p d
+  if [ "$1" = -r ]; then
+    p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v r="$2" '$1 ~ r && /x86-64/ { print $NF; exit }')
+    [ -n "$p" ] && [ -f "$p" ] && echo "$p"
+    return
+  fi
+  p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v n="$1" '$1 == n && /x86-64/ { print $NF; exit }')
+  [ -n "$p" ] && [ -f "$p" ] && { echo "$p"; return; }
+  for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /lib64 /lib/x86_64-linux-gnu /usr/lib; do
+    [ -f "$d/$1" ] && { echo "$d/$1"; return; }
+  done
+}
+mkdir -p "$PKG/lib/deps"
+for n in $(cat "$PKG"/lib/mesa-*/libvulkan_intel.so 2>/dev/null | grep -aoE 'lib(SPIRV-Tools[A-Za-z-]*|display-info)\.so[.0-9]*' | sort -u); do
+  src=$(hostlib "$n")
+  [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib libSPIRV-Tools-shared.so)
+  [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib -r '^libSPIRV-Tools-[0-9][^ ]*\.so$')
+  [ -z "$src" ] && [ -f "$PKG/lib/bundled/$n" ] && src="$PKG/lib/bundled/$n"
+  [ -n "$src" ] || continue
+  cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
+done
+
 # 1. load
 err=$(python3 - "$LIB" 2>&1 <<'EOF'
 import ctypes, sys

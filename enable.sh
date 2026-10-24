@@ -13,7 +13,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APPID="${XMX_APPID:-${WUWA_APPID:-}}"
 PFXROOT="${XMX_PREFIX:-${WUWA_PREFIX:-}}"
-[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx"
+. "$ROOT/tools/steam-libraries.sh"
+# the prefix in whichever Steam library holds the game (SD card, second disk)
+[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT=$(steam_prefix_of "$APPID" || echo "$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx")
 [ -n "$PFXROOT" ] || { echo "Set XMX_APPID=<Steam app id> or XMX_PREFIX=<prefix folder>."; exit 1; }
 PFX="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1"
 CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
@@ -29,6 +31,11 @@ mkdir -p "$PFX"
 # 1. shim DLL
 [ -f "$PFX/igdext64.dll.stock" ] || { [ -f "$PFX/igdext64.dll" ] && cp "$PFX/igdext64.dll" "$PFX/igdext64.dll.stock"; }
 cp "$ROOT/igdext64.dll" "$PFX/igdext64.dll"
+# ControlLib.dll: the stand-in for Intel's Control Library, for XESS_FG (frame generation override)
+S32="$PFXROOT/drive_c/windows/system32"
+if [ -f "$ROOT/ControlLib.dll" ] && { [ ! -f "$S32/ControlLib.dll" ] || grep -aq 'XESS_FG' "$S32/ControlLib.dll"; }; then
+  cp "$ROOT/ControlLib.dll" "$S32/ControlLib.dll"
+fi
 rm -f "$PFXROOT/drive_c/igdext_kernels/compile_failed.txt"
 
 # 2. driver: ICD json with an absolute library path; every non-Intel driver stays visible
@@ -55,6 +62,10 @@ export ANV_CM_HELPER=$ROOT/tools/cm-compile.sh
 export force_vk_vendor=0
 # <<< XESS-XMX <<<
 EOF
+
+# 3. the driver check; it also copies the host libraries the Steam Linux Runtime lacks into lib/deps
+bash "$ROOT/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "driver check: loads fine" \
+  || echo "!! the patched driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
 
 echo "XeSS XMX enabled for prefix $PFXROOT"
 echo "These variables must be in the game's environment (written to $CONF; Steam launch options:"

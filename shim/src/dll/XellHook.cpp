@@ -163,3 +163,293 @@ void StartXellHook()
     HANDLE h = CreateThread(nullptr, 0, XellThread, nullptr, 0, nullptr);
     if (h) CloseHandle(h);
 }
+
+// XeFG (libxess_fg.dll) diagnostics, IGDEXT_XEFG_LOG=1 (XESS_LOG=1 sets it): XeFG's own log through its public
+// xefgSwapChainSetLoggingCallback, and what the game asks for and gets: the maximum number of interpolated frames after
+// context creation (where an Intel Graphics Software override, tools' ControlLib.dll with XESS_FG, takes effect), the
+// value the game passes at initialization, and every change of the number. Written to C:\igdext_xefg.log.
+typedef int32_t (*PFN_XefgCreate)(void* dev, void** ctx);
+typedef int32_t (*PFN_XefgInit)(void* ctx, void* queue, const void* params);
+typedef int32_t (*PFN_XefgSetNum)(void* ctx, uint32_t n);
+typedef int32_t (*PFN_XefgSetLog)(void* ctx, int32_t level, void (*cb)(const char*, int32_t, void*), void* user);
+typedef int32_t (*PFN_XefgGetProps)(void* ctx, void* props);
+typedef int32_t (*PFN_XefgGetInit)(void* ctx, void* params);
+#pragma pack(push, 8)
+struct XefgProps { uint32_t requiredDescriptorCount; uint64_t tempBufferHeapSize, tempTextureHeapSize, constantBufferSize; uint32_t maxSupportedInterpolations; };
+struct XefgInitParams { void* pApplicationSwapChain; uint32_t initFlags, maxInterpolatedFrames, creationNodeMask, visibleNodeMask;
+                        uint8_t rest[64]; };
+#pragma pack(pop)
+static PFN_XefgCreate g_fgCreate; static PFN_XefgInit g_fgInit; static PFN_XefgSetNum g_fgSetNum;
+static PFN_XefgSetLog g_fgSetLog; static PFN_XefgGetProps g_fgGetProps; static PFN_XefgGetInit g_fgGetInit;
+
+static bool g_fgLog = false;
+static void FLog(const char* fmt, ...)
+{
+    if (!g_fgLog) return;
+    FILE* f = nullptr;
+    if (fopen_s(&f, "C:\\igdext_xefg.log", "ab") != 0 || !f) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
+    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+    fputc('\n', f); fclose(f);
+}
+
+static void XefgLogCb(const char* msg, int32_t level, void*)
+{
+    if (msg) FLog("XeFG[%d] %s", level, msg);
+}
+
+static void XefgReportMax(void* ctx, const char* when)
+{
+    XefgProps p = {};
+    int32_t r = g_fgGetProps ? g_fgGetProps(ctx, &p) : -1;
+    FLog("  %s: xefgSwapChainGetProperties -> %d, maxSupportedInterpolations %u", when, r, p.maxSupportedInterpolations);
+}
+
+// More than 4x (XESS_FG=5..8): XeSS-FG takes its maximum number of interpolated frames from the Intel Graphics Software
+// override (ControlLib.dll answers it; Intel's enum and XeSS-FG's parser end at 4x), and keeps that number in its own
+// writable data. It is found by observation, without any knowledge of the library's layout: after the game's context
+// creation (override 4x: 3 frames) every 32-bit value 3 in libxess_fg's writable sections is a candidate; a probe
+// context created through the public API with the override at 3x (XESS_FG_PROBE=2, read by ControlLib.dll) leaves only
+// the value that followed it. That one is set to the wanted number, and the public xefgSwapChainGetProperties of the
+// game's context must then report it - otherwise the old value goes back and the game keeps 4x.
+typedef int32_t (*PFN_XefgDestroy)(void* ctx);
+static PFN_XefgDestroy g_fgDestroy;
+
+static void XefgRaise(void* dev, void* gameCtx)
+{
+    char b[16];
+    if (GetEnvironmentVariableA("XESS_FG", b, sizeof(b)) == 0) return;
+    int n = atoi(b);
+    if (n <= 4) return;
+    uint32_t want = (uint32_t) (n > 8 ? 8 : n) - 1;
+    HMODULE m = GetModuleHandleW(L"libxess_fg.dll");
+    XefgProps p0 = {};
+    if (!m || !g_fgCreate || !g_fgDestroy || !g_fgGetProps || g_fgGetProps(gameCtx, &p0) != 0) { FLog("  XESS_FG=%d: no libxess_fg API, 4x", n); return; }
+    if (p0.maxSupportedInterpolations != 3) { FLog("  XESS_FG=%d: maximum is %u, not the 4x override (ControlLib.dll missing?)", n, p0.maxSupportedInterpolations); return; }
+    // candidates: every aligned 3 in the writable sections
+    uint8_t* base = (uint8_t*) m;
+    auto* nt = (IMAGE_NT_HEADERS*) (base + ((IMAGE_DOS_HEADER*) base)->e_lfanew);
+    auto* sec = IMAGE_FIRST_SECTION(nt);
+    static uint32_t* cand[4096]; size_t nc = 0;
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+    {
+        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        auto* q = (uint32_t*) (base + sec[i].VirtualAddress);
+        size_t words = sec[i].Misc.VirtualSize / 4;
+        for (size_t k = 0; k < words; ++k)
+            if (q[k] == 3) { if (nc < 4096) cand[nc++] = &q[k]; else { FLog("  XESS_FG=%d: too many candidates, 4x", n); return; } }
+    }
+    // the probe: the same device, override 3x
+    SetEnvironmentVariableA("XESS_FG_PROBE", "2");
+    void* probe = nullptr;
+    int32_t r = g_fgCreate(dev, &probe);
+    SetEnvironmentVariableA("XESS_FG_PROBE", nullptr);
+    if (r == 0 && probe) g_fgDestroy(probe);
+    uint32_t* hit = nullptr; size_t nh = 0;
+    for (size_t k = 0; k < nc; ++k) if (*cand[k] == 2) { hit = cand[k]; ++nh; }
+    FLog("  XESS_FG=%d: probe context -> %d, %zu candidate(s), %zu followed the override", n, r, nc, nh);
+    if (nh != 1)
+    {
+        for (size_t k = 0; k < nc; ++k) if (*cand[k] == 2) *cand[k] = 3;   // whatever followed the probe goes back
+        FLog("  XESS_FG=%d: not unique, 4x", n);
+        return;
+    }
+    *hit = want;
+    XefgProps p1 = {};
+    if (g_fgGetProps(gameCtx, &p1) == 0 && p1.maxSupportedInterpolations == want)
+    {
+        FLog("  XESS_FG=%d: libxess_fg+0x%llx %u -> %u, the game's context now reports %u interpolated frames", n,
+             (unsigned long long) ((uint8_t*) hit - base), 3u, want, p1.maxSupportedInterpolations);
+        return;
+    }
+    *hit = 3;
+    FLog("  XESS_FG=%d: the context reports %u after the change, put back: 4x", n, p1.maxSupportedInterpolations);
+}
+
+// The raise happens once per context, at the first call after its creation: in the creation hook, or - when the
+// game created the context before the hooks were in place (the shim is loaded by libxess_fg itself during that call,
+// as in Wuthering Waves) - at the first of the calls a game makes next to size and set up frame generation.
+static void* g_fgDevice;              // the D3D12 device of the last extension request (the probe needs one)
+static void* g_fgDone[16]; static LONG g_fgNDone;
+static SRWLOCK g_fgLock = SRWLOCK_INIT;
+static volatile DWORD g_fgOwner;      // thread inside XefgRaiseOnce: libxess_fg may call its own exports while it
+                                      // creates the probe context, and those calls must not wait for themselves
+static void XefgRaiseOnce(void* dev, void* ctx)
+{
+    if (!ctx || g_fgOwner == GetCurrentThreadId()) return;
+    AcquireSRWLockExclusive(&g_fgLock);
+    g_fgOwner = GetCurrentThreadId();
+    bool seen = false;
+    for (LONG i = 0; i < g_fgNDone && !seen; ++i) seen = g_fgDone[i] == ctx;
+    if (!seen)
+    {
+        g_fgDone[g_fgNDone % 16] = ctx; ++g_fgNDone;
+        if (dev) XefgRaise(dev, ctx); else FLog("  XESS_FG: no D3D12 device seen yet, 4x");
+    }
+    g_fgOwner = 0;
+    ReleaseSRWLockExclusive(&g_fgLock);
+}
+
+typedef int32_t (*PFN_XefgD3D12Props)(void* ctx, const void* init, uint32_t w, uint32_t h, uint32_t fmt, void* props);
+typedef int32_t (*PFN_XefgBuild)(void* ctx, void* lib, uint8_t blocking, uint32_t flags);
+static PFN_XefgD3D12Props g_fgD3D12Props; static PFN_XefgBuild g_fgBuild;
+
+static int32_t Hook_XefgCreate(void* dev, void** ctx)
+{
+    int32_t r = g_fgCreate(dev, ctx);
+    FLog("xefgSwapChainD3D12CreateContext -> %d ctx %p", r, ctx ? *ctx : nullptr);
+    if (r == 0 && ctx && *ctx)
+    {
+        g_fgDevice = dev;
+        XefgRaiseOnce(dev, *ctx);
+        if (g_fgLog && g_fgSetLog) FLog("  xefgSwapChainSetLoggingCallback(debug) -> %d", g_fgSetLog(*ctx, 0, XefgLogCb, nullptr));
+        XefgReportMax(*ctx, "after creation");
+    }
+    return r;
+}
+static int32_t Hook_XefgGetProps(void* ctx, void* props) { XefgRaiseOnce(g_fgDevice, ctx); return g_fgGetProps(ctx, props); }
+static int32_t Hook_XefgD3D12Props(void* ctx, const void* init, uint32_t w, uint32_t h, uint32_t fmt, void* props)
+{
+    XefgRaiseOnce(g_fgDevice, ctx);
+    return g_fgD3D12Props(ctx, init, w, h, fmt, props);
+}
+static int32_t Hook_XefgBuild(void* ctx, void* lib, uint8_t blocking, uint32_t flags)
+{
+    XefgRaiseOnce(g_fgDevice, ctx);
+    return g_fgBuild(ctx, lib, blocking, flags);
+}
+
+static void XefgInitBefore(const char* name, void* ctx, const void* params)
+{
+    XefgRaiseOnce(g_fgDevice, ctx);
+    uint32_t want = params ? ((const XefgInitParams*) params)->maxInterpolatedFrames : 0;
+    FLog("%s: game asks maxInterpolatedFrames %u%s", name, want, want == 0xFFFFFFFFu ? " (maximum supported)" : "");
+}
+static void XefgInitAfter(void* ctx, int32_t r)
+{
+    if (!g_fgLog) return;
+    XefgInitParams got = {};
+    int32_t g = g_fgGetInit ? g_fgGetInit(ctx, &got) : -1;
+    FLog("  -> %d; initialization parameters (%d): maxInterpolatedFrames %u", r, g, got.maxInterpolatedFrames);
+    XefgReportMax(ctx, "after initialization");
+}
+// xefgSwapChainD3D12InitFromSwapChain(ctx, queue, params)
+static int32_t Hook_XefgInit(void* ctx, void* queue, const void* params)
+{
+    XefgInitBefore("xefgSwapChainD3D12InitFromSwapChain", ctx, params);
+    int32_t r = g_fgInit(ctx, queue, params);
+    XefgInitAfter(ctx, r);
+    return r;
+}
+// xefgSwapChainD3D12InitFromSwapChainDesc(ctx, hWnd, desc, fullscreenDesc, queue, dxgiFactory, params)
+typedef int32_t (*PFN_XefgInitDesc)(void* ctx, HWND wnd, const void* desc, const void* fsDesc, void* queue, void* factory, const void* params);
+static PFN_XefgInitDesc g_fgInitDescFn;
+static int32_t Hook_XefgInitDesc(void* ctx, HWND wnd, const void* desc, const void* fsDesc, void* queue, void* factory, const void* params)
+{
+    XefgInitBefore("xefgSwapChainD3D12InitFromSwapChainDesc", ctx, params);
+    int32_t r = g_fgInitDescFn(ctx, wnd, desc, fsDesc, queue, factory, params);
+    XefgInitAfter(ctx, r);
+    return r;
+}
+
+// A game with its own multi-frame choice (Wuthering Waves: 2x/3x/4x in its menu) sets the number while it runs; with
+// XESS_FG the override decides, as with Intel Graphics Software, so any number but 0 (off) becomes XESS_FG's. If
+// XeSS-FG refuses it (above its maximum, e.g. when raising past 4x did not work), the game's own number goes through.
+static int32_t Hook_XefgSetNum(void* ctx, uint32_t n)
+{
+    char b[8];
+    int want = GetEnvironmentVariableA("XESS_FG", b, sizeof(b)) > 0 ? atoi(b) : 0;
+    if (n > 0 && want >= 2)
+    {
+        uint32_t m = (uint32_t) (want > 8 ? 8 : want) - 1;
+        if (m != n)
+        {
+            int32_t r = g_fgSetNum(ctx, m);
+            FLog("xefgSwapChainSetNumInterpolatedFrames(%u): XESS_FG=%d -> %u -> %d", n, want, m, r);
+            if (r == 0) return r;
+        }
+    }
+    int32_t r = g_fgSetNum(ctx, n);
+    FLog("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", n, r);
+    return r;
+}
+
+static bool g_fgWanted = false;
+static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
+static volatile LONG g_fgHooked = 0;
+static SRWLOCK g_fgHookLock = SRWLOCK_INIT;
+// hooks the exports of the libxess_fg that is loaded now, once per load (Wuthering Waves loads it, unloads it and
+// loads it again); returns false while there is none or it is not ready (still loading or being unloaded)
+static bool XefgInstallHooks()
+{
+    HMODULE m = nullptr;
+    // pinned while it is patched: an unload in between would leave half a hook table
+    if (!GetModuleHandleExW(0, L"libxess_fg.dll", &m) || !m) return false;
+    AcquireSRWLockExclusive(&g_fgHookLock);
+    // hooked = this load's CreateContext jumps to our hook (a reload at the same address comes back unpatched)
+    bool done = false;
+    if (const uint8_t* c = (const uint8_t*) GetProcAddress(m, "xefgSwapChainD3D12CreateContext"))
+        done = c[0] == 0xE9 && c + 5 + *(const int32_t*) (c + 1) == (const uint8_t*) Hook_XefgCreate;
+    struct { const char* name; void* hook; void** orig; void* entry; } hooks[] = {
+        { "xefgSwapChainD3D12CreateContext", (void*) Hook_XefgCreate, (void**) &g_fgCreate, nullptr },
+        { "xefgSwapChainGetProperties", (void*) Hook_XefgGetProps, (void**) &g_fgGetProps, nullptr },
+        { "xefgSwapChainD3D12GetProperties", (void*) Hook_XefgD3D12Props, (void**) &g_fgD3D12Props, nullptr },
+        { "xefgSwapChainD3D12BuildPipelines", (void*) Hook_XefgBuild, (void**) &g_fgBuild, nullptr },
+        { "xefgSwapChainD3D12InitFromSwapChain", (void*) Hook_XefgInit, (void**) &g_fgInit, nullptr },
+        { "xefgSwapChainD3D12InitFromSwapChainDesc", (void*) Hook_XefgInitDesc, (void**) &g_fgInitDescFn, nullptr },
+        { "xefgSwapChainSetNumInterpolatedFrames", (void*) Hook_XefgSetNum, (void**) &g_fgSetNum, nullptr },
+    };
+    bool ready = !done;
+    for (auto& h : hooks)
+        if (ready && !(h.entry = (void*) GetProcAddress(m, h.name))) ready = false;   // all of them, or none yet
+    if (ready)
+    {
+        char path[MAX_PATH] = {}; GetModuleFileNameA(m, path, MAX_PATH);
+        FLog("libxess_fg.dll at %p: %s", m, path);
+        g_fgSetLog = (PFN_XefgSetLog) GetProcAddress(m, "xefgSwapChainSetLoggingCallback");
+        g_fgGetInit = (PFN_XefgGetInit) GetProcAddress(m, "xefgSwapChainD3D12GetInitializationParameters");
+        g_fgDestroy = (PFN_XefgDestroy) GetProcAddress(m, "xefgSwapChainDestroy");
+        for (auto& h : hooks)
+        {
+            // PatchThunk stores the original before the jmp goes live, so the hook never sees a null original
+            bool ok = PatchThunk(h.entry, h.hook, h.orig, h.name);
+            FLog("%s %s", h.name, ok ? "hooked" : "NOT hooked");
+        }
+        g_fgHookedModule = m;
+        g_fgHooked = 1;
+        done = true;
+    }
+    ReleaseSRWLockExclusive(&g_fgHookLock);
+    FreeLibrary(m);
+    return done;
+}
+
+// every D3D12 extension request: libxess_fg asks for the extension while it creates a context, so this is where the
+// hooks go in when the library loaded the shim itself
+void XefgNoteDevice(const void* dev)
+{
+    if (!g_fgWanted) return;
+    if (dev) g_fgDevice = const_cast<void*>(dev);
+    XefgInstallHooks();
+}
+
+static DWORD WINAPI XefgThread(LPVOID)
+{
+    for (int i = 0; i < 60000 && !XefgInstallHooks(); ++i) Sleep(10);
+    if (!g_fgHooked) FLog("libxess_fg.dll never loaded");
+    return 0;
+}
+
+void StartXefgHook()
+{
+    // the log (IGDEXT_XEFG_LOG=1) or the frame generation override (XESS_FG) needs the hooks
+    char b[8];
+    g_fgLog = GetEnvironmentVariableA("IGDEXT_XEFG_LOG", b, sizeof(b)) > 0 && atoi(b);
+    bool raise = GetEnvironmentVariableA("XESS_FG", b, sizeof(b)) > 0 && atoi(b) >= 2;   // also 2..4: the game's own number
+    if (!g_fgLog && !raise) return;
+    g_fgWanted = true;
+    if (XefgInstallHooks()) return;   // already loaded (it loaded the shim): hook now, not later
+    HANDLE h = CreateThread(nullptr, 0, XefgThread, nullptr, 0, nullptr);
+    if (h) CloseHandle(h);
+}

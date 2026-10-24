@@ -3,13 +3,17 @@
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APPID="${XMX_APPID:-${WUWA_APPID:-}}"
 PFXROOT="${XMX_PREFIX:-${WUWA_PREFIX:-}}"
-[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx"
+. "$ROOT/tools/steam-libraries.sh"
+# the prefix in whichever Steam library holds the game (SD card, second disk)
+[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT=$(steam_prefix_of "$APPID" || echo "$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx")
 [ -n "$PFXROOT" ] || { echo "Set XMX_APPID=<Steam app id> or XMX_PREFIX=<prefix folder>."; exit 1; }
 PFX="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1"
 CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
 GAME="${XMX_GAME:-}"
 if [ -n "$GAME" ] && pgrep -i "^${GAME:0:15}" >/dev/null; then echo "The game is running - close it first."; exit 1; fi
 [ -f "$PFX/igdext64.dll.stock" ] && cp "$PFX/igdext64.dll.stock" "$PFX/igdext64.dll" && echo "stock igdext64.dll restored"
+C="$PFXROOT/drive_c/windows/system32/ControlLib.dll"
+[ -f "$C" ] && grep -aq 'XESS_FG' "$C" && rm -f "$C" && echo "ControlLib.dll removed"
 [ -f "$CONF" ] && sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF" && echo "launcher config block removed from $CONF"
 rm -rf "$PFXROOT/drive_c/igdext_kernels"
 echo "XeSS XMX disabled."
