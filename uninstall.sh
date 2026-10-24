@@ -5,8 +5,6 @@
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
-. "$PKG/tools/steam-libraries.sh"
-LIBS=$(steam_libraries "$STEAM")
 rm -f "$HOME/.config/environment.d/50-xess-xmx.conf"
 systemctl --user unset-environment VK_DRIVER_FILES VKD3D_DISABLE_EXTENSIONS ANV_CM_KERNEL_DIR ANV_CM_HELPER force_vk_vendor 2>/dev/null
 systemctl --user disable --now xess-xmx-shim.path >/dev/null 2>&1
