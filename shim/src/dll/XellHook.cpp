@@ -375,38 +375,53 @@ static int32_t Hook_XefgSetNum(void* ctx, uint32_t n)
 }
 
 static bool g_fgWanted = false;
+static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
 static volatile LONG g_fgHooked = 0;
-// hooks libxess_fg's exports once; returns false while the library is not loaded
+static SRWLOCK g_fgHookLock = SRWLOCK_INIT;
+// hooks the exports of the libxess_fg that is loaded now, once per load (Wuthering Waves loads it, unloads it and
+// loads it again); returns false while there is none or it is not ready (still loading or being unloaded)
 static bool XefgInstallHooks()
 {
-    HMODULE m = GetModuleHandleW(L"libxess_fg.dll");
-    if (!m) return false;
-    // a library still being loaded has no exports yet: try again later instead of giving up for good
-    if (!GetProcAddress(m, "xefgSwapChainD3D12CreateContext")) return false;
-    if (InterlockedCompareExchange(&g_fgHooked, 1, 0) != 0) return true;
-    char path[MAX_PATH] = {}; GetModuleFileNameA(m, path, MAX_PATH);
-    FLog("libxess_fg.dll at %p: %s", m, path);
-    g_fgSetLog = (PFN_XefgSetLog) GetProcAddress(m, "xefgSwapChainSetLoggingCallback");
-    g_fgGetInit = (PFN_XefgGetInit) GetProcAddress(m, "xefgSwapChainD3D12GetInitializationParameters");
-    g_fgDestroy = (PFN_XefgDestroy) GetProcAddress(m, "xefgSwapChainDestroy");
-    struct { const char* name; void* hook; void** orig; } hooks[] = {
-        { "xefgSwapChainD3D12CreateContext", (void*) Hook_XefgCreate, (void**) &g_fgCreate },
-        { "xefgSwapChainGetProperties", (void*) Hook_XefgGetProps, (void**) &g_fgGetProps },
-        { "xefgSwapChainD3D12GetProperties", (void*) Hook_XefgD3D12Props, (void**) &g_fgD3D12Props },
-        { "xefgSwapChainD3D12BuildPipelines", (void*) Hook_XefgBuild, (void**) &g_fgBuild },
-        { "xefgSwapChainD3D12InitFromSwapChain", (void*) Hook_XefgInit, (void**) &g_fgInit },
-        { "xefgSwapChainD3D12InitFromSwapChainDesc", (void*) Hook_XefgInitDesc, (void**) &g_fgInitDescFn },
-        { "xefgSwapChainSetNumInterpolatedFrames", (void*) Hook_XefgSetNum, (void**) &g_fgSetNum },
+    HMODULE m = nullptr;
+    // pinned while it is patched: an unload in between would leave half a hook table
+    if (!GetModuleHandleExW(0, L"libxess_fg.dll", &m) || !m) return false;
+    AcquireSRWLockExclusive(&g_fgHookLock);
+    // hooked = this load's CreateContext jumps to our hook (a reload at the same address comes back unpatched)
+    bool done = false;
+    if (const uint8_t* c = (const uint8_t*) GetProcAddress(m, "xefgSwapChainD3D12CreateContext"))
+        done = c[0] == 0xE9 && c + 5 + *(const int32_t*) (c + 1) == (const uint8_t*) Hook_XefgCreate;
+    struct { const char* name; void* hook; void** orig; void* entry; } hooks[] = {
+        { "xefgSwapChainD3D12CreateContext", (void*) Hook_XefgCreate, (void**) &g_fgCreate, nullptr },
+        { "xefgSwapChainGetProperties", (void*) Hook_XefgGetProps, (void**) &g_fgGetProps, nullptr },
+        { "xefgSwapChainD3D12GetProperties", (void*) Hook_XefgD3D12Props, (void**) &g_fgD3D12Props, nullptr },
+        { "xefgSwapChainD3D12BuildPipelines", (void*) Hook_XefgBuild, (void**) &g_fgBuild, nullptr },
+        { "xefgSwapChainD3D12InitFromSwapChain", (void*) Hook_XefgInit, (void**) &g_fgInit, nullptr },
+        { "xefgSwapChainD3D12InitFromSwapChainDesc", (void*) Hook_XefgInitDesc, (void**) &g_fgInitDescFn, nullptr },
+        { "xefgSwapChainSetNumInterpolatedFrames", (void*) Hook_XefgSetNum, (void**) &g_fgSetNum, nullptr },
     };
+    bool ready = !done;
     for (auto& h : hooks)
+        if (ready && !(h.entry = (void*) GetProcAddress(m, h.name))) ready = false;   // all of them, or none yet
+    if (ready)
     {
-        void* e = (void*) GetProcAddress(m, h.name);
-        if (!e) { FLog("%s: not exported", h.name); continue; }
-        // PatchThunk stores the original before the jmp goes live, so the hook never sees a null original
-        bool ok = PatchThunk(e, h.hook, h.orig, h.name);
-        FLog("%s %s", h.name, ok ? "hooked" : "NOT hooked");
+        char path[MAX_PATH] = {}; GetModuleFileNameA(m, path, MAX_PATH);
+        FLog("libxess_fg.dll at %p: %s", m, path);
+        g_fgSetLog = (PFN_XefgSetLog) GetProcAddress(m, "xefgSwapChainSetLoggingCallback");
+        g_fgGetInit = (PFN_XefgGetInit) GetProcAddress(m, "xefgSwapChainD3D12GetInitializationParameters");
+        g_fgDestroy = (PFN_XefgDestroy) GetProcAddress(m, "xefgSwapChainDestroy");
+        for (auto& h : hooks)
+        {
+            // PatchThunk stores the original before the jmp goes live, so the hook never sees a null original
+            bool ok = PatchThunk(h.entry, h.hook, h.orig, h.name);
+            FLog("%s %s", h.name, ok ? "hooked" : "NOT hooked");
+        }
+        g_fgHookedModule = m;
+        g_fgHooked = 1;
+        done = true;
     }
-    return true;
+    ReleaseSRWLockExclusive(&g_fgHookLock);
+    FreeLibrary(m);
+    return done;
 }
 
 // every D3D12 extension request: libxess_fg asks for the extension while it creates a context, so this is where the
