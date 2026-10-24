@@ -61,9 +61,8 @@ changes a value inside Intel's library while it runs, which Intel does not suppo
 5x takes the same path, **7x has not been tested**. None of them is recommended: every step above 4x lowers the real
 frame rate further and raises the latency, which at 8x is clearly noticeable. They are there only as an option.
 
-Cyberpunk 2077 benchmark, Arc B390, 144 Hz: 2x (the game's own) 81.9 fps, `XESS_FG=4` 118.4, `XESS_FG=6` 143 (min 137),
-`XESS_FG=8` 222 (min 197). The benchmark counts the frames frame generation produces; above the refresh rate not every
-one of them reaches the screen.
+Cyberpunk 2077 benchmark, Arc B390, 144 Hz display: 2x (the game's own) 81.9 fps, `XESS_FG=4` 118.4, `XESS_FG=6` 143
+(min 137) with the frame rate limited to 144, `XESS_FG=8` 222 (min 197) without that limit.
 
 With XeSS frame generation on, the game cannot use exclusive fullscreen (XeSS-FG refuses it) and runs borderless; under
 gamescope that looks the same.
