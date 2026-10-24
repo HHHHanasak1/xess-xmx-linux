@@ -85,7 +85,7 @@ Shim (game environment):
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
-| `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: 6 tested, 7 and 8 untested and not recommended (latency). launch-options.md |
+| `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: 6 and 8 tested, 7 untested; not recommended (latency). launch-options.md |
 | `IGDEXT_XEFG_LOG=1` | `C:\igdext_xefg.log`: XeSS frame generation's own log (public `xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, every change of the number |
 | `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
 | `IGDEXT_XELL_PROBE=<version>` | experimental: claim XeLL driver-mode support and log XeLL's use of it (see how-it-works.md) |

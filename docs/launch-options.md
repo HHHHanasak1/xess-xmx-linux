@@ -34,7 +34,7 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 | `XESS=latest %command%` | the game runs with the XeSS libraries of Intel's XeSS SDK (3.0.2: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) instead of its own older ones | a game with XeSS older than 2.0.2.68 (below), or one whose XeSS is simply old |
 | `XESS=dp4a %command%` | XeSS without Intel's extension: super resolution on DP4a, frame generation on its generic path (2x only) | comparing XMX against DP4a, or ruling the XMX path out as the cause of a problem |
 | `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | XeSS frame generation produces 3x / 4x (`XESS_FG=2`: 2x), whatever the game's menu offers; frame generation stays switched on and off in the game | a game that offers only 2x, such as Cyberpunk 2077 |
-| `XESS_FG=5` ... `XESS_FG=8 %command%` | 5x to 8x (the maximum): **experimental**, beyond what Intel supports (see below). 6x tested; 7x and 8x untested and not recommended | a high refresh rate display that 4x does not fill |
+| `XESS_FG=5` ... `XESS_FG=8 %command%` | 5x to 8x (the maximum): **experimental**, beyond what Intel supports (see below). 6x and 8x tested, 7x untested; not recommended (latency) | a high refresh rate display that 4x does not fill |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | applies the XeLL frame-cap fix (30 fps with frame generation until the pause menu is opened and closed) in this game | another game shows the Wuthering Waves symptom |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | turns that fix off (it is on for Wuthering Waves only) | the fix is suspected to cause a problem |
 
@@ -57,11 +57,13 @@ Above 4x XeSS frame generation ignores the override, so the shim raises the numb
 `libxess_fg.dll` keeps the number by watching it follow a second, probe context, sets the wanted number there and checks
 through the public API that the game's context now reports it. If anything does not match, the game keeps 4x. This
 changes a value inside Intel's library while it runs, which Intel does not support, so 5x to 8x are **experimental**.
-8x is the maximum. **6x has been tested** (Cyberpunk 2077 on an Arc B390); 5x takes the same path. **7x and 8x have not
-been tested** and are not recommended: every step above 4x lowers the real frame rate further and with it raises the
-latency. They are there only as an option, for a display whose refresh rate 6x does not reach.
+8x is the maximum. **6x and 8x have been tested** (Cyberpunk 2077 on an Arc B390) and run without image problems;
+5x takes the same path, **7x has not been tested**. None of them is recommended: every step above 4x lowers the real
+frame rate further and raises the latency, which at 8x is clearly noticeable. They are there only as an option.
 
-Cyberpunk 2077 benchmark, Arc B390, 144 Hz: 2x (the game's own) 81.9 fps, `XESS_FG=4` 118.4, `XESS_FG=6` 143 (min 137).
+Cyberpunk 2077 benchmark, Arc B390, 144 Hz: 2x (the game's own) 81.9 fps, `XESS_FG=4` 118.4, `XESS_FG=6` 143 (min 137),
+`XESS_FG=8` 222 (min 197). The benchmark counts the frames frame generation produces; above the refresh rate not every
+one of them reaches the screen.
 
 With XeSS frame generation on, the game cannot use exclusive fullscreen (XeSS-FG refuses it) and runs borderless; under
 gamescope that looks the same.
