@@ -1,6 +1,7 @@
 #!/bin/bash
 # install.sh - system-wide install of the XeSS XMX package for the current user (SteamOS / any systemd user session):
-#   1. compiler bundle (igc/) fetched if missing            -> run-time kernel compilation for any XeSS version
+#   1. compiler bundle (igc/) fetched if missing            -> run-time kernel compilation for any XeSS version;
+#      Intel's XeSS SDK libraries (xess/) fetched if missing -> for games with XESS=latest in their launch options
 #   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
 #      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
 #   3. the shim igdext64.dll goes into every Proton that bundles its own igdext (Proton Experimental copies that file
@@ -25,6 +26,11 @@ grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.
 if [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
   echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~230 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
+fi
+# Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=latest, tools/proton-hook.py)
+if [ ! -f "$PKG/xess/libxess.dll" ]; then
+  echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=latest)"
+  bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=latest will use the games' own libraries"
 fi
 chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 
@@ -84,10 +90,38 @@ install_shim() { # <igdext64.dll path>
   chmod u+w "$f" 2>/dev/null
   cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
 }
+install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest in launch options)
+  local p=$1 u="$1/user_settings.py"
+  [ -f "$p/proton" ] || return
+  # a user_settings.py of the user's own (Proton's debug settings) keeps working: it becomes user_settings.user.py
+  if [ -f "$u" ] && ! grep -q 'xess-xmx proton hook' "$u"; then mv -f "$u" "$p/user_settings.user.py"; fi
+  cat > "$u.new" <<EOF
+# xess-xmx proton hook - written by $PKG/install.sh, removed by uninstall.sh. Runs tools/proton-hook.py at every game
+# start (XESS=latest in a game's launch options). Your own Proton settings go into user_settings.user.py next to it.
+import os as _os
+user_settings = {}
+try:
+    _h = "$PKG/tools/proton-hook.py"
+    if _os.path.isfile(_h):
+        exec(compile(open(_h).read(), _h, "exec"), {"__file__": _h, "__name__": "xess_xmx_hook", "SETTINGS": user_settings})
+except Exception as _e:
+    import sys as _sys
+    _sys.stderr.write("xess-xmx: proton hook: %s\n" % _e)
+_u = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "user_settings.user.py")
+if _os.path.isfile(_u):
+    _g = {"__file__": _u}
+    exec(compile(open(_u).read(), _u, "exec"), _g)
+    user_settings.update(_g.get("user_settings", {}))
+EOF
+  if cmp -s "$u.new" "$u"; then rm -f "$u.new"; else mv -f "$u.new" "$u" && echo "   XESS hook -> $u"; fi
+}
 shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder
   local f d
   for f in "$STEAM"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
-           "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
+           "$STEAM"/compatibilitytools.d/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
+    install_shim "$f"
+    [ -f "$f" ] && install_hook "${f%/files/lib/wine/igdext/x86_64-windows/igdext64.dll}"
+  done
   for d in "$STEAM"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
     [ -d "$d" ] || continue
     if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi

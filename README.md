@@ -17,7 +17,8 @@ as well (without the Intel extension, XeSS frame generation is limited to 2x).
 
 Download the release archive, unpack it somewhere it can stay, and run:
 
-    ./install.sh     # once; fetches the compiler bundle (about 230 MB), then reboot or log out and in
+    ./install.sh     # once; fetches the compiler bundle (about 230 MB) and Intel's XeSS SDK libraries (77 MB),
+                     # then reboot or log out and in
     ./uninstall.sh   # reverts everything
 
 Every game started from Steam afterwards uses the patched driver, no launch options needed. In the game, select XeSS
@@ -34,6 +35,9 @@ What `install.sh` does:
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
   `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
+* puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
+  each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
+  runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));
 * enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
   the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
@@ -87,12 +91,13 @@ See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (
 | Symptom | Cause / fix |
 |---|---|
 | looks like DP4a, nothing changed | the shim is not in the prefix: re-run `install.sh` |
-| DP4a in one game only, or no XeSS frame generation option | the game sees no Intel GPU (a Mesa game profile, or DXVK with XeSS older than 2.0.2.68): docs/debugging.md |
+| DP4a in one game only, or no XeSS frame generation option | the game sees no Intel GPU: XeSS older than 2.0.2.68 (`XESS=latest %command%`, docs/launch-options.md) or a Mesa game profile (docs/debugging.md) |
 | noise or black patches in the image | a kernel failed to compile; the next launch retries once and then uses XeSS' generic paths. See `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh` |
 | XMX gone after a SteamOS update | neither patched driver loads any more: `~/.cache/xess-xmx/driver-status`; run `tools/rebuild-driver.sh` (docs/building.md) |
 | a game misbehaves on Mesa 26.3 only | `MESA=26.1 %command%` in its launch options, and please report it |
 | first launch hangs for a minute or two | kernels are being compiled (once) |
 
+Steam launch options for one game (driver choice, Jay off, XMX off, logs): [docs/launch-options.md](docs/launch-options.md).
 The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md).
 
 ## Performance
@@ -134,6 +139,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
+    tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
+    tools/proton-hook.py          XESS / XESS_LOG launch options, run by Proton through user_settings.py
     tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
     tools/switch-driver.sh        sets the default among the package's drivers (per game: MESA)
     icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
@@ -142,7 +149,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
-    docs/                         how it works, building, debugging, games
+    docs/                         how it works, building, debugging, games, Steam launch options
     .github/workflows/build.yml   CI: builds the shim, the ICD and both drivers, checks the scripts
 
 The release archive holds the binaries (`igdext64.dll`, the drivers in `lib/mesa-<version>/`, the ICD
