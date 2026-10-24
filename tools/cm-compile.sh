@@ -51,10 +51,13 @@ if [ -z "$BIN" ] || [ ! -s "$BIN" ]; then
   { echo "cm-compile FAILED: $SPV ($(basename "$OPT")) device $DEV lws ${lx}x${ly}x${lz}"; tail -5 "$W/ocloc.log"; } >> "$LOG"
   exit 1
 fi
-if CMK_GC=1,1,1 CMK_GRF_BYTES=$GRF python3 "$HERE/cmk_pack.py" "$BIN" auto "$lx" "$ly" "$lz" "$OUT.tmp" --heap auto --surf auto >> "$W/pack.log" 2>&1 && mv -f "$OUT.tmp" "$OUT"; then
+# a private temporary name: two compiles of the same kernel (XeSS and XeFG contexts on different threads) must not
+# truncate each other's output before the rename; mv within one directory is atomic, the last writer wins intact
+TMP="$OUT.$$.tmp"
+if CMK_GC=1,1,1 CMK_GRF_BYTES=$GRF python3 "$HERE/cmk_pack.py" "$BIN" auto "$lx" "$ly" "$lz" "$TMP" --heap auto --surf auto >> "$W/pack.log" 2>&1 && mv -f "$TMP" "$OUT"; then
   echo "cm-compile ok: $(basename "$OUT") from $(basename "$SPV") device $DEV lws ${lx}x${ly}x${lz} flags [$fl] in $(awk "BEGIN{printf \"%.1f\", $(date +%s.%N) - $t0}") s" >> "$LOG"
   exit 0
 fi
 { echo "cm-compile PACK FAILED: $SPV"; tail -3 "$W/pack.log"; } >> "$LOG"
-rm -f "$OUT.tmp"
+rm -f "$TMP"
 exit 1
