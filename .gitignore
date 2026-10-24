@@ -2,6 +2,7 @@
 lib/
 kernels/
 igdext64.dll
+ControlLib.dll
 run/
 release/
 build/

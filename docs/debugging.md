@@ -5,7 +5,8 @@
 | What you see | Cause | What to do |
 |---|---|---|
 | Looks like the DP4a path; `IGDEXT_TRACE=1` writes no `C:\igdext_trace.log` | The shim is not loaded (new prefix, Proton replaced it) | re-run `install.sh` |
-| DP4a and often no XeSS frame generation option; no trace file; the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | The game ships XeSS older than 2.0.2.68, and DXVK then reports the GPU as an AMD one | replace the game's XeSS libraries: [games.md](games.md) |
+| The same, only with a Proton from a distribution package (CachyOS' `proton-cachyos`) | That Proton is in `/usr/share/steam/compatibilitytools.d`, which only root can write to; Proton copies its stock `igdext64.dll` into the prefix | the `sudo` commands `install.sh` prints (again after each update of the package), or a Proton in `~/.local/share/Steam/compatibilitytools.d` |
+| DP4a and no XeSS frame generation option; no trace file; the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | The game ships XeSS older than 2.0.2.68, and DXVK then reports the GPU as an AMD one | `XESS=latest %command%`: Intel's newer libraries while the game runs ([launch-options.md](launch-options.md)). Making DXVK report the Intel GPU to the old libraries instead (`DXVK_CONFIG="dxgi.customVendorId = 8086"`) crashes Cyberpunk 2077's XeSS-FG 1.1.0.19 |
 | Super resolution on DP4a while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU | `install.sh` / `enable.sh` set `force_vk_vendor=0` (re-run them after an update). By hand: `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
 | DP4a, the trace says `fallback: unknown Intel device id` | The GPU is not in the shim's table (GpuInfo.cpp) | add it, or `IGDEXT_GMD=<arch>,<release>` for a test |
 | DP4a, the trace says `fallback: self-test failed` | The patched driver is not active in the game process (session check fell back, variables missing), or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; the patched driver writes `drive_c/igdext_kernels/anv_canary` when it sees the test |
@@ -81,6 +82,38 @@ How to read the result:
 
 ## Switches
 
+The switches a user puts into one game's Steam launch options (driver choice, Jay off, XMX off, logs) are explained
+in [launch-options.md](launch-options.md). This section lists every switch: game environment first, then the
+scripts.
+
+Game environment, set by `install.sh` (`~/.config/environment.d/50-xess-xmx.conf`) or `enable.sh`
+(`~/.config/xess-xmx.conf`, read by `xmx-launch.sh`):
+
+| Variable | Effect |
+|---|---|
+| `VK_DRIVER_FILES` | the patched driver (`run/intel_icd.json`) as the 64-bit Intel driver; every other driver of the system stays in the list |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` | vkd3d-proton keeps its classic descriptor heap, which the kernel binding code needs |
+| `force_vk_vendor=0` | overrides Mesa's `force_vk_vendor=-1` game profiles (Symptoms above); `force_vk_vendor=-1` in one game's launch options restores it |
+| `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | the driver's kernel folder and compiler helper (Driver table below) |
+
+Launch-option shorthands (`tools/proton-hook.py`, run by Proton through the `user_settings.py` that `install.sh` puts
+into every Proton; [launch-options.md](launch-options.md)):
+
+| Variable | Effect |
+|---|---|
+| `XESS=latest` | the game runs with Intel's XeSS SDK libraries (`xess/`, `tools/get-xess.sh`) in place of its older ones; originals back when it exits |
+| `XESS=dp4a` | `IGDEXT_FORCE_FALLBACK=1` |
+| `XESS_LOG=1` | `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1` |
+
+A variable the launch options set themselves wins over the one a shorthand stands for.
+
+Driver choice and the driver's own Mesa options (game environment):
+
+| Variable | Effect |
+|---|---|
+| `MESA=<version>` | this game uses that driver of the package instead of the default (`26.1`, `26.3`; a prefix is enough); stderr says `xess-xmx: using the Mesa ... driver`, or `no such driver` and the default |
+| `INTEL_DEBUG=no-jay` | Mesa 26.3: the game's own shaders are compiled with the old compiler instead of Jay |
+
 Shim (game environment):
 
 | Variable | Effect |
@@ -96,12 +129,12 @@ Shim (game environment):
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
+| `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: all work, 7 and 8 not recommended (latency). launch-options.md |
+| `IGDEXT_XEFG_LOG=1` | `C:\igdext_xefg.log`: XeSS frame generation's own log (public `xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, every change of the number |
+| `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
 | `IGDEXT_XELL_PROBE=<version>` | hide `wine_get_version` from `libxell.dll`, report the Intel product family as `GTGeneration`, claim XeLL driver-mode support (interface version), accept the Set* pacing calls, and log XeLL's use of it (`tools/xell-probe.sh`, "XeLL driver-mode probe" above) |
 | `IGDEXT_FAMILY=<id>` | override the product family id reported with the probe (default from the detected GPU) |
 | `IGDEXT_XELL_TELEMETRY=1` | with the probe: answer `GetDisplayTelemetry` with a zeroed buffer instead of E_NOTIMPL |
-
-Driver choice: `MESA=<version>` (a prefix such as `26.1` is enough) makes a game use that driver of the package
-instead of the default; the game's stderr then says `xess-xmx: using the Mesa ... driver`.
 
 Driver (patch 0001):
 
@@ -123,3 +156,16 @@ Driver debug tools (patch 0002; the release driver includes it):
 | `ANV_CM_ONLY="x,y ..."`, `ANV_CM_SKIP="x,y ..."` | inject only / never these kernels |
 | `ANV_CM_SYNC=1` | full flush and stall around every kernel dispatch |
 | `ANV_CM_MAXGROUPS=<n>`, `ANV_CM_PREEMPT=0\|1` | clamp the dispatch size / force thread preemption |
+
+Scripts (shell environment when running them):
+
+| Script | Arguments / variables |
+|---|---|
+| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default `~/.local/share/Steam`); `XMX_NO_ENV=1`: shim only, no session environment, watcher or session check |
+| `enable.sh`, `disable.sh` | `XMX_APPID` or `XMX_PREFIX` (one is required), `XMX_CONF` (default `~/.config/xess-xmx.conf`), `XMX_GAME` (refuse while that process runs) |
+| `tools/switch-driver.sh [version]` | no argument: list the package's drivers, `*` = default; with a version: make it the default (checked first) |
+| `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
+| `tools/session-check.sh [--dry-run]` | run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver |
+| `tools/get-xess.sh [package dir]` | Intel's XeSS SDK libraries for `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG`, `XESS_SHA256` select another release |
+| `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (the shipped kernels were built with the defaults) |
+| `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`) |
