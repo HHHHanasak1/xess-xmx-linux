@@ -13,7 +13,7 @@ outdir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(root, "release")
 name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-tools = ["cm-compile.sh", "get-igc.sh", "get-xess.sh", "proton-hook.py", "session-check.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
+tools = ["cm-compile.sh", "get-igc.sh", "get-xess.sh", "proton-hook.py", "steam-libraries.sh", "session-check.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
          "gen_all_dummies.py", "gen_dyn_dummies.py", "check_dyn_ids.py"]
 files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):

@@ -34,7 +34,10 @@ What `install.sh` does:
     game of the session);
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
-  `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix;
+  `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix. Every Steam library
+  counts (SD card, second disk: `steamapps/libraryfolders.vdf`). A Proton installed by a distribution package (CachyOS'
+  `proton-cachyos` in `/usr/share/steam/compatibilitytools.d`) belongs to root: `install.sh` lists it with the `sudo`
+  commands that put the shim in, and games on it run on DP4a until then;
 * puts `ControlLib.dll`, a small stand-in for Intel's Control Library, into every prefix: with `XESS_FG=4 %command%` XeSS
   frame generation runs at 4x in a game that offers 2x, like Intel Graphics Software's override on Windows;
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives

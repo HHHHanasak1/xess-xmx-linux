@@ -13,7 +13,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APPID="${XMX_APPID:-${WUWA_APPID:-}}"
 PFXROOT="${XMX_PREFIX:-${WUWA_PREFIX:-}}"
-[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx"
+. "$ROOT/tools/steam-libraries.sh"
+# the prefix in whichever Steam library holds the game (SD card, second disk)
+[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT=$(steam_prefix_of "$APPID" || echo "$HOME/.local/share/Steam/steamapps/compatdata/$APPID/pfx")
 [ -n "$PFXROOT" ] || { echo "Set XMX_APPID=<Steam app id> or XMX_PREFIX=<prefix folder>."; exit 1; }
 PFX="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1"
 CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
