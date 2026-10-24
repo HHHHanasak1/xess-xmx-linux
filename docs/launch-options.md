@@ -33,7 +33,7 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 |---|---|---|
 | `XESS=latest %command%` | the game runs with the XeSS libraries of Intel's XeSS SDK (3.0.2: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) instead of its own older ones | a game with XeSS older than 2.0.2.68 (below), or one whose XeSS is simply old |
 | `XESS=dp4a %command%` | XeSS without Intel's extension: super resolution on DP4a, frame generation on its generic path (2x only) | comparing XMX against DP4a, or ruling the XMX path out as the cause of a problem |
-| `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | XeSS frame generation produces 3x / 4x (`XESS_FG=2`: 2x), whatever the game's menu offers; frame generation stays switched on and off in the game | a game that offers only 2x, such as Cyberpunk 2077 |
+| `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | XeSS frame generation produces 3x / 4x (`XESS_FG=2`: 2x), whatever the game's menu offers or chooses; frame generation stays switched on and off in the game | a game that offers only 2x, such as Cyberpunk 2077 |
 | `XESS_FG=5` ... `XESS_FG=8 %command%` | 5x to 8x (the maximum): **experimental**, beyond what Intel supports (see below). All work; 7x and 8x not recommended (latency) | a high refresh rate display that 4x does not fill |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | applies the XeLL frame-cap fix (30 fps with frame generation until the pause menu is opened and closed) in this game | another game shows the Wuthering Waves symptom |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | turns that fix off (it is on for Wuthering Waves only) | the fix is suspected to cause a problem |
@@ -51,7 +51,9 @@ XeSS frame generation, `libxess_fg.dll` asks Intel's Control Library (`ControlLi
 of generated frames and uses it in place of the game's choice. Wine has no Control Library; `install.sh` and
 `enable.sh` put a small one of this package into each prefix (`C:\windows\system32\ControlLib.dll`) that answers this
 one question from `XESS_FG`. 2x to 4x is the range Intel's override has. The game still needs XeSS frame generation
-switched on in its menu, and needs XeSS frame generation 1.2 or newer (with an older one, also `XESS=latest`).
+switched on in its menu, and needs XeSS frame generation 1.2 or newer (with an older one, also `XESS=latest`). In a game
+with its own multi-frame choice (Wuthering Waves: 2x/3x/4x), `XESS_FG` takes precedence over the menu's number, as
+Intel's override does; switching frame generation off in the game still works.
 
 Above 4x XeSS frame generation ignores the override, so the shim raises the number itself: it hands over 4x, finds where
 `libxess_fg.dll` keeps the number by watching it follow a second, probe context, sets the wanted number there and checks

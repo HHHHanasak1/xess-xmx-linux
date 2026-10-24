@@ -14,6 +14,8 @@ HRESULT D3D12ExtensionContext::GetSupportedVersions(const void* pDevice, INTCExt
     return S_OK;
 }
 
+void XefgNoteDevice(const void* dev);
+
 HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnExtensionFuncs, UINT32 extensionFuncsSize, INTCExtensionInfo1* pExtensionInfo, INTCExtensionAppInfo1* pExtensionAppInfo, bool internalExtensions)
 {
     (void)ppfnExtensionFuncs; (void)extensionFuncsSize;
@@ -21,6 +23,7 @@ HRESULT D3D12ExtensionContext::InitExtensions(const void* pDevice, void** ppfnEx
            pExtensionInfo->RequestedExtensionVersion.HWFeatureLevel, pExtensionInfo->RequestedExtensionVersion.APIVersion,
            pExtensionInfo->RequestedExtensionVersion.Revision, (int)internalExtensions, pDevice);
     TraceCallers("InitExtensions");
+    XefgNoteDevice(pDevice);   // XeSS-FG: hooks for XESS_FG=5..8 / IGDEXT_XEFG_LOG (dll/XellHook.cpp)
     if (XmxFallbackActive(reinterpret_cast<ID3D12Device*>(const_cast<void*>(pDevice))))
     {
         // behave like a system without the Intel extension: XeSS takes its DP4a path and XeSS frame generation its generic
