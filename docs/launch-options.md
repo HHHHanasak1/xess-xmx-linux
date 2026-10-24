@@ -62,6 +62,9 @@ changes a value inside Intel's library while it runs, which Intel does not suppo
 8x is the maximum. 5x to 8x all work (tested in Cyberpunk 2077 on an Arc B390). Every step above 4x lowers the real
 frame rate and raises the latency, so 7x and 8x are not recommended; they are there only as an option.
 
+Whatever the multiplier, keep a frame rate limiter on (the game's own, or gamescope's): without one the generated
+frames reach the screen unevenly.
+
 With XeSS frame generation on, the game cannot use exclusive fullscreen (XeSS-FG refuses it) and runs borderless; under
 gamescope that looks the same.
 
