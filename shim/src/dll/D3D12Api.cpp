@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 static const unsigned char kDummyCS[] = {
 #include "dummy_cs_bytes.inc"
@@ -135,11 +136,7 @@ HRESULT _INTC_D3D12_GetCurrentShaderHeapUsage(INTCExtensionContext* pExtensionCo
     return E_NOTIMPL;
 }
 
-HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext* pExtensionContext, void* pTelemetryData, UINT size)
-{
-    TraceF("GetDisplayTelemetry (not implemented)");
-    return E_NOTIMPL;
-}
+// _INTC_D3D12_GetDisplayTelemetry: XellDriver.cpp (XeLL calls it from its latency-reduction path)
 
 void _INTC_D3D12_GetRaytracingAccelerationStructurePrebuildInfo(INTCExtensionContext* pExtensionContext, const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS* pDesc, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO* pInfo, const INTC_D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC_INSTANCE_COMPARISON_DATA* pComparisonDataDesc)
 {
@@ -173,17 +170,7 @@ void _INTC_D3D12_SetEventMarker(INTCExtensionContext* pExtensionContext, ID3D12G
     TraceF("SetEventMarker (not implemented)");
 }
 
-HRESULT _INTC_D3D12_SetNumGeneratedFrames(INTCExtensionContext* pExtensionContext, UINT NumFrames)
-{
-    TraceF("SetNumGeneratedFrames (not implemented)");
-    return E_NOTIMPL;
-}
-
-HRESULT _INTC_D3D12_SetPresentSequenceNumber(INTCExtensionContext* pExtensionContext, UINT PresentSequenceNumber)
-{
-    TraceF("SetPresentSequenceNumber (not implemented)");
-    return E_NOTIMPL;
-}
+// _INTC_D3D12_SetNumGeneratedFrames, _INTC_D3D12_SetPresentSequenceNumber: XellDriver.cpp (XeLL / XeFG pacing calls)
 
 void _INTC_D3D12_TransferHostRTAS(INTCExtensionContext* pExtensionContext, ID3D12GraphicsCommandList* pCommandList, D3D12_GPU_VIRTUAL_ADDRESS DestAccelerationStructureData, D3D12_GPU_VIRTUAL_ADDRESS SrcAccelerationStructureData, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE Mode)
 {
@@ -193,6 +180,7 @@ void _INTC_D3D12_TransferHostRTAS(INTCExtensionContext* pExtensionContext, ID3D1
 
 HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const INTC_D3D12_COMPUTE_PIPELINE_STATE_DESC* d, REFIID riid, void** pp)
 {
+    if (!d || !pp) return E_INVALIDARG;
     static std::atomic<int> counter{0};
     const int id = counter++;
     char b1[400], b2[400];
@@ -243,7 +231,10 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
             {
                 const int dyn = DynKernelId(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts);
                 if (dyn >= 0) { desc.CS.pShaderBytecode = kDynDummies[dyn].bytes; desc.CS.BytecodeLength = kDynDummies[dyn].size; TraceF("  kernel hash %016llx -> dynamic id %d", h, dyn); }
+                else TraceF("  WARNING: no dynamic id for kernel hash %016llx: this kernel runs as a no-op", h);
             }
+            else if (!known)
+                TraceF("  WARNING: shader input type %d is not handled (only CM SPIR-V is): this kernel runs as a no-op", (int)d->ShaderInputType);
         }
         HRESULT hr = dev->CreateComputePipelineState(&desc, riid, pp);
         TraceF("  -> DUMMY uav(u0) pipeline returned (hr=0x%08x)", (unsigned)hr);
@@ -371,13 +362,26 @@ static bool CompileFailedStillValid(bool* xessLoaded)
 
 bool XmxFallbackActive(ID3D12Device* dev)
 {
+    // XeSS and XeFG open their contexts from different threads; the decision (and the self-test inside it) is made once,
+    // under a lock, so that a second caller neither sees "decided: no fallback" while the test is still running nor
+    // runs its own test and reads the first one's in-progress state as a failure.
+    static std::mutex mtx;
     static int decided = -1;
+    std::lock_guard<std::mutex> lock(mtx);
     if (decided >= 0) return decided == 1;
     char b[8];
     bool xessLoaded = false;
     decided = 0;
     if (GetEnvironmentVariableA("IGDEXT_FORCE_FALLBACK", b, sizeof(b)) > 0 && atoi(b))
     { TraceF("  fallback: IGDEXT_FORCE_FALLBACK"); decided = 1; }
+    else if (!XmxDetectGpu().known && XmxDetectGpu().deviceId != 0 && GetEnvironmentVariableA("IGDEXT_GMD", b, sizeof(b)) == 0)
+    {
+        // an Intel GPU the table does not know (Xe-LP, or newer than this build): the kernels XeSS would request for
+        // the assumed family may not run on it. Decline like a system without the extension (DP4a, generic frame
+        // generation). IGDEXT_GMD=<arch>,<release> declares the device and lifts this. (No Intel entry in the registry
+        // at all keeps the historical assumption, Panther Lake, and the trace says so.)
+        TraceF("  fallback: unknown Intel device id 8086:%04x (set IGDEXT_GMD to declare it)", XmxDetectGpu().deviceId); decided = 1;
+    }
     else if (CompileFailedStillValid(&xessLoaded) && GetEnvironmentVariableA("IGDEXT_IGNORE_FAILED", b, sizeof(b)) == 0)
     {
         if (!xessLoaded)
@@ -474,7 +478,7 @@ D3D12_RESOURCE_ALLOCATION_INFO _INTC_D3D12_GetResourceAllocationInfo(INTCExtensi
     D3D12_RESOURCE_ALLOCATION_INFO r = {};
     if (!dev || !descs || !n) return r;
     std::vector<D3D12_RESOURCE_DESC> v(n);
-    for (UINT i = 0; i < n; i++) v[i] = *descs[i].pD3D12Desc;
+    for (UINT i = 0; i < n; i++) { if (!descs[i].pD3D12Desc) return r; v[i] = *descs[i].pD3D12Desc; }
     return dev->GetResourceAllocationInfo(mask, n, v.data());
 }
 

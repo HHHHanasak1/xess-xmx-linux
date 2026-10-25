@@ -1,7 +1,7 @@
-From f0c21e65814277c71e20806eed56e58e0dbf5e6e Mon Sep 17 00:00:00 2001
+From 4b2092a88bf6005559ea8ccfe20a64fb4a99f8e2 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
-Subject: [PATCH 1/2] anv: native C-for-Metal kernel injection for XeSS
+Subject: [PATCH 1/3] anv: native C-for-Metal kernel injection for XeSS
  (xess-xmx-linux)
 
 ---
@@ -10,13 +10,13 @@ Subject: [PATCH 1/2] anv: native C-for-Metal kernel injection for XeSS
  src/intel/vulkan/anv_device.c         |   3 +
  src/intel/vulkan/anv_private.h        |  12 +
  src/intel/vulkan/anv_shader.c         |   5 +
- src/intel/vulkan/anv_shader_compile.c | 601 ++++++++++++++++++++++++++
- src/intel/vulkan/genX_cmd_buffer.c    | 100 +++++
+ src/intel/vulkan/anv_shader_compile.c | 642 ++++++++++++++++++++++++++
+ src/intel/vulkan/genX_cmd_buffer.c    | 100 ++++
  src/intel/vulkan/genX_cmd_compute.c   |  12 +
- src/intel/vulkan/genX_shader.c        |  27 ++
+ src/intel/vulkan/genX_shader.c        |  28 ++
  src/vulkan/runtime/vk_pipeline.c      |   2 +-
  src/vulkan/runtime/vk_shader.h        |   3 +
- 11 files changed, 787 insertions(+), 1 deletion(-)
+ 11 files changed, 829 insertions(+), 1 deletion(-)
 
 diff --git a/src/intel/compiler/brw/brw_compiler.h b/src/intel/compiler/brw/brw_compiler.h
 index 8deb32e..5451798 100644
@@ -138,10 +138,10 @@ index 5efe5ac..ee4df4e 100644
     result =
        anv_reloc_list_init(&shader->relocs, &device->vk.alloc,
 diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index 7f2c77b..43adc98 100644
+index 7f2c77b..4ea58f7 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1204,6 +1204,598 @@ anv_shader_compile_fs(struct anv_device *device,
+@@ -1204,6 +1204,639 @@ anv_shader_compile_fs(struct anv_device *device,
     }
  }
  
@@ -163,6 +163,7 @@ index 7f2c77b..43adc98 100644
 +#include <sys/wait.h>
 +#include <dirent.h>
 +#include <dlfcn.h>
++#include "util/simple_mtx.h"
 +#include <time.h>
 +#include <spawn.h>
 +#include "util/u_call_once.h"
@@ -284,8 +285,13 @@ index 7f2c77b..43adc98 100644
 +      return true;
 +   }
 +   const char *pfx = getenv("WINEPREFIX");
-+   if (!pfx)
++   if (!pfx) {
++      static bool said;
++      if (!said)
++         fprintf(stderr, "ANV CM: neither ANV_CM_SPV_DIR nor WINEPREFIX is set: placeholders cannot be resolved\n");
++      said = true;
 +      return false;
++   }
 +   snprintf(buf, len, "%s/drive_c/igdext_kernels", pfx);
 +   return true;
 +}
@@ -300,8 +306,13 @@ index 7f2c77b..43adc98 100644
 +      snprintf(buf, len, "%s", helper);
 +      return true;
 +   }
-+   if (!env->kernel_dir || !env->kernel_dir[0])
++   if (!env->kernel_dir || !env->kernel_dir[0]) {
++      static bool said;
++      if (!said)
++         fprintf(stderr, "ANV CM: neither ANV_CM_HELPER nor ANV_CM_KERNEL_DIR is set: kernels cannot be compiled\n");
++      said = true;
 +      return false;
++   }
 +   snprintf(buf, len, "%s/../tools/cm-compile.sh", env->kernel_dir);
 +   return true;
 +}
@@ -336,11 +347,18 @@ index 7f2c77b..43adc98 100644
 +         }
 +         closedir(d);
 +      }
-+      snprintf(dir, sizeof(dir), "%s/cmk_pack.py", helper);
-+      struct stat st;
-+      if (stat(dir, &st) == 0)
-+         h = (h ^ (uint32_t)st.st_size) * 16777619u;
++      const char *scripts[] = { "/cmk_pack.py", "/cm-compile.sh" };
++      for (unsigned i = 0; i < ARRAY_SIZE(scripts); i++) {
++         snprintf(dir, sizeof(dir), "%s%s", helper, scripts[i]);
++         struct stat st;
++         if (stat(dir, &st) == 0)
++            h = (h ^ (uint32_t)st.st_size) * 16777619u;
++      }
 +   }
++   /* a compile-device override changes every kernel */
++   const char *cmdev = getenv("CM_DEVICE");
++   for (const char *c = cmdev ? cmdev : ""; *c; c++)
++      h = (h ^ (uint8_t)*c) * 16777619u;
 +   gen = h;
 +   done = true;
 +   return gen;
@@ -431,8 +449,24 @@ index 7f2c77b..43adc98 100644
 +   anv_cm_cache_path(device, hash, cdir, sizeof(cdir), path, pathlen);
 +   if (access(path, R_OK) == 0)
 +      return true;
++   /* a kernel that failed to compile in this process is not tried again here (each recreation of the placeholder
++    * would spawn the compiler once more and append another marker line); the next launch retries it */
++   static char failed[64][32];
++   static unsigned nfailed;
++   static simple_mtx_t failed_mtx = SIMPLE_MTX_INITIALIZER;
++   simple_mtx_lock(&failed_mtx);
++   bool known = false;
++   for (unsigned k = 0; k < nfailed && !known; k++)
++      known = strcmp(failed[k], hash) == 0;
++   simple_mtx_unlock(&failed_mtx);
++   if (known)
++      return false;
 +   if (anv_cm_compile(device, sdir, id, hash, cdir, path))
 +      return true;
++   simple_mtx_lock(&failed_mtx);
++   if (nfailed < ARRAY_SIZE(failed))
++      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
++   simple_mtx_unlock(&failed_mtx);
 +   /* tells the shim to fall back to XeSS' DP4a path on the next launch; retried by anv_cm_retry_failed() */
 +   char mark[600];
 +   snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
@@ -601,8 +635,10 @@ index 7f2c77b..43adc98 100644
 +         return ANV_CM_NOT_PLACEHOLDER;
 +      }
 +      if (wz == 5) {
-+         if (!env->kernel_dir)
++         if (!env->kernel_dir) {
++            fprintf(stderr, "ANV CM: static kernel wg %u,%u,5 requested but ANV_CM_KERNEL_DIR is not set\n", wx, wy);
 +            return ANV_CM_FAILED;
++         }
 +         snprintf(path, sizeof(path), "%s/wg%u_%u_5.cmk", env->kernel_dir, wx, wy);
 +         if (access(path, R_OK) != 0) {
 +            fprintf(stderr, "ANV CM: no %s\n", path);
@@ -629,8 +665,12 @@ index 7f2c77b..43adc98 100644
 +   }
 +   struct cmk_header h;
 +   if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "CMK2", 4) != 0 ||
-+       h.code_size == 0 || h.code_size > (16u << 20)) {
-+      fprintf(stderr, "ANV CM: bad header in %s\n", path);
++       h.code_size == 0 || h.code_size > (16u << 20) ||
++       h.lws[0] == 0 || h.lws[1] == 0 || h.lws[2] == 0 || h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
++       h.cross_size > sizeof(h.cross_data) || (h.per_thread_size != 0 && h.per_thread_size < 6) ||
++       h.nsurf > 24) {
++      fprintf(stderr, "ANV CM: bad header in %s (lws %u,%u,%u cross %u per-thread %u surfaces %u)\n", path,
++              h.lws[0], h.lws[1], h.lws[2], h.cross_size, h.per_thread_size, h.nsurf);
 +      fclose(f);
 +      return ANV_CM_FAILED;
 +   }
@@ -645,6 +685,7 @@ index 7f2c77b..43adc98 100644
 +   struct brw_cs_prog_data *cs = &shader_data->prog_data.cs;
 +   const struct brw_cs_prog_data saved = *cs;
 +   memset(cs, 0, sizeof(*cs));
++   cs->base.source_hash = saved.base.source_hash;   /* anv_shader_compile asserts the compiler left it alone */
 +   cs->base.program_size = h.code_size;
 +   cs->base.grf_used = h.grf_count;
 +   cs->base.total_shared = h.slm_size;
@@ -740,7 +781,7 @@ index 7f2c77b..43adc98 100644
  static void
  anv_shader_compile_cs(struct anv_device *device,
                        void *mem_ctx,
-@@ -1214,6 +1806,12 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1214,6 +1847,12 @@ anv_shader_compile_cs(struct anv_device *device,
     const struct intel_device_info *devinfo = compiler->devinfo;
     nir_shader *nir = shader_data->info->nir;
  
@@ -753,7 +794,7 @@ index 7f2c77b..43adc98 100644
     shader_data->num_stats = 1;
  
     struct brw_compile_cs_params params = {
-@@ -1245,6 +1843,9 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1245,6 +1884,9 @@ anv_shader_compile_cs(struct anv_device *device,
     }
  
     *error_str = params.base.error_str;
@@ -905,10 +946,10 @@ index 120f6cc..5b36b54 100644
     if (!anv_address_is_null(indirect_addr)) {
        uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
 diff --git a/src/intel/vulkan/genX_shader.c b/src/intel/vulkan/genX_shader.c
-index 5f16826..220ce2b 100644
+index 5f16826..b4a1406 100644
 --- a/src/intel/vulkan/genX_shader.c
 +++ b/src/intel/vulkan/genX_shader.c
-@@ -1212,6 +1212,33 @@ emit_cs_shader(struct anv_batch *batch,
+@@ -1212,6 +1212,34 @@ emit_cs_shader(struct anv_batch *batch,
        .EmitInlineParameter            = cs_prog_data->uses_inline_push_addr,
     };
  
@@ -925,7 +966,8 @@ index 5f16826..220ce2b 100644
 +             MIN2(cross, sizeof(cs_prog_data->cm_cross_thread_data)));
 +      const uint32_t lx = cs_prog_data->cm_local[0];
 +      const uint32_t ly = cs_prog_data->cm_local[1];
-+      for (uint32_t t = 0; t < dispatch.threads; t++) {
++      /* packed local ids, only if the kernel takes them (per == 0: no per-thread argument, nothing to write) */
++      for (uint32_t t = 0; per >= 6 && t < dispatch.threads; t++) {
 +         uint16_t *ids = (uint16_t *)((char *)shader->cm_indirect.map + cross + t * per);
 +         ids[0] = t % lx;
 +         ids[1] = (t / lx) % ly;
@@ -969,3 +1011,6 @@ index 4e0d4dc..18194df 100644
     /* Used for the generic VkPipeline implementation */
     struct {
        struct vk_pipeline_cache_object cache_obj;
+-- 
+2.43.0
+

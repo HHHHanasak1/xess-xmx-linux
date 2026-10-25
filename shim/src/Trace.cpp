@@ -69,6 +69,7 @@ const char* SafeStr(const void* p, char* buf, size_t cap)
 
 void StartXellHook();
 void StartXefgHook();
+void StartXellDriverProbe();   // dll/XellDriver.cpp
 BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
@@ -77,6 +78,7 @@ BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
         TraceF("==== igdext64 (tracing build) attached to %s", exe);
         StartXellHook();
         StartXefgHook();
+        StartXellDriverProbe();
     }
     return TRUE;
 }

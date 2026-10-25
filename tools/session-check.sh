@@ -98,10 +98,12 @@ if command -v vulkaninfo >/dev/null 2>&1; then
   out=$(MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
   ours=$(printf '%s\n' "$out" | grep -m1 "driverInfo" | sed 's/.*= *//')
   printf '%s\n' "$out" | grep -q "deviceName" || fail "vulkaninfo found no device ($(printf '%s' "$out" | grep -i -m1 "error" | cut -c1-120))"
+else
+  note=" (note: vulkaninfo not installed, device enumeration not checked)"
 fi
 
 # 3. Mesa version against the system's (report only)
-note=""
+note="${note:-}"
 if [ -n "$ours" ] && command -v vulkaninfo >/dev/null 2>&1; then
   sys=$(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>/dev/null \
         | grep -m1 "driverInfo" | sed 's/.*= *//')

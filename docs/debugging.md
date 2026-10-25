@@ -8,6 +8,7 @@
 | The same, only with a Proton from a distribution package (CachyOS' `proton-cachyos`) | That Proton is in `/usr/share/steam/compatibilitytools.d`, which only root can write to; Proton copies its stock `igdext64.dll` into the prefix | the `sudo` commands `install.sh` prints (again after each update of the package), or a Proton in `~/.local/share/Steam/compatibilitytools.d` |
 | DP4a and no XeSS frame generation option; no trace file; the Proton log says `XeSS: hiding Intel GPU Vendor ID` (Cyberpunk 2077) | The game ships XeSS older than 2.0.2.68, and DXVK then reports the GPU as an AMD one | `XESS=latest %command%`: Intel's newer libraries while the game runs ([launch-options.md](launch-options.md)). Making DXVK report the Intel GPU to the old libraries instead (`DXVK_CONFIG="dxgi.customVendorId = 8086"`) crashes Cyberpunk 2077's XeSS-FG 1.1.0.19 |
 | Super resolution on DP4a while frame generation uses the shim (Spider-Man Remastered, Hogwarts Legacy, The Witcher 3, Hitman 3, Diablo IV, ...) | Mesa's profile for that game sets `force_vk_vendor=-1`: the game sees no Intel GPU | `install.sh` / `enable.sh` set `force_vk_vendor=0` (re-run them after an update). By hand: `force_vk_vendor=0 %command%`. Mesa's behaviour back for one game: `force_vk_vendor=-1 %command%` |
+| DP4a, the trace says `fallback: unknown Intel device id` | The GPU is not in the shim's table (GpuInfo.cpp) | add it, or `IGDEXT_GMD=<arch>,<release>` for a test |
 | DP4a, the trace says `fallback: self-test failed` | The patched driver is not active in the game process (session check fell back, variables missing), or vkd3d-proton changed how placeholders reach the driver | `driver-status`, `VK_DRIVER_FILES` in the game's environment; the patched driver writes `drive_c/igdext_kernels/anv_canary` when it sees the test |
 | Patches of white noise or black areas in the XeSS output | A kernel failed to compile in this launch and ran as a no-op | `~/.cache/xess-xmx/compile.log`; a missing compiler: `tools/get-igc.sh`. The next launch retries |
 | DP4a after a failed compile | Intended: `drive_c/igdext_kernels/compile_failed.txt` exists | the driver retries once at the next launch; after a second failure only a graphics component update, a game update, deleting the marker or running `install.sh` start another attempt |
@@ -36,6 +37,48 @@
 Counting dispatches per kernel from a `ANV_CM_TRACE=1` log shows what runs every frame:
 
     grep -a -o "walker kernel [0-9]*,[0-9]*,[0-9]*" stderr.log | sort | uniq -c
+
+## XeLL driver-mode probe
+
+XeLL runs in cross-vendor mode under Proton ([how-it-works.md](how-it-works.md) §4). The reason is in `libxell.dll`
+itself (read from 1.3.2.10, the SDK copy; `strings libxell.dll | grep wine_get_version` shows whether the 1.3.0.5 that
+games ship has the same check): before anything else it
+checks `GetProcAddress(GetModuleHandle("ntdll.dll"), "wine_get_version")`, and if that export exists it uses its
+built-in context without ever loading the extension library. With the export hidden it loads `igdext64.dll`, asks for
+extension version 5/13 or 4/13, checks the driver version string (>= 31.0.101.6252) and `GTGeneration`, which must be
+one of Intel's PRODUCT_FAMILY ids (1300 for Panther Lake, 1275 Lunar Lake, 1274 Battlemage, 1270 Alchemist, ...; the
+shim normally reports 30 there), and only then calls the latency-reduction functions. Details and offsets:
+`shim/src/dll/XellDriver.cpp`.
+
+`IGDEXT_XELL_PROBE=<version>` turns all of that on for one launch: the shim hides `wine_get_version` from
+`libxell.dll` (an import-table hook in that DLL only), reports the family id, claims that interface version, accepts
+the pacing calls and logs what XeLL does with the timing buffers. Steam launch options:
+
+    /path/to/package/tools/xell-probe.sh %command%
+
+Play for a minute with frame generation on (the Wuthering Waves title screen with FG enabled is enough), quit, and
+look at the summary the wrapper prints; it also writes `~/xess-xmx-probe-<date>.tar.gz` with `proton-xell.log` (XeLL's
+own messages, which it sends through `OutputDebugString`; the wrapper sets `PROTON_LOG=1` and keeps the XeLL lines of
+`~/steam-<appid>.log`), `libxell.log` if that libxell version writes one (1.3.2+), `igdext_trace.log` (`XELLPROBE`
+lines: the hook, every latency-reduction call with its arguments, each `RenderSubmitStart` with the time since the
+previous one, and every read or write XeLL makes to the timing buffers with the slot, the in-slot offset and the code
+address in `libxell.dll`), `igdext_xell.log` and the session's driver status. Attach the archive to the issue.
+
+How to read the result:
+
+* No `XELLPROBE libxell.dll ...: GetProcAddress import hooked` line: the shim never saw `libxell.dll` load. Either the
+  shim is not loaded (`install.sh`), or the game created its XeLL context before the shim was loaded: toggle frame
+  generation off and on in the game's menu, which recreates the context, and check again.
+* `[XeLL] Using built-in context` and no `Intel Extensions` lines although the hook is in place: XeLL still did not
+  take the Intel path. Check the DXGI vendor id the game sees (`force_vk_vendor=0`, [games.md](games.md)) and
+  whether `XELL_FORCE_CROSS_VENDOR` is set.
+* `XeLL context creation failed - unsupported device` / `unsupported driver`: the family id or the driver version
+  string the shim reported was rejected. `IGDEXT_FAMILY=<id>` overrides the family id.
+* `Intel Extensions initialized.` and `Latency reduction enabled.` followed by `XELLPROBE LatencyReductionExt(...)` and
+  buffer accesses: driver mode started. The access log gives the slot size and the fields; a read of `gpu +0x0`
+  followed by a crash means XeLL treats the GPU buffer as a COM object (an `ID3D12Resource` it maps), not as plain
+  memory, which the next shim version must then provide.
+* `GetDisplayTelemetry` called and then cross-vendor: retry with `XELL_PROBE_TELEMETRY=1`.
 
 ## Switches
 
@@ -79,7 +122,7 @@ Shim (game environment):
 | `IGDEXT_STATIC=1` | use the prebuilt kernel table (`kernels/wg*_5.cmk`) instead of run-time ids; only in shims built with `-DXMX_STATIC_TABLE=ON` |
 | `IGDEXT_IGNORE_FAILED=1` | do not fall back to DP4a after a failed compile |
 | `IGDEXT_SKIP_SELFTEST=1` | skip the self-test (the shim then assumes the patched driver is active) |
-| `IGDEXT_FORCE_FALLBACK=1` | decline the extension context: XeSS uses DP4a, XeSS frame generation its generic path (as without the shim) |
+| `IGDEXT_FORCE_FALLBACK=1` | decline the extension context: XeSS uses DP4a, XeSS frame generation its generic path (as without the shim). The shim does this by itself for an Intel device id its table does not know (trace: `fallback: unknown Intel device id`); `IGDEXT_GMD` declares such a device |
 | `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | override `CheckFeatureSupport(OPTIONS1)` |
 | `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | override `OPTIONS2` (default from the detected GPU: `1,1,0` on Xe2/Xe3) |
 | `IGDEXT_OPTIONS2_FG=...` | the same, only for calls from `libxess_fg.dll` |
@@ -89,7 +132,9 @@ Shim (game environment):
 | `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: all work, 7 and 8 not recommended (latency). launch-options.md |
 | `IGDEXT_XEFG_LOG=1` | `C:\igdext_xefg.log`: XeSS frame generation's own log (public `xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, every change of the number |
 | `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
-| `IGDEXT_XELL_PROBE=<version>` | experimental: claim XeLL driver-mode support and log XeLL's use of it (see how-it-works.md) |
+| `IGDEXT_XELL_PROBE=<version>` | hide `wine_get_version` from `libxell.dll`, report the Intel product family as `GTGeneration`, claim XeLL driver-mode support (interface version), accept the Set* pacing calls, and log XeLL's use of it (`tools/xell-probe.sh`, "XeLL driver-mode probe" above) |
+| `IGDEXT_FAMILY=<id>` | override the product family id reported with the probe (default from the detected GPU) |
+| `IGDEXT_XELL_TELEMETRY=1` | with the probe: answer `GetDisplayTelemetry` with a zeroed buffer instead of E_NOTIMPL |
 
 Driver (patch 0001):
 

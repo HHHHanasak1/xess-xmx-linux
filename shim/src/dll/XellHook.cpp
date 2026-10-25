@@ -139,10 +139,11 @@ static DWORD WINAPI XellThread(LPVOID)
     if (!set || !slp || !fg) { XLog("XeLL exports missing"); return 0; }
     g_setLog = (PFN_XellSetLog) GetProcAddress(m, "xellSetLoggingCallback");
     g_reports = (PFN_XellReports) GetProcAddress(m, "xellGetFramesReports");
-    void* dummy = nullptr;
-    PatchThunk(slp, (void*) Hook_Sleep, &dummy, "xellSleep"); g_origSleep = (PFN_XellSleep) dummy;
-    PatchThunk(set, (void*) Hook_SetSleepMode, &dummy, "xellSetSleepMode"); g_origSet = (PFN_XellSet) dummy;
-    PatchThunk(fg, (void*) Hook_SetFg, &dummy, "xellSetFgEnabled"); g_origFg = (PFN_XellFg) dummy;
+    // the original pointers are stored before each jmp goes live (PatchThunk writes *orig first): xellSleep runs on
+    // the render thread every frame and must never find a null original
+    PatchThunk(slp, (void*) Hook_Sleep, (void**) &g_origSleep, "xellSleep");
+    PatchThunk(set, (void*) Hook_SetSleepMode, (void**) &g_origSet, "xellSetSleepMode");
+    PatchThunk(fg, (void*) Hook_SetFg, (void**) &g_origFg, "xellSetFgEnabled");
     return 0;
 }
 
