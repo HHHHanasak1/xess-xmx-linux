@@ -157,6 +157,7 @@ Shim (game environment):
 | `IGDEXT_XELL_HZ=<hz>`, `IGDEXT_XELL_VRR=<min>,<max>`, `IGDEXT_XELL_TEARING=1` | the display model (default: the current mode's refresh rate, vsync on) |
 | `IGDEXT_XELL_GUARD=1` | with the probe: timing buffers on guard pages, every access logged |
 | `IGDEXT_XELL_GPUSTART=0` | with the probe: keep the GPU clock at submit as the frame's GPU start instead of measuring it with a timestamp query ahead of the frame's first `ExecuteCommandLists` |
+| `IGDEXT_XELL_FLIPQ=1` / `=2` | with the probe, experimental: display telemetry from the flips already scanned out, in present order (`XellDriver.cpp`). 1: frame end = its GPU work done; 2: frame end = the present call, as by default, so only the vsync XeLL anchors on changes. Off by default |
 
 Driver (patch 0001):
 

@@ -64,7 +64,10 @@
 //    frame, and with vsync sleeps until  L.shown + q*T - A - guardband  (q = frames since L, T = refresh x (FG+1),
 //    A = mean sim start -> GPU end). So the model now reports only flips already scanned out, +0x28 = ready (GPU
 //    done), +0x30 = the vsync it went out on (FIFO). IGDEXT_XELL_FLIPQ=1 turns it on for testing; the default is
-//    "flip queued = the call, shown = the next vsync after it";
+//    "flip queued = the call, shown = the next vsync after it". On a B390 (4x FG, 144 Hz) mode 1 still slept less
+//    than the default (sim->present ~68 ms vs ~57): a later +0x28 raises A, and A comes straight off the sleep.
+//    IGDEXT_XELL_FLIPQ=2 keeps +0x28 = the present call (as the default; the frame's submission) and changes only
+//    +0x30 to the real FIFO scanout of shown flips, so the anchor moves and A does not;
 // and logs what XeLL does with it (XELLPROBE lines). IGDEXT_XELL_TELEMETRY=0 answers GetDisplayTelemetry with
 // E_NOTIMPL instead (A/B test); IGDEXT_XELL_GUARD=1 puts the timing buffers on guard pages and logs every access XeLL
 // makes to them (slot, offset, code address), as the first probe did. Without IGDEXT_XELL_PROBE nothing here is
@@ -267,15 +270,17 @@ uint64_t g_vsyncAnchor = 0;                // QPC ticks of a vsync (modelled)
 uint64_t g_periodMin = 0, g_periodMax = 0; // QPC ticks
 bool g_vsyncOn = true;
 int g_telemetryMode = -1;                  // -1 unread, 0 E_NOTIMPL, 1 provide
-int g_flipqMode = -1;                      // -1 unread, 0 shown = next vsync after the call, 1 present-queue model
+int g_flipqMode = -1;                      // -1 unread, 0 shown = next vsync after the call, 1 present-queue model,
+                                           // 2 the same with +0x28 = the present call
 uint64_t g_calGpu = 0, g_calCpu = 0;       // latest GetClockCalibration pair (GPU ticks, QPC ticks)
 
 uint64_t Qpc() { LARGE_INTEGER t; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
 
 bool FlipQueueModel()
 {
-    if (g_flipqMode < 0) { char b[8]; g_flipqMode = GetEnvironmentVariableA("IGDEXT_XELL_FLIPQ", b, sizeof(b)) > 0 ? (atoi(b) != 0) : 0; }
-    return g_flipqMode == 1;
+    if (g_flipqMode < 0) { char b[8]; g_flipqMode = GetEnvironmentVariableA("IGDEXT_XELL_FLIPQ", b, sizeof(b)) > 0 ? atoi(b) : 0;
+                          if (g_flipqMode < 0 || g_flipqMode > 2) g_flipqMode = 0; }
+    return g_flipqMode >= 1;
 }
 
 // a GPU timestamp of the D3D12 queues in QPC ticks, through the latest calibration pair (0 if there is none)
@@ -639,7 +644,7 @@ void FillTelemetry(uint8_t* t, UINT size)
             uint8_t* rec = t + w++ * 56;
             *(uint32_t*)(rec + 0x08) = r.frameId;
             *(uint32_t*)(rec + 0x20) = g_vsyncOn ? 4u : 0u;   // on every record: XeLL takes the bit from each
-            *(uint64_t*)(rec + 0x28) = ready;
+            *(uint64_t*)(rec + 0x28) = g_flipqMode == 2 ? r.queued : ready;   // mode 2: A stays sim -> present call
             *(uint64_t*)(rec + 0x30) = shown;
             continue;
         }

@@ -23,6 +23,8 @@
 #             XELL_PROBE_FLIPQ=1       display telemetry from the flips actually shown: ready = GPU done, shown =
 #                                      the vsync it went out on (what libxell's sleep reads, see XellDriver.cpp);
 #                                      off by default until it beats the default in a run (A/B)
+#             XELL_PROBE_FLIPQ=2       the same, but ready = the present call (as the default), so only the
+#                                      vsync XeLL anchors on changes, not its sim -> GPU end average
 #             XELL_PROBE_GUARD=1       timing buffers on guard pages: log every access XeLL makes to them
 #             XELL_PROBE_HZ=<hz>, XELL_PROBE_VRR=<min>,<max>   the display model's refresh rate(s) (default: current mode)
 #             XELL_PROBE_KEEP=1        do not delete the raw log files from the prefix afterwards
@@ -49,7 +51,7 @@ protonlog="${PROTON_LOG_DIR:-$HOME}/steam-${SteamGameId:-${SteamAppId:-0}}.log"
 [ "${XELL_PROBE_TELEMETRY:-1}" = 0 ] && export IGDEXT_XELL_TELEMETRY=0
 [ "${XELL_PROBE_GUARD:-0}" = 1 ] && export IGDEXT_XELL_GUARD=1
 [ "${XELL_PROBE_GPUSTART:-1}" = 0 ] && export IGDEXT_XELL_GPUSTART=0
-[ "${XELL_PROBE_FLIPQ:-0}" = 1 ] && export IGDEXT_XELL_FLIPQ=1
+case "${XELL_PROBE_FLIPQ:-0}" in 1|2) export IGDEXT_XELL_FLIPQ="$XELL_PROBE_FLIPQ";; esac
 [ -n "${XELL_PROBE_HZ:-}" ] && export IGDEXT_XELL_HZ="$XELL_PROBE_HZ"
 [ -n "${XELL_PROBE_VRR:-}" ] && export IGDEXT_XELL_VRR="$XELL_PROBE_VRR"
 
@@ -98,7 +100,7 @@ ed=$(grep -a -o -E 'execute delay frame [0-9]+: [0-9.]+ ms' "$out/igdext_trace.l
 fqn=$(grep -a -o -E 'flip queue: [0-9]+ frame' "$out/igdext_trace.log" 2>/dev/null | awk '{print $3}' | med)
 fqm=$(grep -a -o -E 'last flip in queue [0-9.]+ ms' "$out/igdext_trace.log" 2>/dev/null | awk '{print $(NF-1)}' | med)
 [ -n "$ed" ] && echo "  RenderSubmitStart -> first ExecuteCommandLists (XeLL's \"execute delay\", median): $ed ms" >&2
-[ -n "$fqn" ] && echo "  present queue told to XeLL (median): $fqn frame(s) waiting, flip in queue $fqm ms (XELL_PROBE_FLIPQ=1 run)" >&2
+[ -n "$fqn" ] && echo "  present queue told to XeLL (median): $fqn frame(s) waiting, flip in queue $fqm ms (XELL_PROBE_FLIPQ=$IGDEXT_XELL_FLIPQ run)" >&2
 echo >&2; echo "xell-probe: latency XeLL measured (simulation start -> present end; compare with a run without the probe)" >&2
 grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -8 >&2
 [ -s "$out/igdext_trace.log" ] || echo "  (no igdext_trace.log: the shim is not installed in this prefix; run install.sh / enable.sh)" >&2
