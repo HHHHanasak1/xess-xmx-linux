@@ -14,6 +14,12 @@ after the job timeout). Seen on an Arc B580 with every CM kernel, including
 a trivial one, in Cyberpunk 2077 and Wuthering Waves; the devcoredump
 showed "Large GRF Mode: false".
 
+Xe-HPG (Alchemist, DG2; also Meteor/Arrow Lake graphics, GFX 12.5) has the
+same switch in STATE_COMPUTE_MODE and hangs the same way: an A310 hung in
+the first CM kernel of Satisfactory (i915 error state: walker of a
+256-GRF CM kernel, Large GRF Mode off in the batch and in the context
+image). The switch is therefore used on GFX 12.5 as well as on Xe2.
+
 genX(cmd_buffer_set_cm_large_grf)() switches the mode with an end-of-pipe
 sync and HDC/untyped flush, only when it changes; the last programmed state
 is tracked in anv_cmd_compute_state. It is turned on before CM walkers with
@@ -65,7 +71,7 @@ index f34c8dc2..a73d9d31 100644
     uint8_t z_pass_async_compute_thread_limit;
     uint8_t np_z_async_throttle_settings;
 +
-+   /* Xe2: STATE_COMPUTE_MODE Large GRF Mode as last programmed by this command buffer (xess-xmx-linux CM
++   /* Xe-HPG, Xe2: STATE_COMPUTE_MODE Large GRF Mode as last programmed by this command buffer (xess-xmx-linux CM
 +    * kernels need it). Every command buffer starts and ends with it off, so 0 = off is the initial state. */
 +   bool cm_large_grf;
  };
@@ -81,7 +87,7 @@ index 11c858f8..412d2831 100644
  
 +   /* Leave STATE_COMPUTE_MODE Large GRF Mode off (CM kernels may have left it on), so the next command
 +    * buffer on this context can assume it starts off. */
-+#if GFX_VER == 20
++#if GFX_VERx10 == 125 || GFX_VER == 20
 +   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, false);
 +#endif
 +
@@ -94,7 +100,7 @@ index 11c858f8..412d2831 100644
  
 +   /* The secondaries likewise assume Large GRF Mode is off when they begin (and they turn it off again
 +    * before they end), so the container's tracked state stays valid across them. */
-+#if GFX_VER == 20
++#if GFX_VERx10 == 125 || GFX_VER == 20
 +   genX(cmd_buffer_set_cm_large_grf)(container, false);
 +#endif
 +
@@ -112,12 +118,12 @@ index 5fa7e7ea..3e837711 100644
 +void
 +genX(cmd_buffer_set_cm_large_grf)(struct anv_cmd_buffer *cmd_buffer, bool enable)
 +{
-+#if GFX_VER == 20
++#if GFX_VERx10 == 125 || GFX_VER == 20
 +   /* CM kernels (xess-xmx-linux) are compiled with -doubleGRF: 256 registers, and every kernel's prologue
-+    * uses r255. Xe3 sizes the register file per shader (variable register allocation), but Xe2 has one
++    * uses r255. Xe3 sizes the register file per shader (variable register allocation), but Xe-HPG and Xe2 have one
 +    * engine-wide switch, STATE_COMPUTE_MODE Large GRF Mode. Without it a 256-GRF kernel runs in 128-GRF
 +    * mode, touches registers it does not own, its threads never retire and the engine hangs (seen on a
-+    * B580 in every game using the CM path).
++    * B580 in every game using the CM path, and on an A310 in Satisfactory).
 +    *
 +    * The mode is only switched when it changes, so a run of consecutive CM dispatches (XeSS issues dozens
 +    * per frame) pays for one transition instead of two per dispatch. Ordinary shaders are correct in Large

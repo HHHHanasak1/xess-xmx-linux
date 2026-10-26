@@ -149,7 +149,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     install.sh, uninstall.sh      system-wide install / removal
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
-                                  0003 Large GRF Mode for Xe2;  patches/mesa-26.3/: the same for Mesa 26.3,
+                                  0003 Large GRF (Xe-HPG, Xe2); patches/mesa-26.3/: the same for Mesa 26.3,
                                   plus 0004, the Jay crash fix for RE Engine games
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
