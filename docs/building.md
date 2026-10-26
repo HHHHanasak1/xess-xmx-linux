@@ -56,7 +56,7 @@ deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branche
     cd mesa && git init -q && git add -A && git commit -qm "mesa 26.1.2"
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
-    git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe2: needed; Xe3: no effect (applies with or without 0002)
+    git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe-HPG, Xe2: needed; Xe3: no effect (applies with or without 0002)
     meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
       -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
@@ -85,7 +85,7 @@ Two of the options are easy to get wrong:
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-`0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe2 (see how-it-works.md) and drops CM
+`0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe-HPG and Xe2 (see how-it-works.md) and drops CM
 dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation.
 
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
