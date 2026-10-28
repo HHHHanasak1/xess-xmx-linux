@@ -87,8 +87,9 @@ XeSS asks `CheckFeatureSupport(OPTIONS2)` for `SIMD16Required / LSCSupported / L
 kernel set from the answer:
 
 * `SIMD16Required=0`: the Xe-HPG set (SIMD8, images read with the legacy `gather4.typed` / `scatter4.typed` messages).
-  Xe2/Xe3 hardware and IGC cannot run those messages; a hand-rewritten version of this set produced a stippled ghost
-  behind moving objects, and XeSS frame generation with this answer requests kernels that do not compile at all.
+  This is what the shim answers on Xe-HPG, the GPU the set is made for. Xe2/Xe3 hardware and IGC cannot run those
+  messages; on them a hand-rewritten version of this set produced a stippled ghost behind moving objects, and XeSS
+  frame generation with this answer requests kernels that do not compile at all.
 * `SIMD16Required=1`: a different set (57 of Wuthering Waves' 90 kernels differ) using `lsc.load/store.quad.typed`,
   which compiles for Xe2/Xe3 unchanged. This is what the shim answers on Xe2 and Xe3.
 * `LSCSupported=0`: no CM kernels at all, the DP4a HLSL path.
@@ -123,11 +124,11 @@ Games with XeSS frame generation also use Intel XeLL (`libxell.dll`). Under Wine
 (cross-vendor mode, log line `[XeLL] Using built-in context`): the library paces the frames itself, with the timing it
 can measure from the application side. That works.
 
-In its driver mode `libxell.dll` hands over to `igxell64.dll`, a component of Intel's Windows driver, which gets CPU
-and GPU timestamps of each frame's render submission from the driver through four entry points of the extension
-library, in a buffer layout that is not documented. Neither that DLL nor the driver-side timing exists on Linux, so
-the driver mode is not available. (The shim has an experimental probe for the interface, `IGDEXT_XELL_PROBE`; the
-game's `libxell.dll` never called it.)
+Its driver mode, which takes CPU and GPU timestamps of each frame's render submission from the driver through four
+entry points of the extension library (in a buffer layout that is not documented), does not start under Proton:
+`libxell.dll` checks for Wine before anything else and then keeps its built-in context. What it requires behind that
+check, and the shim's experimental probe for the interface (`IGDEXT_XELL_PROBE`, `tools/xell-probe.sh`), are in
+[debugging.md](debugging.md). Even with the probe, Wuthering Waves stays in the built-in context.
 
 The shim hooks XeLL for one game-side problem: Wuthering Waves hands XeLL a 33.3 ms frame cap right after enabling
 frame generation (30 fps until the pause menu is opened and closed). A cap arriving within 1.5 s of the enable call

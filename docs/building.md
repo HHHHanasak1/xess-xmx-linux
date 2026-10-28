@@ -3,8 +3,8 @@
 The release archive contains binaries built from this repository: the shim `igdext64.dll`, the patched Mesa ANV
 drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD `lib/libvulkan_intel.so` that loads one of them.
 The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI
-(`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; the release
-drivers are built with `tools/rebuild-driver.sh` on the device they are tested on.
+(`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; a release
+archive is made with `tools/make-release.py` from the artifacts of the release commit.
 
 ## The shim (`igdext64.dll`)
 
@@ -39,9 +39,9 @@ file the session's Vulkan driver list points at, is a small ICD built from `icd/
     gcc -O2 -shared -fPIC -fvisibility=hidden -o lib/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
 
 `tools/rebuild-driver.sh` does everything below for the system's Mesa version, for example after a SteamOS update:
-download the release tarball from archive.mesa3d.org, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise), build, check the result like
-the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so` and make it the default driver
-(`tools/switch-driver.sh`, see the README). If the patches do not apply to the new version, nothing is changed and the
+download the release tarball from archive.mesa3d.org, apply the patches (`patches/mesa-26.3/` for 26.3, `patches/`
+otherwise), build, check the result like the session check does, install it as `lib/mesa-<version>/libvulkan_intel.so`
+and make it the default driver (`tools/switch-driver.sh`, see the README). If the patches do not apply to the new version, nothing is changed and the
 script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
@@ -85,8 +85,9 @@ Two of the options are easy to get wrong:
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-`0003` (contributed in #16) switches Large GRF Mode around CM kernels on Xe-HPG and Xe2 (see how-it-works.md) and drops CM
-dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation.
+`0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32) switches Large GRF Mode around CM kernels on
+Xe-HPG and Xe2, including off before Mesa's own BLORP compute work (see how-it-works.md), and drops CM dispatches with
+a zero group count, which the Vulkan specification makes a no-op, on every generation.
 
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
 direct-descriptor path, where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw branch.

@@ -124,7 +124,7 @@ Shim (game environment):
 | `IGDEXT_SKIP_SELFTEST=1` | skip the self-test (the shim then assumes the patched driver is active) |
 | `IGDEXT_FORCE_FALLBACK=1` | decline the extension context: XeSS uses DP4a, XeSS frame generation its generic path (as without the shim). The shim does this by itself for an Intel device id its table does not know (trace: `fallback: unknown Intel device id`); `IGDEXT_GMD` declares such a device |
 | `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | override `CheckFeatureSupport(OPTIONS1)` |
-| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | override `OPTIONS2` (default from the detected GPU: `1,1,0` on Xe2/Xe3) |
+| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | override `OPTIONS2` (default from the detected GPU: `1,1,0` on Xe2/Xe3, `0,1,0` on Xe-HPG) |
 | `IGDEXT_OPTIONS2_FG=...` | the same, only for calls from `libxess_fg.dll` |
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
@@ -167,5 +167,5 @@ Scripts (shell environment when running them):
 | `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
 | `tools/session-check.sh [--dry-run]` | run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver |
 | `tools/get-xess.sh [package dir]` | Intel's XeSS SDK libraries for `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG`, `XESS_SHA256` select another release |
-| `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (the shipped kernels were built with the defaults) |
+| `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (defaults: IGC 2.10.10, compute-runtime 25.18; others are untested) |
 | `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`) |
