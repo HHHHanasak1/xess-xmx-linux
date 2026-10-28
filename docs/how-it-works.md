@@ -48,7 +48,8 @@ driver
 The register count (128 or 256, from the kernel's compile options) goes into the interface descriptor on Xe3. Xe-HPG
 (Alchemist) and Xe2 have one engine-wide switch instead, Large GRF Mode, which nothing else turns on: without it the
 first 256-register kernel never finishes and the engine is reset. `patches/0003` switches it on before such a kernel
-and off before other compute work and at the end of each command buffer, only when it changes.
+and off before other compute work (Mesa's own BLORP copies and fills included) and at the end of each command buffer,
+only when it changes.
 
 At each dispatch ANV builds the kernel's binding table from vkd3d-proton's descriptor heap (XeSS root signatures are
 one descriptor table per resource; vkd3d passes the heap offsets as push constants), takes the sampler state from the
