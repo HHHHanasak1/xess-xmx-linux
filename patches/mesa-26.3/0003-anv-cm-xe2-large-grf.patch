@@ -1,4 +1,4 @@
-From 3dcfa8915e0db9363818ed3908989046967974f7 Mon Sep 17 00:00:00 2001
+From c2fa805e7b39a599cda11264b1ed3f0e6b99e60c Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Sun, 4 Oct 2026 17:08:57 -0300
 Subject: [PATCH 3/3] anv: enable Large GRF Mode around CM kernels on Xe2
@@ -23,10 +23,20 @@ image). The switch is therefore used on GFX 12.5 as well as on Xe2.
 genX(cmd_buffer_set_cm_large_grf)() switches the mode with an end-of-pipe
 sync and HDC/untyped flush, only when it changes; the last programmed state
 is tracked in anv_cmd_compute_state. It is turned on before CM walkers with
-more than 128 GRF and off before any other compute walker, at the end of
-every command buffer and before executing secondaries, so each command
-buffer starts and ends with it off. Ordinary shaders are correct in Large
-GRF mode (they only lose occupancy), so on is the safe direction.
+more than 128 GRF and off before any other compute walker (BLORP compute
+operations included), at the end of every command buffer and before
+executing secondaries, so each command buffer starts and ends with it off.
+Ordinary shaders are correct in Large GRF mode (they only lose occupancy),
+so on is the safe direction.
+
+BLORP compute operations (buffer copies and fills between dispatches)
+emit their own STATE_COMPUTE_MODE and COMPUTE_WALKER and bypassed the
+tracking, so Large GRF Mode stayed on across them. On the A310 the next CM
+kernel after such a BLORP walker hung, in every error state (at different
+kernels, depending on which ones were skipped). Switching the mode off at
+the start of blorp_exec_on_compute() fixed it in Satisfactory: 0 of 4 runs
+hung with the change, 4 of 4 without it. Whether the BLORP walker or its
+STATE_COMPUTE_MODE is the trigger was not narrowed down.
 
 Toggling once per run of consecutive CM dispatches instead of around each
 one matters: Cyberpunk 2077 benchmark (2560x1440, XeSS SR, measured on
@@ -40,16 +50,16 @@ conformance.
 
 Only touches code outside the XMX-DEBUG blocks, so it applies on top of
 0001 alone as well as on 0001 + 0002.
-
 ---
  src/intel/vulkan/anv_genX.h         |  3 ++
  src/intel/vulkan/anv_private.h      |  4 +++
+ src/intel/vulkan/genX_blorp_exec.c  |  7 ++++
  src/intel/vulkan/genX_cmd_buffer.c  | 12 +++++++
  src/intel/vulkan/genX_cmd_compute.c | 55 +++++++++++++++++++++++++++++
- 4 files changed, 74 insertions(+)
+ 5 files changed, 81 insertions(+)
 
 diff --git a/src/intel/vulkan/anv_genX.h b/src/intel/vulkan/anv_genX.h
-index fc7c416b..033e29e4 100644
+index fc7c416..033e29e 100644
 --- a/src/intel/vulkan/anv_genX.h
 +++ b/src/intel/vulkan/anv_genX.h
 @@ -390,6 +390,9 @@ genX(batch_set_preemption)(struct anv_batch *batch,
@@ -63,7 +73,7 @@ index fc7c416b..033e29e4 100644
  genX(batch_emit_pipe_control)(struct anv_batch *batch,
                                const struct intel_device_info *devinfo,
 diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
-index f34c8dc2..a73d9d31 100644
+index f34c8dc..f3d0b04 100644
 --- a/src/intel/vulkan/anv_private.h
 +++ b/src/intel/vulkan/anv_private.h
 @@ -4723,6 +4723,10 @@ struct anv_cmd_compute_state {
@@ -77,8 +87,26 @@ index f34c8dc2..a73d9d31 100644
  };
  
  struct anv_cmd_ray_tracing_state {
+diff --git a/src/intel/vulkan/genX_blorp_exec.c b/src/intel/vulkan/genX_blorp_exec.c
+index 2f537fd..f588d75 100644
+--- a/src/intel/vulkan/genX_blorp_exec.c
++++ b/src/intel/vulkan/genX_blorp_exec.c
+@@ -469,6 +469,13 @@ blorp_exec_on_compute(struct blorp_batch *batch,
+    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+    assert(cmd_buffer->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
+ 
++#if GFX_VERx10 == 125 || GFX_VER == 20
++   /* BLORP emits its own STATE_COMPUTE_MODE and COMPUTE_WALKER, outside the CM Large GRF tracking: switch the
++    * mode off first (CM kernels may have left it on), the next CM walker switches it back on. Left on across a
++    * BLORP walker, the next CM kernel hung on an A310 (xess-xmx-linux #28). */
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, false);
++#endif
++
+    genX(flush_pipeline_select_gpgpu)(cmd_buffer, false);
+ 
+    /* Apply any outstanding flushes in case pipeline select haven't. */
 diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
-index 11c858f8..412d2831 100644
+index 11c858f..fe11897 100644
 --- a/src/intel/vulkan/genX_cmd_buffer.c
 +++ b/src/intel/vulkan/genX_cmd_buffer.c
 @@ -4663,6 +4663,12 @@ end_command_buffer(struct anv_cmd_buffer *cmd_buffer,
@@ -108,7 +136,7 @@ index 11c858f8..412d2831 100644
     if (!container->state.gfx.object_preemption)
        genX(cmd_buffer_set_preemption)(container, true);
 diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
-index 5fa7e7ea..3e837711 100644
+index 5fa7e7e..b92e8e1 100644
 --- a/src/intel/vulkan/genX_cmd_compute.c
 +++ b/src/intel/vulkan/genX_cmd_compute.c
 @@ -468,6 +468,38 @@ get_interface_descriptor_data_tables(struct anv_cmd_buffer *cmd_buffer)
@@ -188,5 +216,5 @@ index 5fa7e7ea..3e837711 100644
        anv_state_pool_state_address(anv_device_get_dynamic_state_pool(device),
                                     bind_state->push_constants_state));
 -- 
-2.54.0 (Apple Git-157)
+2.53.0
 
