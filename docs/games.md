@@ -6,8 +6,10 @@
 | Forza Horizon 6 | 2.0.2.68 | yes | only through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
 | Cyberpunk 2077 (2.31) | ships 2.0.1.41, XeFG 1.1.0.19 | yes, with newer XeSS libraries | yes, with newer XeSS libraries | `install.sh` + `XESS=latest %command%` (below); `XESS_FG=4` for 4x | with the shipped libraries: DP4a, no XeSS FG option. The game offers 2x; `XESS_FG=4` gives 4x, `XESS_FG=5`..`8` up to 8x (experimental) |
 | Resident Evil 4 (RE Engine) | none | yes, technically | no | REFramework (below) | worse than the game's FSR2; not recommended |
+| Satisfactory | XeSS + XeFG (Unreal plugin 2.0.10) | yes | not reported | `install.sh` | tested by a user on an Arc A310 (Xe-HPG, Mesa 26.3.0-rc1, #28) |
 
-All on Mesa 26.1.2; Wuthering Waves and Cyberpunk 2077 also on Mesa 26.3.0-rc1 (the default driver).
+The others were tested on an Arc B390 (Xe3), all on Mesa 26.1.2; Wuthering Waves and Cyberpunk 2077 also on
+Mesa 26.3.0-rc1 (the default driver).
 
 Anything else with XeSS 1.3 or later on its D3D12 renderer should work the same way: the kernels it needs are compiled
 on first use. Please report games you tried (working or not) in the issue tracker, with the `IGDEXT_TRACE=1` log.

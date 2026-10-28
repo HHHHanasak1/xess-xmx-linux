@@ -38,13 +38,9 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 | `IGDEXT_XELL_FIXCAP=1 %command%` | applies the XeLL frame-cap fix (30 fps with frame generation until the pause menu is opened and closed) in this game | another game shows the Wuthering Waves symptom |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | turns that fix off (it is on for Wuthering Waves only) | the fix is suspected to cause a problem |
 
-**XeSS older than 2.0.2.68:** DXVK reports an Intel GPU as an AMD one to a game whose `libxess.dll` is older than
-2.0.2.68, because early XeSS 2.0 builds crash under Proton on Intel. XeSS then runs on DP4a, and XeSS frame generation
-older than 1.2, which is Intel-only, is not offered at all (Cyberpunk 2077 2.31: XeSS 2.0.1.41, XeSS-FG 1.1.0.19).
-The crash is real: with the Intel GPU made visible to Cyberpunk 2077's own libraries (DXVK's
-`dxgi.customVendorId = 8086`), its XeSS-FG 1.1.0.19 crashes at start. So such a game needs newer libraries:
-`XESS=latest`. The symptom without it: XeSS super resolution is there but looks like DP4a, and the game offers no XeSS frame
-generation.
+**XeSS older than 2.0.2.68:** DXVK reports an Intel GPU as an AMD one to such a game, so XeSS super resolution looks
+like DP4a and the game may offer no XeSS frame generation. `XESS=latest` is the way out; why, and why showing the Intel
+GPU to the old libraries is not: [games.md](games.md) (Cyberpunk 2077).
 
 **`XESS_FG`** works like the frame generation override of Intel Graphics Software on Windows. When the game creates
 XeSS frame generation, `libxess_fg.dll` asks Intel's Control Library (`ControlLib.dll`) for an override of the number
@@ -58,9 +54,9 @@ Intel's override does; switching frame generation off in the game still works.
 Above 4x XeSS frame generation ignores the override, so the shim raises the number itself: it hands over 4x, finds where
 `libxess_fg.dll` keeps the number by watching it follow a second, probe context, sets the wanted number there and checks
 through the public API that the game's context now reports it. If anything does not match, the game keeps 4x. This
-changes a value inside Intel's library while it runs, which Intel does not support, so 5x to 8x are **experimental**.
-8x is the maximum. 5x to 8x all work (tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390). Every step above 4x lowers the real
-frame rate and raises the latency, so 7x and 8x are not recommended; they are there only as an option.
+changes a value inside Intel's library while it runs, which Intel does not support, so 5x to 8x are **experimental**
+(all four tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390). Every step above 4x lowers the real frame rate
+and raises the latency, so 7x and 8x are not recommended.
 
 Whatever the multiplier, keep a frame rate limiter on (the game's own, or gamescope's): without one the generated
 frames reach the screen unevenly.

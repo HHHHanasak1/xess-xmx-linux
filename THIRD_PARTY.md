@@ -4,7 +4,7 @@
 |---|---|---|---|
 | dxvk-igdext (GameTechDev) | `shim/` | MIT (`shim/LICENSE.md`) | base of the `igdext64.dll` shim; our additions live in `shim/src/dll/` |
 | Intel D3D extension SDK headers | `shim/d3dext-sdk/` | MIT, Intel Corporation | shipped with dxvk-igdext |
-| Mesa 3D (ANV Vulkan driver) | `patches/`, release archive `lib/` | MIT | `patches/*.patch` apply to tag `mesa-26.1.2`, `patches/mesa-26.3/*.patch` to `mesa-26.3.0-rc1` |
+| Mesa 3D (ANV Vulkan driver) | `patches/`, release archive `lib/` | MIT | `patches/*.patch` apply to the `mesa-26.1.2` release tarball, `patches/mesa-26.3/*.patch` to `mesa-26.3.0-rc1` (archive.mesa3d.org) |
 | SPIRV-Tools (Khronos Group) | release archive `lib/bundled/libSPIRV-Tools.so`, built by `tools/build-deps.sh` | Apache-2.0 (`lib/bundled/LICENSE.SPIRV-Tools`) | tag `vulkan-sdk-1.4.350.1`, unmodified; used only on systems without a SPIRV-Tools shared library (`lib/bundled/SOURCES.txt`) |
 | libdisplay-info (emersion) | release archive `lib/bundled/libdisplay-info.so.3`, built by `tools/build-deps.sh` | MIT (`lib/bundled/LICENSE.libdisplay-info`) | tag `0.3.0`, unmodified; used only on systems without `libdisplay-info.so.3` |
 | Intel Graphics Compiler / compute-runtime (ocloc) | fetched by `tools/get-igc.sh` into `igc/` on the user's machine | MIT | not redistributed by this project |

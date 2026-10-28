@@ -1,4 +1,4 @@
-# XeSS XMX on Linux (Proton) for Intel Xe2 / Xe3
+# XeSS XMX on Linux (Proton) for Intel Arc: Xe-HPG, Xe2, Xe3
 
 Real Intel **XeSS** super resolution and **XeSS frame generation** inside Proton games, running on the GPU's XMX
 (matrix) units instead of the DP4a fallback that stock Wine/Proton gets. No Windows driver, no change to Proton or
@@ -12,10 +12,11 @@ vkd3d-proton:
   Graphics Software sets on Windows: `XESS_FG=<n>` in a game's launch options.
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
-Experimental. Super resolution renders correctly and is temporally stable; frame generation runs at 2x/3x/4x on XMX
-as well (without the Intel extension, XeSS frame generation is limited to 2x). With `XESS_FG` a game runs frame
-generation at a fixed multiplier, also above what its menu offers: up to 4x as Intel's override does, and
-experimentally up to **8x** ([docs/launch-options.md](docs/launch-options.md)).
+Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super resolution renders correctly and is
+temporally stable; frame generation runs at 2x/3x/4x on XMX as well (without the Intel extension, XeSS frame
+generation is limited to 2x). With `XESS_FG` a game runs frame generation at a fixed multiplier, also above what its
+menu offers: up to 4x as Intel's override does, and experimentally up to **8x**
+([docs/launch-options.md](docs/launch-options.md)).
 
 ## Install
 
@@ -42,9 +43,7 @@ What `install.sh` does:
   counts (SD card, second disk: `steamapps/libraryfolders.vdf`). A Proton installed by a distribution package (CachyOS'
   `proton-cachyos` in `/usr/share/steam/compatibilitytools.d`) belongs to root: `install.sh` lists it with the `sudo`
   commands that put the shim in, and games on it run on DP4a until then;
-* puts `ControlLib.dll`, a small stand-in for Intel's Control Library, into every prefix: with `XESS_FG=4 %command%` XeSS
-  frame generation runs at 4x in a game that offers 2x, like Intel Graphics Software's override on Windows
-  (`XESS_FG=5` to `8`: experimental);
+* puts `ControlLib.dll` into every prefix, for `XESS_FG`;
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
   each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
   runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));
@@ -81,8 +80,9 @@ check before a session (for example after a system update), the other one become
 
 ### Requirements
 
-* Intel Xe3 (Panther Lake; tested on an Arc B390) or Xe2 (Battlemage; tested by a contributor on an Arc B580, #16) on
-  the `xe` or `i915` kernel driver. Lunar Lake is untested; Xe-HPG (Alchemist) and Xe-LPG are detected but untested.
+* An Intel GPU with XMX on the `xe` or `i915` kernel driver: Xe3 (Panther Lake; tested on an Arc B390), Xe2
+  (Battlemage; tested by a user on an Arc B580, #16) or Xe-HPG (Alchemist; tested by a user on an Arc A310, #28).
+  Lunar Lake and Arrow Lake-H are detected but untested. Xe-LPG (Meteor Lake) has no XMX units.
 * The drivers in the archive (Mesa 26.1.2 and 26.3.0-rc1 with the patches) replace the system's 64-bit ANV for the user
   session only. For another Mesa version see [docs/building.md](docs/building.md).
 * The drivers are built on Arch Linux and need glibc 2.38 and libwayland-client 1.24 or newer. SPIRV-Tools and
@@ -128,8 +128,8 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
 ## Known limitations
 
-* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode; its driver mode needs
-  a component of Intel's Windows driver. Details in [docs/how-it-works.md](docs/how-it-works.md).
+* **XeLL** (Intel's latency reduction, used with frame generation) runs in its cross-vendor mode; its driver mode does
+  not start under Proton. Details in [docs/how-it-works.md](docs/how-it-works.md).
 * The fallback (self-test failed, kernels that did not compile) gives XeSS' generic paths, whose frame generation is
   limited to 2x: a game set to 3x/4x runs at 2x until the XMX path works again.
 * `XESS_FG=5` to `8` raise the number of generated frames by changing a value inside Intel's frame generation library
@@ -165,12 +165,16 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/cmk_pack.py             zebin -> .cmk packer;  tools/check-kernels.py validates a kernel folder
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
+    tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
+    tools/make-release.py         builds the release archive
+    tools/xell-probe.sh           XeLL driver-mode probe (docs/debugging.md)
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
     docs/                         how it works, building, debugging, games, Steam launch options
     .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the ICD and both drivers, checks the scripts
 
 The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the drivers in `lib/mesa-<version>/`, the
-ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
+ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from
+the SPIR-V inside the game's XeSS libraries.
 
 ## License
 
