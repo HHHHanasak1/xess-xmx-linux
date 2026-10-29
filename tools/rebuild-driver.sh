@@ -20,7 +20,7 @@ if [ -z "$VER" ]; then
     [ -f "$f" ] && VER=$(grep -a -o -m1 'Mesa [0-9]*\.[0-9]*\.[0-9]*' "$f" | head -1 | cut -d' ' -f2) && [ -n "$VER" ] && break
   done
 fi
-[ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0-rc1)"; exit 1; }
+[ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0-rc2)"; exit 1; }
 echo "== Mesa $VER"
 # the release tarball, not the git tag: upstream can delete a tag (mesa-26.3.0-rc1 went, together with its commit,
 # when staging/26.3 was branched again). One tree per version, committed as "base" so the patches go on with git am.
