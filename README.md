@@ -115,7 +115,8 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
 ## Performance
 
-* Mesa 26.3 (Jay) against 26.1.2, Arc B390, same spot and settings, XeSS super resolution and frame generation on XMX:
+* Mesa 26.3 (Jay) against 26.1.2, Arc B390, same spot and settings, XeSS super resolution and frame generation on XMX
+  (measured with Mesa 26.3.0-rc1, before the archive moved to rc2):
 
   | Game | Mesa 26.1.2 | Mesa 26.3.0-rc1 |
   |---|---|---|
