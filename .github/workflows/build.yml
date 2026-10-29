@@ -103,8 +103,8 @@ jobs:
             mesa_sha256: bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0
             patches: patches
             arch_snapshot: 2026/09/20
-          - name: 26.3.0-rc1
-            mesa_sha256: 63327d58a51d189c1d1600746c505609bba5c495123b4e51de4e0c038b745542
+          - name: 26.3.0-rc2
+            mesa_sha256: 6b9154bc46ec73901555dbcb61600eb69607dc1da718a87e7a1c09a755bb1b6d
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
     env:

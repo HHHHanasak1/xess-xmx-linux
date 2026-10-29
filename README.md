@@ -64,7 +64,7 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 The archive carries the patched driver for two Mesa versions; both run the same XeSS kernels:
 
-* **Mesa 26.3.0-rc1** (the default): its new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own
+* **Mesa 26.3.0-rc2** (the default): its new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own
   shaders much faster. Patches by @kas5852 (#19). A release candidate: tested in fewer games so far.
 * **Mesa 26.1.2**: the driver of the earlier releases, the same version as SteamOS' own.
 
@@ -83,7 +83,7 @@ check before a session (for example after a system update), the other one become
 * An Intel GPU with XMX on the `xe` or `i915` kernel driver: Xe3 (Panther Lake; tested on an Arc B390), Xe2
   (Battlemage; tested by a user on an Arc B580, #16) or Xe-HPG (Alchemist; tested by a user on an Arc A310, #28).
   Lunar Lake and Arrow Lake-H are detected but untested. Xe-LPG (Meteor Lake) has no XMX units.
-* The drivers in the archive (Mesa 26.1.2 and 26.3.0-rc1 with the patches) replace the system's 64-bit ANV for the user
+* The drivers in the archive (Mesa 26.1.2 and 26.3.0-rc2 with the patches) replace the system's 64-bit ANV for the user
   session only. For another Mesa version see [docs/building.md](docs/building.md).
 * The drivers are built on Arch Linux and need glibc 2.38 and libwayland-client 1.24 or newer. SPIRV-Tools and
   libdisplay-info 0.3 come with the archive (`lib/bundled/`) for systems that lack them. Checked to load on SteamOS,
@@ -115,7 +115,8 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
 ## Performance
 
-* Mesa 26.3 (Jay) against 26.1.2, Arc B390, same spot and settings, XeSS super resolution and frame generation on XMX:
+* Mesa 26.3 (Jay) against 26.1.2, Arc B390, same spot and settings, XeSS super resolution and frame generation on XMX
+  (measured with Mesa 26.3.0-rc1, before the archive moved to rc2):
 
   | Game | Mesa 26.1.2 | Mesa 26.3.0-rc1 |
   |---|---|---|
