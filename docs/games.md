@@ -71,17 +71,19 @@ XeFG driven this way runs on XMX too. Measured on FH6: ~28 real fps -> ~56 prese
 Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchain hooking led to crashes (a double
 `vkDestroyImage`) after a few minutes in the online world. Without OptiScaler the game runs fine.
 
-## FSR 4 on XMX (an upscaler DLL from the OptiScaler project)
+## FSR 4 on XMX (upscaler builds from the OptiScaler Discord)
 
-An `amd_fidelityfx_upscaler_dx12.dll` from the OptiScaler project, shared on its Discord server ("B Boost", FileVersion
-4.0.2.1), runs FSR 4 as C-for-Metal kernels through Intel's extension, so on Linux it goes through this project's shim
-and driver like XeSS does. It replaces the game's own `amd_fidelityfx_upscaler_dx12.dll`, which the game loads through
-AMD's FFX loader; OptiScaler itself is not needed. It needs the driver fix for kernels whose sampler is a descriptor
-table (patch 0005): with an older driver the image is wrong.
+Builds of an FSR 4 upscaler that runs as C-for-Metal kernels through Intel's extension are shared on the OptiScaler
+project's Discord server, several of them and under different file names. Such a build goes through this project's
+shim and driver like XeSS does. The one tested here is "B Boost" (FileVersion 4.0.2.1); other builds may behave
+differently. Whatever the download is called, it takes the place of the game's `amd_fidelityfx_upscaler_dx12.dll`,
+which the game loads through AMD's FFX loader; OptiScaler itself is not needed (with OptiScaler, it replaces the
+`amd_fidelityfx_upscaler_dx12.dll` OptiScaler loads instead). It needs the driver fix for kernels whose sampler is a
+descriptor table (patch 0005): with an older driver the image is wrong.
 
 Setup, in the folder of the game's `amd_fidelityfx_upscaler_dx12.dll` (keep the original):
 
-* the plugin as `amd_fidelityfx_upscaler_dx12.dll`;
+* the plugin, renamed to `amd_fidelityfx_upscaler_dx12.dll`;
 * `fsr-original.dll`: `Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll` from AMD's FSR SDK 2.4.0 (FSR
   4.1.2), renamed. The plugin reads the FSR 4 weights from it;
 * `cabinet.dll` from a Windows installation (`C:\Windows\System32\cabinet.dll`), and `WINEDLLOVERRIDES=cabinet=n,b`

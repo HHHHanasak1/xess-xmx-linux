@@ -95,7 +95,7 @@ check before a session (for example after a system update), the other one become
 
 See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
 2077 (SR + FG with `XESS=latest`, which replaces its older XeSS libraries while it runs; 4x and more with `XESS_FG`),
-FSR 4 on XMX through an upscaler DLL from the OptiScaler project, notes on OptiScaler and on a game without XeSS.
+FSR 4 on XMX through upscaler builds from the OptiScaler Discord, notes on OptiScaler and on a game without XeSS.
 
 ## Troubleshooting
 
