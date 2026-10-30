@@ -73,6 +73,9 @@ Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchai
 
 ## FSR 4 on XMX (upscaler builds from the OptiScaler Discord)
 
+**Experimental.** One build has been tested, on one GPU (Arc B390) and in two games; expect problems with other
+builds, GPUs and games, and please report them.
+
 Builds of an FSR 4 upscaler that runs as C-for-Metal kernels through Intel's extension are shared on the OptiScaler
 project's Discord server, several of them and under different file names. Such a build goes through this project's
 shim and driver like XeSS does. The one tested here is "B Boost" (FileVersion 4.0.2.1); other builds may behave
