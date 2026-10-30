@@ -95,7 +95,7 @@ check before a session (for example after a system update), the other one become
 
 See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
 2077 (SR + FG with `XESS=latest`, which replaces its older XeSS libraries while it runs; 4x and more with `XESS_FG`),
-notes on OptiScaler and on a game without XeSS.
+FSR 4 on XMX through upscaler builds from the OptiScaler Discord, notes on OptiScaler and on a game without XeSS.
 
 ## Troubleshooting
 
@@ -150,8 +150,9 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     install.sh, uninstall.sh      system-wide install / removal
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
-                                  0003 Large GRF (Xe-HPG, Xe2); patches/mesa-26.3/: the same for Mesa 26.3,
-                                  plus 0004, the Jay crash fix for RE Engine games
+                                  0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
+                                  patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
+                                  RE Engine games
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     tools/cm-compile.sh           run-time compiler helper called by the driver

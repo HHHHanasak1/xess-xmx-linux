@@ -71,6 +71,45 @@ XeFG driven this way runs on XMX too. Measured on FH6: ~28 real fps -> ~56 prese
 Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchain hooking led to crashes (a double
 `vkDestroyImage`) after a few minutes in the online world. Without OptiScaler the game runs fine.
 
+## FSR 4 on XMX (upscaler builds from the OptiScaler Discord)
+
+Builds of an FSR 4 upscaler that runs as C-for-Metal kernels through Intel's extension are shared on the OptiScaler
+project's Discord server, several of them and under different file names. Such a build goes through this project's
+shim and driver like XeSS does. The one tested here is "B Boost" (FileVersion 4.0.2.1); other builds may behave
+differently. Whatever the download is called, it takes the place of the game's `amd_fidelityfx_upscaler_dx12.dll`,
+which the game loads through AMD's FFX loader; OptiScaler itself is not needed (with OptiScaler, it replaces the
+`amd_fidelityfx_upscaler_dx12.dll` OptiScaler loads instead). It needs the driver fix for kernels whose sampler is a
+descriptor table (patch 0005): with an older driver the image is wrong.
+
+Setup, in the folder of the game's `amd_fidelityfx_upscaler_dx12.dll` (keep the original):
+
+* the plugin, renamed to `amd_fidelityfx_upscaler_dx12.dll`;
+* `fsr-original.dll`: `Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll` from AMD's FSR SDK 2.4.0 (FSR
+  4.1.2), renamed. The plugin reads the FSR 4 weights from it;
+* `cabinet.dll` from a Windows installation (`C:\Windows\System32\cabinet.dll`), and `WINEDLLOVERRIDES=cabinet=n,b`
+  in the launch options. The plugin unpacks its kernels with the Windows compression API (`Cabinet.dll` ordinals 40,
+  43, 45), which Wine does not implement; without it the game aborts with `unimplemented function Cabinet.dll.40`
+  (Proton Experimental) or hangs (GE-Proton);
+* if the Proton log says `igdext64.dll with required DX12 exports was not found` (a prefix without the driver store
+  folder, for example a game `install.sh` has not covered), `<package>/igdext64.dll` next to the plugin.
+
+`FSR4_XMX_NO_DIALOG=1` keeps its error dialog from blocking the game. The plugin offers several FSR 4 versions and the
+game picks one: Cyberpunk 2077 picks the Lite model, CONTROL Resonant the full one. `FSR4_XMX_LITE=1` asks for Lite,
+`FSR4_XMX_PROVIDER_INDEX=0` for the full model (4.0.2X).
+
+Cyberpunk 2077 shows the FSR 4 option only with the plugin in place (AMD's own DLL reports FSR 4 as unsupported on
+Intel). Measured on an Arc B390 (22 W, render 1280x800, no frame generation):
+
+| | Cyberpunk 2077 benchmark, average fps | CONTROL Resonant, fixed spot |
+|---|---|---|
+| XeSS, Ultra Quality (XMX) | 57.5 | - |
+| FSR 3 (the game's DLL) | not offered | 36 |
+| FSR 4 on XMX, full model | 56.4 | 35 |
+| FSR 4 on XMX, Lite | 58.2 / 58.1 | 36 |
+
+The FSR 4 kernels take 2.5 ms (full) / 1.9 ms (Lite) per frame on the B390. FSR frame generation stays at 2x: AMD has
+not released multi-frame generation.
+
 ## A game without XeSS at all (Resident Evil 4, RE Engine)
 
 RE Engine games ship a custom FSR2 that OptiScaler cannot hook. REFramework's `pd-upscaler` build with PureDark's

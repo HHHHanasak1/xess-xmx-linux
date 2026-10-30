@@ -53,7 +53,9 @@ only when it changes.
 
 At each dispatch ANV builds the kernel's binding table from vkd3d-proton's descriptor heap (XeSS root signatures are
 one descriptor table per resource; vkd3d passes the heap offsets as push constants), takes the sampler state from the
-root signature's static sampler (an immutable sampler in the pipeline layout), and programs SLM and barriers. Nothing
+root signature's static sampler (an immutable sampler in the pipeline layout), and programs SLM and barriers. A kernel
+whose sampler is a descriptor table instead (the FSR 4 on XMX plugin, [games.md](games.md)) has that table as the last
+root parameter, after the surfaces; the driver then takes the sampler state from vkd3d's sampler heap. Nothing
 leaves the Vulkan queue. This relies on vkd3d-proton's classic descriptor path, hence
 `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`. If the heap cannot be found the driver says so in the log and
 leaves the kernel as a no-op.
