@@ -9,7 +9,7 @@
 | Satisfactory | XeSS + XeFG (Unreal plugin 2.0.10) | yes | not reported | `install.sh` | tested by a user on an Arc A310 (Xe-HPG, Mesa 26.3.0-rc1, #28) |
 
 The others were tested on an Arc B390 (Xe3), all on Mesa 26.1.2; Wuthering Waves and Cyberpunk 2077 also on
-Mesa 26.3.0-rc1 (the default driver).
+Mesa 26.3.0-rc1, which was the default driver then (it is now 26.3.0-rc2).
 
 Anything else with XeSS 1.3 or later on its D3D12 renderer should work the same way: the kernels it needs are compiled
 on first use. Please report games you tried (working or not) in the issue tracker, with the `IGDEXT_TRACE=1` log.
