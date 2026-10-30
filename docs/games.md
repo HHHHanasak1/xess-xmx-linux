@@ -71,13 +71,13 @@ XeFG driven this way runs on XMX too. Measured on FH6: ~28 real fps -> ~56 prese
 Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchain hooking led to crashes (a double
 `vkDestroyImage`) after a few minutes in the online world. Without OptiScaler the game runs fine.
 
-## FSR 4 on XMX (a third-party upscaler DLL)
+## FSR 4 on XMX (an upscaler DLL from the OptiScaler project)
 
-A third-party `amd_fidelityfx_upscaler_dx12.dll` ("B Boost", FileVersion 4.0.2.1) runs FSR 4 as C-for-Metal kernels
-through Intel's extension, so on Linux it goes through this project's shim and driver like XeSS does. It replaces the
-game's own `amd_fidelityfx_upscaler_dx12.dll`, which the game loads through AMD's FFX loader; OptiScaler is not
-needed. It needs the driver fix for kernels whose sampler is a descriptor table (patch 0005): with an older
-driver the image is wrong.
+An `amd_fidelityfx_upscaler_dx12.dll` from the OptiScaler project, shared on its Discord server ("B Boost", FileVersion
+4.0.2.1), runs FSR 4 as C-for-Metal kernels through Intel's extension, so on Linux it goes through this project's shim
+and driver like XeSS does. It replaces the game's own `amd_fidelityfx_upscaler_dx12.dll`, which the game loads through
+AMD's FFX loader; OptiScaler itself is not needed. It needs the driver fix for kernels whose sampler is a descriptor
+table (patch 0005): with an older driver the image is wrong.
 
 Setup, in the folder of the game's `amd_fidelityfx_upscaler_dx12.dll` (keep the original):
 
