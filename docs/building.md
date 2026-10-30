@@ -57,6 +57,7 @@ deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branche
     git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
     git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
     git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe-HPG, Xe2: needed; Xe3: no effect (applies with or without 0002)
+    git am ../patches/0005-anv-cm-sampler-descriptor-table.patch  # kernels whose sampler is a descriptor table (FSR 4 on XMX)
     meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
       -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
       -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
@@ -97,6 +98,12 @@ direct-descriptor path, where 26.3 no longer creates it, and replaces the placeh
 lowering only works with brw, and since Jay is the default on Xe2 and Xe3 those games crash at start with a NULL read
 in `jay_opt_propagate_forwards`. The patch compiles the workgroup-stage shaders of those games with brw and leaves Jay
 on for everything else. Drop it once the Mesa tag the series is based on includes the fix.
+
+`0005` (both series; there is no `0004` in the 26.1.2 one) handles CM kernels whose sampler is a descriptor table
+rather than a static sampler, as in the FSR 4 on XMX plugin ([games.md](games.md)). vkd3d puts one push-constant
+dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the
+surface tables end one dword earlier; the sampler state is copied from vkd3d's sampler heap. XeSS uses static
+samplers and does not take this path.
 
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
