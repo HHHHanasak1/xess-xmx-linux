@@ -101,7 +101,8 @@ game picks one: Cyberpunk 2077 picks the Lite model, CONTROL Resonant the full o
 `FSR4_XMX_PROVIDER_INDEX=0` for the full model (4.0.2X).
 
 Cyberpunk 2077 shows the FSR 4 option only with the plugin in place (AMD's own DLL reports FSR 4 as unsupported on
-Intel). Measured on an Arc B390 (22 W, render 1280x800, no frame generation):
+Intel). Measured on an Arc B390 (25 W in CONTROL Resonant, 27 W in Cyberpunk 2077; render 1280x800, no frame
+generation):
 
 | | Cyberpunk 2077 benchmark, average fps | CONTROL Resonant, fixed spot |
 |---|---|---|
