@@ -50,9 +50,20 @@ one of Intel's PRODUCT_FAMILY ids (1300 for Panther Lake, 1275 Lunar Lake, 1274 
 shim normally reports 30 there), and only then calls the latency-reduction functions. Details and offsets:
 `shim/src/dll/XellDriver.cpp`.
 
-`IGDEXT_XELL_PROBE=<version>` turns all of that on for one launch: the shim hides `wine_get_version` from
-`libxell.dll` (an import-table hook in that DLL only), reports the family id, claims that interface version, accepts
-the pacing calls and logs what XeLL does with the timing buffers. Steam launch options:
+`IGDEXT_XELL_PROBE=<version>` turns driver mode on for one launch: the shim hides `wine_get_version` from
+`libxell.dll` (an import-table hook in that DLL only), reports the family id, claims that interface version, and then
+provides what XeLL reads (the layout, worked out on a B390 and from the DLL's code, is in `XellDriver.cpp`):
+
+* per `RenderSubmitStart`: the CPU time of the submit (QPC in nanoseconds, XeLL's own clock) and the GPU time at
+  which the GPU began the frame: a timestamp query the shim executes in front of the frame's first
+  `ExecuteCommandLists` from the game (it hooks that call in the command-queue vtable), with the GPU clock at submit
+  from `GetClockCalibration` as the provisional value until the query lands (`XELLPROBE gpu start frame N: measured
+  ... (+N ticks after submit)` lines; the offset is the queue depth XeLL now sees);
+* display telemetry: a vsync model from the current display mode (`IGDEXT_XELL_HZ=<hz>`, or `IGDEXT_XELL_VRR=<min>,<max>`
+  for a VRR range, `IGDEXT_XELL_TEARING=1` for vsync off), and one record per `SetPresentSequenceNumber` call (flip
+  queued = the call, shown = the next modelled vsync).
+
+Steam launch options:
 
     /path/to/package/tools/xell-probe.sh %command%
 
@@ -60,9 +71,10 @@ Play for a minute with frame generation on (the Wuthering Waves title screen wit
 look at the summary the wrapper prints; it also writes `~/xess-xmx-probe-<date>.tar.gz` with `proton-xell.log` (XeLL's
 own messages, which it sends through `OutputDebugString`; the wrapper sets `PROTON_LOG=1` and keeps the XeLL lines of
 `~/steam-<appid>.log`), `libxell.log` if that libxell version writes one (1.3.2+), `igdext_trace.log` (`XELLPROBE`
-lines: the hook, every latency-reduction call with its arguments, each `RenderSubmitStart` with the time since the
-previous one, and every read or write XeLL makes to the timing buffers with the slot, the in-slot offset and the code
-address in `libxell.dll`), `igdext_xell.log` and the session's driver status. Attach the archive to the issue.
+lines: the hook, the display model, every latency-reduction call with its arguments, each `RenderSubmitStart` with the
+times it stored), `igdext_xell.log` (with `xell latency:` lines, XeLL's own simulation-start-to-present-end
+measurement every 100 frames: the number to compare against a run without the probe) and the session's driver status.
+Attach the archive to the issue.
 
 How to read the result:
 
@@ -74,11 +86,18 @@ How to read the result:
   whether `XELL_FORCE_CROSS_VENDOR` is set.
 * `XeLL context creation failed - unsupported device` / `unsupported driver`: the family id or the driver version
   string the shim reported was rejected. `IGDEXT_FAMILY=<id>` overrides the family id.
-* `Intel Extensions initialized.` and `Latency reduction enabled.` followed by `XELLPROBE LatencyReductionExt(...)` and
-  buffer accesses: driver mode started. The access log gives the slot size and the fields; a read of `gpu +0x0`
-  followed by a crash means XeLL treats the GPU buffer as a COM object (an `ID3D12Resource` it maps), not as plain
-  memory, which the next shim version must then provide.
-* `GetDisplayTelemetry` called and then cross-vendor: retry with `XELL_PROBE_TELEMETRY=1`.
+* `Display telemetry corrupted.` / `Failed to get display telemetry.`: the telemetry block was rejected or not
+  provided (`IGDEXT_XELL_TELEMETRY=0`); `Display/FramStats match not found.`: the present sequence numbers XeLL got
+  from the shim's records do not match its frame ids.
+* `Driver timings not available for last visible frame.` every frame: XeLL found zero slots; the `RenderSubmitStart`
+  lines show what was stored and in which slot.
+* `xell latency:` lower than the same scene without the probe: driver mode is paying off. Higher: compare with
+  `IGDEXT_XELL_GPUSTART=0` (submit-time GPU clock) and `IGDEXT_XELL_TELEMETRY=0` (no telemetry: XeLL paces nothing,
+  which is the cross-vendor behaviour) to see which input misleads it.
+* No `timestamp query queued ahead of frame` lines: the game's first submit after `RenderSubmitStart` was not seen
+  (not a direct queue, or the call came through a module the hook treats as XeSS's own); the provisional value stays.
+* `IGDEXT_XELL_GUARD=1` logs every read and write XeLL makes to the timing buffers with the slot, the offset and the
+  code address in `libxell.dll`, for a new XeLL version.
 
 ## Switches
 
@@ -134,7 +153,11 @@ Shim (game environment):
 | `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
 | `IGDEXT_XELL_PROBE=<version>` | hide `wine_get_version` from `libxell.dll`, report the Intel product family as `GTGeneration`, claim XeLL driver-mode support (interface version), accept the Set* pacing calls, and log XeLL's use of it (`tools/xell-probe.sh`, "XeLL driver-mode probe" above) |
 | `IGDEXT_FAMILY=<id>` | override the product family id reported with the probe (default from the detected GPU) |
-| `IGDEXT_XELL_TELEMETRY=1` | with the probe: answer `GetDisplayTelemetry` with a zeroed buffer instead of E_NOTIMPL |
+| `IGDEXT_XELL_TELEMETRY=0` | with the probe: answer `GetDisplayTelemetry` with E_NOTIMPL instead of the display model |
+| `IGDEXT_XELL_HZ=<hz>`, `IGDEXT_XELL_VRR=<min>,<max>`, `IGDEXT_XELL_TEARING=1` | the display model (default: the current mode's refresh rate, vsync on) |
+| `IGDEXT_XELL_GUARD=1` | with the probe: timing buffers on guard pages, every access logged |
+| `IGDEXT_XELL_GPUSTART=0` | with the probe: keep the GPU clock at submit as the frame's GPU start instead of measuring it with a timestamp query ahead of the frame's first `ExecuteCommandLists` |
+| `IGDEXT_XELL_FLIPQ=1` / `=2` | with the probe, experimental: display telemetry from the flips already scanned out, in present order (`XellDriver.cpp`). 1: frame end = its GPU work done; 2: frame end = the present call, as by default, so only the vsync XeLL anchors on changes. Off by default |
 
 Driver (patch 0001):
 

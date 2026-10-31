@@ -18,7 +18,15 @@
 # report / probe result.
 #
 # Variables:  XELL_PROBE_VERSION=<n>   interface version to claim (default 1; try 2, 3 if XeLL rejects 1)
-#             XELL_PROBE_TELEMETRY=1   also answer GetDisplayTelemetry with a zeroed buffer (IGDEXT_XELL_TELEMETRY)
+#             XELL_PROBE_TELEMETRY=0   answer GetDisplayTelemetry with E_NOTIMPL instead of the display model (A/B)
+#             XELL_PROBE_GPUSTART=0    GPU start = clock at submit instead of the measured timestamp (A/B)
+#             XELL_PROBE_FLIPQ=1       display telemetry from the flips actually shown: ready = GPU done, shown =
+#                                      the vsync it went out on (what libxell's sleep reads, see XellDriver.cpp);
+#                                      off by default until it beats the default in a run (A/B)
+#             XELL_PROBE_FLIPQ=2       the same, but ready = the present call (as the default), so only the
+#                                      vsync XeLL anchors on changes, not its sim -> GPU end average
+#             XELL_PROBE_GUARD=1       timing buffers on guard pages: log every access XeLL makes to them
+#             XELL_PROBE_HZ=<hz>, XELL_PROBE_VRR=<min>,<max>   the display model's refresh rate(s) (default: current mode)
 #             XELL_PROBE_KEEP=1        do not delete the raw log files from the prefix afterwards
 set -u
 [ $# -gt 0 ] || { echo "usage: xell-probe.sh <command...>   (Steam: tools/xell-probe.sh %command%)" >&2; exit 2; }
@@ -40,7 +48,12 @@ export IGDEXT_XELL_PROBE="${XELL_PROBE_VERSION:-1}"
 export PROTON_LOG=1
 protonlog="${PROTON_LOG_DIR:-$HOME}/steam-${SteamGameId:-${SteamAppId:-0}}.log"
 [ -f "$protonlog" ] && mv -f "$protonlog" "$protonlog.prev"
-[ "${XELL_PROBE_TELEMETRY:-0}" = 1 ] && export IGDEXT_XELL_TELEMETRY=1
+[ "${XELL_PROBE_TELEMETRY:-1}" = 0 ] && export IGDEXT_XELL_TELEMETRY=0
+[ "${XELL_PROBE_GUARD:-0}" = 1 ] && export IGDEXT_XELL_GUARD=1
+[ "${XELL_PROBE_GPUSTART:-1}" = 0 ] && export IGDEXT_XELL_GPUSTART=0
+case "${XELL_PROBE_FLIPQ:-0}" in 1|2) export IGDEXT_XELL_FLIPQ="$XELL_PROBE_FLIPQ";; esac
+[ -n "${XELL_PROBE_HZ:-}" ] && export IGDEXT_XELL_HZ="$XELL_PROBE_HZ"
+[ -n "${XELL_PROBE_VRR:-}" ] && export IGDEXT_XELL_VRR="$XELL_PROBE_VRR"
 
 echo "xell-probe: prefix $pfx, probe version $IGDEXT_XELL_PROBE, logs -> $out" >&2
 "$@"
@@ -57,13 +70,13 @@ done
 cp -f "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status" "$out/" 2>/dev/null
 {
   echo "date: $stamp"; echo "exit code: $rc"; echo "command: $*"; echo "prefix: $pfx"
-  echo "probe version: $IGDEXT_XELL_PROBE  telemetry: ${IGDEXT_XELL_TELEMETRY:-0}"
+  echo "probe version: $IGDEXT_XELL_PROBE  telemetry: ${IGDEXT_XELL_TELEMETRY:-1}  gpustart: ${IGDEXT_XELL_GPUSTART:-1}  flipq: ${IGDEXT_XELL_FLIPQ:-0}  guard: ${IGDEXT_XELL_GUARD:-0}"
   echo "kernel: $(uname -r)"; echo "mesa: $(grep -a -m1 -o 'Mesa [0-9.a-z-]*' "$out/driver-status" 2>/dev/null)"
   env | grep -a -E '^(INTC_|XELL_|IGDEXT_|PROTON_|VKD3D_|VK_DRIVER|STEAM_COMPAT_TOOL|STEAM_COMPAT_DATA)' | sort
 } > "$out/environment.txt"
 
 echo >&2; echo "xell-probe: what XeLL did" >&2
-pat='Loading Intel Extensions|Intel Extensions (initialized|initialization failed|library loaded)|Cannot load Intel|Driver version|Latency reduction|Using (built-in|external|driver DLL|game DLL) context|unsupported (device|driver)|Driver timestamps|Driver timings|GetRenderStartTimestamp|context creat'
+pat='Loading Intel Extensions|Intel Extensions (initialized|initialization failed|library loaded)|Cannot load Intel|Driver version|Latency reduction|Using (built-in|external|driver DLL|game DLL) context|unsupported (device|driver)|Driver timestamps|Driver timings|GetRenderStartTimestamp|context creat|Display telemetry|telemetry corrupted|XeFG (enabled|disabled)|Display config|match not found|not available'
 found=0
 for f in "$out/libxell.log" "$out/proton-xell.log"; do
   [ -s "$f" ] || continue
@@ -71,7 +84,25 @@ for f in "$out/libxell.log" "$out/proton-xell.log"; do
 done
 [ $found = 1 ] || echo "  (no libxell.log and no XeLL lines in $protonlog: did the game use XeSS frame generation?)" >&2
 echo >&2; echo "xell-probe: what the shim saw" >&2
-grep -a -E 'XELLPROBE|GPU: PCI|device info' "$out/igdext_trace.log" 2>/dev/null | head -60 >&2
+grep -a -E 'XELLPROBE|GPU: PCI|device info' "$out/igdext_trace.log" 2>/dev/null |
+  grep -a -v -E 'gpu start frame [0-9]+: measured .* after submit|execute delay frame|flip queue: [0-9]+ frame' | head -60 >&2
+echo >&2; echo "xell-probe: what XeLL's driver-mode sleep sees (its decision messages never reach any log: derived from the measurements)" >&2
+qw=$(grep -a -o -E '[-+][0-9.]+ ms after submit' "$out/igdext_trace.log" 2>/dev/null | awk '{print $1+0}' | sort -n | awk '{a[NR]=$1} END{if(NR) printf "%.1f", a[int((NR+1)/2)]}')
+ss=$(grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -1 | grep -a -o -E 'sim -> render submit [0-9.]+' | awk '{print $NF}')
+if [ -n "$qw" ] && [ -n "$ss" ]; then
+  echo "  render-queue wait (GPU start - hand-in, median): $qw ms; CPU prepare (sim -> render submit, XeLL): $ss ms" >&2
+  awk -v q="$qw" -v s="$ss" 'BEGIN{ if (q+0 < s+0) printf "  -> CPU bound: the GPU is free %.1f ms before the CPU has the next frame ready; XeLL sleeps nothing, same as the Windows driver path would\n", s-q; else printf "  -> GPU bound by %.1f ms: XeLL should sleep that much at simulation start; if Sleep blocked stays ~0.5 ms, pacing is not acting on the timings\n", q-s }' >&2
+else
+  echo "  (needs the gpu start lines in igdext_trace.log and a 'xell latency' line in igdext_xell.log)" >&2
+fi
+med() { sort -n | awk '{a[NR]=$1} END{if(NR) printf "%.2f", a[int((NR+1)/2)]}'; }
+ed=$(grep -a -o -E 'execute delay frame [0-9]+: [0-9.]+ ms' "$out/igdext_trace.log" 2>/dev/null | awk '{print $(NF-1)}' | med)
+fqn=$(grep -a -o -E 'flip queue: [0-9]+ frame' "$out/igdext_trace.log" 2>/dev/null | awk '{print $3}' | med)
+fqm=$(grep -a -o -E 'last flip in queue [0-9.]+ ms' "$out/igdext_trace.log" 2>/dev/null | awk '{print $(NF-1)}' | med)
+[ -n "$ed" ] && echo "  RenderSubmitStart -> first ExecuteCommandLists (XeLL's \"execute delay\", median): $ed ms" >&2
+[ -n "$fqn" ] && echo "  present queue told to XeLL (median): $fqn frame(s) waiting, flip in queue $fqm ms (XELL_PROBE_FLIPQ=$IGDEXT_XELL_FLIPQ run)" >&2
+echo >&2; echo "xell-probe: latency XeLL measured (simulation start -> present end; compare with a run without the probe)" >&2
+grep -a 'xell latency' "$out/igdext_xell.log" 2>/dev/null | tail -8 >&2
 [ -s "$out/igdext_trace.log" ] || echo "  (no igdext_trace.log: the shim is not installed in this prefix; run install.sh / enable.sh)" >&2
 
 tar -C "$HOME" -czf "$out.tar.gz" "$(basename "$out")" && rm -rf "$out"
