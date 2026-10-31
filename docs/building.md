@@ -87,7 +87,8 @@ Two of the options are easy to get wrong:
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
 `0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32) switches Large GRF Mode around CM kernels on
-Xe-HPG and Xe2, including off before Mesa's own BLORP compute work (see how-it-works.md), and drops CM dispatches with
+Xe-HPG and Xe2, including off before Mesa's own BLORP compute work, trace rays, internal shaders and generated commands
+(see how-it-works.md), and drops CM dispatches with
 a zero group count, which the Vulkan specification makes a no-op, on every generation.
 
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the

@@ -1,4 +1,4 @@
-From b11a3a9f81f7dfbf6de39445d17f8b379c65f24b Mon Sep 17 00:00:00 2001
+From 3348e4140c425f723c1c393fd1c07b941990866d Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Sun, 4 Oct 2026 17:08:57 -0300
 Subject: [PATCH 3/3] anv: enable Large GRF Mode around CM kernels on Xe2
@@ -24,8 +24,9 @@ genX(cmd_buffer_set_cm_large_grf)() switches the mode with an end-of-pipe
 sync and HDC/untyped flush, only when it changes; the last programmed state
 is tracked in anv_cmd_compute_state. It is turned on before CM walkers with
 more than 128 GRF and off before any other compute walker (BLORP compute
-operations included), at the end of every command buffer and before
-executing secondaries, so each command buffer starts and ends with it off.
+operations, trace rays, internal shaders and generated commands
+included), at the end of every command buffer and before executing
+secondaries, so each command buffer starts and ends with it off.
 Ordinary shaders are correct in Large GRF mode (they only lose occupancy),
 so on is the safe direction.
 
@@ -37,6 +38,24 @@ kernels, depending on which ones were skipped). Switching the mode off at
 the start of blorp_exec_on_compute() fixed it in Satisfactory: 0 of 4 runs
 hung with the change, 4 of 4 without it. Whether the BLORP walker or its
 STATE_COMPUTE_MODE is the trigger was not narrowed down.
+
+The other compute walkers that do not go through emit_compute_walker()
+bypassed it the same way and now switch the mode off first as well:
+trace rays (vkCmdTraceRaysKHR and its indirect forms), the driver's
+internal simple shaders (genX_simple_shader.c, e.g. the query and
+indirect-generation kernels) and, from Mesa 26.3 on, the compute and
+ray tracing paths of vkCmdExecuteGeneratedCommandsEXT. XeSS runs right
+before or after ray tracing in games like Cyberpunk 2077.
+
+Tested on an Arc B580 (Xe2) with the 26.3.0-rc2 build of this series:
+Cyberpunk 2077 benchmark, 2560x1440, XeSS SR Performance on XMX (XeSS
+2.0.2.68 libraries), ray tracing on (no path tracing): 44.7-44.8 fps
+average without the change (three runs), 44.8 fps with it. Both had an
+engine reset (1 in 4 runs without, 1 in 3 with). The error dump captured
+(with the change) hung in the 3D pipeline, at a RESOURCE_BARRIER after a
+draw, with Large GRF Mode off in the context, so it is not this path. No
+hang was traced to Large GRF Mode staying on before these walkers; the
+change closes the same gap the BLORP one did. 26.1.2: build-tested only.
 
 Toggling once per run of consecutive CM dispatches instead of around each
 one matters: Cyberpunk 2077 benchmark (2560x1440, XeSS SR, measured on
@@ -53,12 +72,13 @@ Only touches code outside the XMX-DEBUG blocks, so it applies on top of
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 ---
- src/intel/vulkan/anv_genX.h         |  3 ++
- src/intel/vulkan/anv_private.h      |  4 +++
- src/intel/vulkan/genX_blorp_exec.c  |  7 ++++
- src/intel/vulkan/genX_cmd_buffer.c  | 12 +++++++
- src/intel/vulkan/genX_cmd_compute.c | 55 +++++++++++++++++++++++++++++
- 5 files changed, 81 insertions(+)
+ src/intel/vulkan/anv_genX.h           |  3 ++
+ src/intel/vulkan/anv_private.h        |  4 ++
+ src/intel/vulkan/genX_blorp_exec.c    |  7 ++++
+ src/intel/vulkan/genX_cmd_buffer.c    | 12 ++++++
+ src/intel/vulkan/genX_cmd_compute.c   | 60 +++++++++++++++++++++++++++
+ src/intel/vulkan/genX_simple_shader.c |  4 ++
+ 6 files changed, 90 insertions(+)
 
 diff --git a/src/intel/vulkan/anv_genX.h b/src/intel/vulkan/anv_genX.h
 index 920d479..1cb0f53 100644
@@ -138,7 +158,7 @@ index 27ae6cb..c321ec1 100644
     if (!container->state.gfx.object_preemption)
        genX(cmd_buffer_set_preemption)(container, true);
 diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
-index 92e07ac..d496416 100644
+index 92e07ac..163dfef 100644
 --- a/src/intel/vulkan/genX_cmd_compute.c
 +++ b/src/intel/vulkan/genX_cmd_compute.c
 @@ -364,6 +364,38 @@ get_interface_descriptor_data_tables(struct anv_cmd_buffer *cmd_buffer)
@@ -217,6 +237,33 @@ index 92e07ac..d496416 100644
     uint32_t num_workgroup_data[3];
     if (!anv_address_is_null(indirect_addr)) {
        uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
+@@ -1249,6 +1304,11 @@ cmd_buffer_trace_rays(struct anv_cmd_buffer *cmd_buffer,
+ 
+    trace_intel_begin_rays(&cmd_buffer->trace);
+ 
++#if GFX_VERx10 == 125 || GFX_VER == 20
++   /* Large GRF Mode off: CM kernels may have left it on (see genX(cmd_buffer_set_cm_large_grf)). */
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, false);
++#endif
++
+    cmd_buffer->state.compute.trace_rays_active = true;
+ 
+    genX(cmd_buffer_config_l3)(cmd_buffer, device->l3_config);
+diff --git a/src/intel/vulkan/genX_simple_shader.c b/src/intel/vulkan/genX_simple_shader.c
+index 1e016ea..9f9ddf1 100644
+--- a/src/intel/vulkan/genX_simple_shader.c
++++ b/src/intel/vulkan/genX_simple_shader.c
+@@ -400,6 +400,10 @@ genX(emit_simpler_shader_init_compute)(struct anv_simple_shader *state)
+    /* Currently our simple shaders are simple enough that they never spill. */
+    assert(prog_data->base.total_scratch == 0);
+    if (state->cmd_buffer != NULL) {
++#if GFX_VERx10 == 125 || GFX_VER == 20
++      /* Large GRF Mode off: CM kernels may have left it on (see genX(cmd_buffer_set_cm_large_grf)). */
++      genX(cmd_buffer_set_cm_large_grf)(state->cmd_buffer, false);
++#endif
+       genX(cmd_buffer_ensure_cfe_state)(state->cmd_buffer, 0);
+    } else {
+       anv_batch_emit(state->batch, GENX(CFE_STATE), cfe) {
 -- 
-2.53.0
+2.56.0
 
