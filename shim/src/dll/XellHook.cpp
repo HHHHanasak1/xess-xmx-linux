@@ -107,8 +107,21 @@ static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
     return rr;
 }
 
+// this module; flags as for GetModuleHandleExW (0 takes a reference, GET_MODULE_HANDLE_EX_FLAG_PIN keeps it loaded until
+// the process exits, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT neither)
+static HMODULE SelfModule(DWORD flags)
+{
+    HMODULE self = nullptr;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | flags, (LPCWSTR) &SelfModule, &self) ? self : nullptr;
+}
+
 static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
 {
+    // a patched export jumps into this module from then on: it must never be unmapped (games load, free and load the
+    // shim again at startup)
+    static volatile LONG pinned = 0;
+    if (!pinned && !SelfModule(GET_MODULE_HANDLE_EX_FLAG_PIN)) { XLog("%s: could not pin igdext64 (%lu), not hooked", name, GetLastError()); return false; }
+    pinned = 1;
     uint8_t* p = (uint8_t*) thunk;
     if (p[0] != 0xE9) { XLog("%s: export is not a jmp rel32 thunk (byte %02x), not hooked", name, p[0]); return false; }
     int32_t rel = *(int32_t*) (p + 1);
@@ -147,6 +160,24 @@ static DWORD WINAPI XellThread(LPVOID)
     return 0;
 }
 
+// A thread that waits for a library holds its own reference to this module, so its code stays mapped while the game
+// frees and loads the shim again at startup, and drops it only when it is done.
+static DWORD WINAPI ModuleRefThread(LPVOID body)
+{
+    ((LPTHREAD_START_ROUTINE) body)(nullptr);
+    FreeLibraryAndExitThread(SelfModule(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT), 0);
+}
+
+static bool StartModuleRefThread(LPTHREAD_START_ROUTINE body)
+{
+    HMODULE self = SelfModule(0);
+    if (!self) return false;
+    HANDLE h = CreateThread(nullptr, 0, ModuleRefThread, (LPVOID) body, 0, nullptr);
+    if (!h) { FreeLibrary(self); return false; }
+    CloseHandle(h);
+    return true;
+}
+
 void StartXellHook()
 {
     char b[32];
@@ -160,8 +191,7 @@ void StartXellHook()
     if (!g_fixCap && !g_log) return;
     char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
     XLog("XellHook start in %s", exe);
-    HANDLE h = CreateThread(nullptr, 0, XellThread, nullptr, 0, nullptr);
-    if (h) CloseHandle(h);
+    if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
 
 // XeFG (libxess_fg.dll) diagnostics, IGDEXT_XEFG_LOG=1 (XESS_LOG=1 sets it): XeFG's own log through its public
@@ -450,6 +480,5 @@ void StartXefgHook()
     if (!g_fgLog && !raise) return;
     g_fgWanted = true;
     if (XefgInstallHooks()) return;   // already loaded (it loaded the shim): hook now, not later
-    HANDLE h = CreateThread(nullptr, 0, XefgThread, nullptr, 0, nullptr);
-    if (h) CloseHandle(h);
+    if (!StartModuleRefThread(XefgThread)) FLog("XeFG hook thread not started (%lu)", GetLastError());
 }
