@@ -96,6 +96,7 @@ Game environment, set by `install.sh` (`~/.config/environment.d/50-xess-xmx.conf
 | `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` | vkd3d-proton keeps its classic descriptor heap, which the kernel binding code needs, and waits for presents with present wait 1: with present wait 2, Cyberpunk 2077 with frame generation (several presents per frame) crashed within minutes in `vkWaitForPresent2KHR` |
 | `force_vk_vendor=0` | overrides Mesa's `force_vk_vendor=-1` game profiles (Symptoms above); `force_vk_vendor=-1` in one game's launch options restores it |
 | `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | the driver's kernel folder and compiler helper (Driver table below) |
+| `INTC_ALT_DRIVER_EXTENSIONS_PATH` | the prefix folder with the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`). Proton Experimental shows XeSS a driver store and needs no help; Proton 11.0 has none, and without the variable XeSS never loads the shim there (no XMX, frame generation only 2x). GE-Proton sets its own value for every game |
 
 Launch-option shorthands (`tools/proton-hook.py`, run by Proton through the `user_settings.py` that `install.sh` puts
 into every Proton; [launch-options.md](launch-options.md)):

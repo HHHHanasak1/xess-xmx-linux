@@ -60,6 +60,7 @@ export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2
 export ANV_CM_KERNEL_DIR=$ROOT/kernels
 export ANV_CM_HELPER=$ROOT/tools/cm-compile.sh
 export force_vk_vendor=0
+export INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
 # <<< XESS-XMX <<<
 EOF
 

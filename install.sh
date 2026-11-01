@@ -18,6 +18,8 @@ LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk): 
 # Protons installed by a distribution package (CachyOS: proton-cachyos) - usually only root can write there
 SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
 ENVD="$HOME/.config/environment.d"
+# the prefix folder that holds the shim (shim_pass below), as XeSS sees it
+ALT_EXT='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
 UNITD="$HOME/.config/systemd/user"
 SHIM="$PKG/igdext64.dll"
 for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/tools/cm-compile.sh"; do
@@ -68,10 +70,13 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "# Mesa hides the Intel vendor id from some games (force_vk_vendor=-1 profiles), which keeps XeSS on DP4a there;"
     echo "# an option set in the environment overrides the profile. One game back to Mesa's default: force_vk_vendor=-1 %command%"
     echo "force_vk_vendor=0"
+    echo "# Protons without Intel's driver store (Proton 11.0) never load the shim from the prefix; XeSS looks here first"
+    echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$ALT_EXT'"
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user import-environment 2>/dev/null
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
-    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" 2>/dev/null
+    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
+    "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$ALT_EXT" 2>/dev/null
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
 fi

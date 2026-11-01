@@ -23,7 +23,9 @@ ordered by y then x - 1549 ids. When they run out the map starts over; compiled 
 id assignment is lost. `tools/check_dyn_ids.py` verifies that the shim table, its generator and the driver agree.
 
 XeSS could also be pointed at the shim's folder through `INTC_ALT_DRIVER_EXTENSIONS_PATH`, without a copy in each
-prefix, but GE-Proton sets that variable to `C:\Windows\System32` for every game, so the copies stay.
+prefix, but GE-Proton sets that variable to `C:\Windows\System32` for every game, so the copies stay. The variable
+does point at the prefix's copy for Protons that show XeSS no driver store at all (Proton 11.0): there XeSS would
+never find the folder on its own.
 
 ## 2. The driver
 

@@ -21,4 +21,5 @@ steam_prefix_of() {
   done < <(steam_libraries)
   return 1
 }
-[ "${BASH_SOURCE[0]}" = "$0" ] && steam_libraries "$@"
+# run directly: list the libraries; sourced (enable.sh runs with set -e): return 0, not the test's 1
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then steam_libraries "$@"; fi
