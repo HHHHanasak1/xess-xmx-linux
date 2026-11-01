@@ -100,14 +100,14 @@ $f";; esac
   chmod u+w "$f" 2>/dev/null
   cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
 }
-install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest in launch options)
+install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR_FG=xess)
   local p=$1 u="$1/user_settings.py"
   [ -f "$p/proton" ] && [ -w "$p" ] || return
   # a user_settings.py of the user's own (Proton's debug settings) keeps working: it becomes user_settings.user.py
   if [ -f "$u" ] && ! grep -q 'xess-xmx proton hook' "$u"; then mv -f "$u" "$p/user_settings.user.py"; fi
   cat > "$u.new" <<EOF
 # xess-xmx proton hook - written by $PKG/install.sh, removed by uninstall.sh. Runs tools/proton-hook.py at every game
-# start (XESS=latest in a game's launch options). Your own Proton settings go into user_settings.user.py next to it.
+# start (XESS=latest, FSR_FG=xess in a game's launch options). Your own Proton settings go into user_settings.user.py.
 import os as _os
 user_settings = {}
 try:
@@ -134,18 +134,15 @@ install_controllib() { # <prefix system32>: ControlLib.dll, the stand-in for Int
 }
 shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder
   local f d lib s
-  # Protons: Valve's in every library, the user's own (compatibilitytools.d), a distribution's (SYSTOOLS)
+  # Protons: Valve's in every library, the user's own (compatibilitytools.d), a distribution's (SYSTOOLS). The hook goes
+  # into every Proton, also one without its own igdext (Proton 11.0): the launch options work the same there
   while IFS= read -r lib; do
-    for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
-      install_shim "$f"
-      [ -f "$f" ] && install_hook "${f%/files/lib/wine/igdext/x86_64-windows/igdext64.dll}"
-    done
+    for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
+    for d in "$lib"/steamapps/common/Proton*/; do install_hook "${d%/}"; done
   done <<< "$LIBS"
   for s in "$STEAM/compatibilitytools.d" $SYSTOOLS; do
-    for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
-      install_shim "$f"
-      [ -f "$f" ] && install_hook "${f%/files/lib/wine/igdext/x86_64-windows/igdext64.dll}"
-    done
+    for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
+    for d in "$s"/*/; do install_hook "${d%/}"; done
   done
   # prefixes in every library
   while IFS= read -r lib; do
