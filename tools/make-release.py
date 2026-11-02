@@ -14,8 +14,10 @@ name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration_dx12.dll", "ffxfg/amd_fidelityfx_upscaler_dx12.dll", "ffxfg/dxgi.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-tools = ["cm-compile.sh", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh", "steam-libraries.sh", "session-check.sh", "xell-probe.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
-         "gen_all_dummies.py", "gen_dyn_dummies.py", "check_dyn_ids.py"]
+# what a user's install needs; developer tools (gen_dyn_dummies.py, check_dyn_ids.py, build-deps.sh, split_patch.py)
+# stay in the repository
+tools = ["cm-compile.sh", "cmk_pack.py", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh",
+         "steam-libraries.sh", "session-check.sh", "rebuild-driver.sh", "switch-driver.sh", "xell-probe.sh"]
 files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):
     dn.sort()
@@ -43,15 +45,11 @@ if missing:
 os.makedirs(outdir, exist_ok=True)
 out = os.path.join(outdir, name + ".zip")
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    # an empty kernels/ folder (static kernel set, developer option)
-    zi = zipfile.ZipInfo(name + "/kernels/")
-    zi.create_system = 3              # Unix: unzip applies the permission bits only then
-    zi.external_attr = (0o40755 << 16) | 0x10
-    z.writestr(zi, b"")
+    # (install.sh creates kernels/, the folder ANV_CM_KERNEL_DIR names, itself)
     for f in files:
         zi = zipfile.ZipInfo("%s/%s" % (name, f))
         zi.compress_type = zipfile.ZIP_DEFLATED
-        zi.create_system = 3
+        zi.create_system = 3              # Unix: unzip applies the permission bits only then
         zi.external_attr = (0o100755 if f.endswith((".sh", ".py")) else 0o100644) << 16
         with open(os.path.join(root, f), "rb") as fh:
             z.writestr(zi, fh.read())
