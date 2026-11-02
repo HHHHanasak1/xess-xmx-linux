@@ -23,14 +23,22 @@ public:
         }
         // a hitch lifts both numbers at once and looks like a queue: it says nothing about the GPU. Many in a row are a
         // new scene.
+        if (m_typicalMs > 0 && frameMs > m_typicalMs * kHitch)
+            m_calm = 0;
+        else
+            ++m_calm;
+        if (m_capMs > 0 && frameMs > m_capMs * kHitchOverCap)
+            m_calm = 0;
         if (m_typicalMs > 0 && frameMs > m_typicalMs * kHitch && ++m_hitches < kHitchWindows)
             return m_capMs;
         m_hitches = 0;
         m_typicalMs = m_typicalMs > 0 ? m_typicalMs + (frameMs - m_typicalMs) * kTypicalRise : frameMs;
         switch (m_state) {
         case State::Idle:
-            if (--m_left <= 0)
+            if (--m_left <= 0) {
+                m_ceilMs = frameMs * kCeiling;   // the frame rate the game has without a cap, whatever happens later
                 Probe(frameMs, submitMs);
+            }
             break;
         case State::Probe:
             if (submitMs < m_before - QueueMs(frameMs)) {
@@ -62,10 +70,11 @@ public:
         m_capMs = 0;
         m_floorMs = 0;
         m_before = 0;
-        m_queueCapMs = 0;
+        m_limitMs = 0;
         m_ceilMs = 0;
         m_typicalMs = 0;
         m_hitches = 0;
+        m_calm = 0;
         m_hold = 0;
         m_holdNext = kHoldWindows;
         m_clean = 0;
@@ -87,7 +96,8 @@ private:
     {
         m_before = submitMs;
         m_capMs = Clamp(frameMs * kProbeMargin);
-        m_ceilMs = frameMs * kCeiling;        // the frame rate the game has without a cap, whatever happens later
+        if (m_ceilMs > 0 && m_capMs > m_ceilMs)
+            m_capMs = m_ceilMs;
         m_state = State::Probe;
         m_left = kProbeWindows;
     }
@@ -107,10 +117,12 @@ private:
                 Probe(frameMs, submitMs);
                 return;
             }
-            // a queue where the last one formed: the limit is known, so try less often
-            const bool again = m_capMs < m_queueCapMs * kNearAbove && m_capMs > m_queueCapMs * kNearBelow;
-            m_holdNext = again ? (m_holdNext * 2 < kHoldMax ? m_holdNext * 2 : kHoldMax) : kHoldWindows;
-            m_queueCapMs = m_capMs;
+            // a queue with the cap in force shows the GPU's limit (in a hitch it shows nothing); at the same limit again,
+            // try less often
+            if (frameMs <= m_capMs * kNotBinding && m_calm >= kCalmWindows) {
+                m_holdNext = AtLimit() ? (m_holdNext * 2 < kHoldMax ? m_holdNext * 2 : kHoldMax) : kHoldWindows;
+                m_limitMs = m_capMs;
+            }
             m_capMs = Clamp(m_capMs * (frameMs > m_capMs * kNotBinding ? kBackOffFar : kBackOff));
             if (m_ceilMs > 0 && m_capMs > m_ceilMs)
                 m_capMs = m_ceilMs;
@@ -126,13 +138,14 @@ private:
             if (frameMs > m_capMs * kNotBinding) {   // the cap is not what limits the game (a hitch, the CPU): stay
                 m_clean = 0;
             } else {
-                // slowly near where a queue formed last; fast above it, and well below it, where the scene got lighter
-                const bool atQueue = m_capMs < m_queueCapMs * kNearAbove && m_capMs > m_queueCapMs * kNearBelow;
                 ++m_clean;
-                m_capMs = Clamp(m_capMs * (m_clean > kCleanFast && !atQueue ? kStepFast : kStepSlow));
+                // slowly near the limit; fast above it, and well below it, where the scene got lighter
+                m_capMs = Clamp(m_capMs * (AtLimit() || m_clean <= kCleanFast ? kStepSlow : kStepFast));
             }
         }
     }
+
+    bool AtLimit() const { return m_capMs < m_limitMs * kNearAbove && m_capMs > m_limitMs * kNearBelow; }
 
     static double Clamp(double ms) { return ms < kMinMs ? kMinMs : ms > kMaxMs ? kMaxMs : ms; }
 
@@ -142,9 +155,10 @@ private:
     static constexpr double kBackOffFar = 1.06;    // the frame time is well above the cap
     static constexpr double kCeiling = 1.25;
     static constexpr double kHitch = 1.5;
+    static constexpr double kHitchOverCap = 1.15;
     static constexpr double kTypicalRise = 0.1;
     static constexpr double kStepSlow = 0.996;
-    static constexpr double kStepFast = 0.98;      // after kCleanFast clean windows: the scene got lighter
+    static constexpr double kStepFast = 0.97;      // after kCleanFast clean windows, away from a cap known to be good
     static constexpr double kNotBinding = 1.03;
     static constexpr double kNearAbove = 1.05;
     static constexpr double kNearBelow = 0.93;
@@ -154,9 +168,10 @@ private:
     static constexpr double kMaxMs = 100;
     static constexpr int kProbeWindows = 8;
     static constexpr int kHitchWindows = 6;
+    static constexpr int kCalmWindows = 20;
     static constexpr int kHoldWindows = 12;
     static constexpr int kHoldMax = 96;
-    static constexpr int kCleanFast = 4;
+    static constexpr int kCleanFast = 2;
     static constexpr int kDrainWindows = 4;
     static constexpr int kMaxBackOffs = 8;
     static constexpr int kIdleFirst = 8;
@@ -168,10 +183,11 @@ private:
     double m_capMs = 0;
     double m_floorMs = 0;
     double m_before = 0;
-    double m_queueCapMs = 0;
+    double m_limitMs = 0;
     double m_ceilMs = 0;
     double m_typicalMs = 0;
     int m_hitches = 0;
+    int m_calm = 0;
     int m_hold = 0;
     int m_holdNext = kHoldWindows;
     int m_clean = 0;
