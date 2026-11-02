@@ -11,7 +11,11 @@ PFX="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1
 CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
 GAME="${XMX_GAME:-}"
 if [ -n "$GAME" ] && pgrep -i "^${GAME:0:15}" >/dev/null; then echo "The game is running - close it first."; exit 1; fi
-[ -f "$PFX/igdext64.dll.stock" ] && cp "$PFX/igdext64.dll.stock" "$PFX/igdext64.dll" && echo "stock igdext64.dll restored"
+if [ -f "$PFX/igdext64.dll.stock" ]; then
+  cp "$PFX/igdext64.dll.stock" "$PFX/igdext64.dll" && echo "stock igdext64.dll restored"
+elif [ -f "$PFX/igdext64.dll" ] && grep -aq 'IGDEXT_' "$PFX/igdext64.dll"; then
+  rm -f "$PFX/igdext64.dll" && echo "igdext64.dll removed"   # a prefix without a stock one (every build of the shim names its IGDEXT_* switches)
+fi
 C="$PFXROOT/drive_c/windows/system32/ControlLib.dll"
 [ -f "$C" ] && grep -aq 'XESS_FG' "$C" && rm -f "$C" && echo "ControlLib.dll removed"
 [ -f "$CONF" ] && sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF" && echo "launcher config block removed from $CONF"

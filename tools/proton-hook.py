@@ -141,8 +141,14 @@ class Swaps:
         """f (existing or not) becomes a link to target; an existing f is kept as f.xmx-orig"""
         if self.lock is None:
             os.makedirs(LOCKS, exist_ok=True)
-            self.lock = open(os.path.join(LOCKS, "%d-%x" % (os.getpid(), id(self))), "w")
-            fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX)
+            path = os.path.join(LOCKS, "%d-%x" % (os.getpid(), id(self)))
+            while True:
+                # clean_left_over of a run starting right now may take a still empty file for a dead one and remove it
+                self.lock = open(path, "a")
+                fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX)
+                if os.path.exists(path) and os.path.samestat(os.fstat(self.lock.fileno()), os.stat(path)):
+                    break
+                self.lock.close()
         self.lock.write(f + "\n")
         self.lock.flush()
         # the link first (a folder without links fails here, with nothing changed); the original stays in place as a
@@ -266,7 +272,11 @@ def fsr(game, swaps, fg, sr, inject=False):
         done = True
         xess_libs(top, swaps, (["libxess_fg.dll", "libxell.dll"] if fg else []) + (["libxess.dll"] if sr == "xess" else []))
         if inject and fg and sr == "xess":
-            inject_fg(top, swaps, ours_fg)
+            if names & {FG_DLL, SINGLE_DLL}:
+                say("FSR_FG=inject: %s has FSR frame generation of its own, which FSR=xess runs on XeSS-FG; nothing to inject"
+                    % rel)
+            else:
+                inject_fg(top, swaps, ours_fg)
     return done
 
 

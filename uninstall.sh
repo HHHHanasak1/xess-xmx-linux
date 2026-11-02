@@ -19,7 +19,7 @@ n=0
 restore_shim() { # <igdext64.dll path>
   local f=$1
   [ -f "$f" ] && [ -w "$f" ] || return
-  if [ -f "$f.stock" ]; then mv -f "$f.stock" "$f" && n=$((n + 1)); elif cmp -s "$f" "$PKG/igdext64.dll"; then rm -f "$f" && n=$((n + 1)); fi
+  if [ -f "$f.stock" ]; then mv -f "$f.stock" "$f" && n=$((n + 1)); elif grep -aq 'IGDEXT_' "$f"; then rm -f "$f" && n=$((n + 1)); fi
 }
 remove_hook() { # <Proton folder>: the XESS hook; the user's own Proton settings back under their name
   local u="$1/user_settings.py"

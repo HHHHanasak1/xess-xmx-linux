@@ -90,7 +90,7 @@ and choose FSR upscaling in the game. Its frame generation menu plays no part an
 number. While the game runs, the hook also puts `dxgi.dll` and `ffx_xefg_bridge.dll` (the frame generation DLL under
 a name the FidelityFX loader ignores) next to the upscaler. That has to be the folder of the game's exe: the hook says
 so if it is not, and the game then runs without frame generation. A `dxgi.dll` the game folder already has (a mod, for
-example) stays, also without frame generation. FSR 2, FSR 3.0 and FSR compiled into the game have no DLL to swap, so
+example) stays, also without frame generation, and a game with FSR frame generation of its own needs only `FSR=xess`. FSR 2, FSR 3.0 and FSR compiled into the game have no DLL to swap, so
 they do not qualify. This needs the hook; `tools/fsr-fg.sh` does not do it.
 
 The game hands over less than for real frame generation:
@@ -162,7 +162,8 @@ Three things the game would otherwise trip over are handled in the DLL:
 
 ## Log and switches
 
-`ffx_xess.log` next to the upscaler DLL: the XeSS version, the context, the quality setting and flags XeSS was set up
+The logs hold the last run and stay in the game's folder (`FFX_XESS_LOG=0`, `FFX_XEFG_LOG=0` turn them off); Steam's
+file check ignores them. `ffx_xess.log` next to the upscaler DLL: the XeSS version, the context, the quality setting and flags XeSS was set up
 with, the first dispatches and every 600th. `ffx_xefg.log` next to the frame generation DLL: the upscalers the game's
 FidelityFX loader offers on this GPU (the first is the default), the swap chain, the maximum XeSS-FG reports and the
 number set, the first frames and every 600th present (`presented 4` = 4x), XeSS-FG's warnings. With `FSR_FG=inject`,

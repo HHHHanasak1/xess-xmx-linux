@@ -43,7 +43,7 @@ fail() { # <reason>
   # unset-environment cannot remove variables that come from environment.d, so they are overwritten instead: the
   # system's own driver list (stock Intel driver included) and no disabled vkd3d-proton extension, i.e. stock behaviour
   local stock="" d j
-  for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d; do
+  for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
     for j in "$d"/*.json; do [ -f "$j" ] && stock="${stock:+$stock:}$j"; done
   done
   systemctl --user set-environment "VK_DRIVER_FILES=$stock" "VKD3D_DISABLE_EXTENSIONS=" "ANV_CM_KERNEL_DIR=" "ANV_CM_HELPER="

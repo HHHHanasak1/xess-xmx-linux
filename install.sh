@@ -29,18 +29,18 @@ mkdir -p "$PKG/run"
 grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" 2>/dev/null || \
   printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s/lib/libvulkan_intel.so" }, "file_format_version": "1.0.1" }\n' "$PKG" > "$PKG/run/intel_icd.json"
 
-# 1. compiler bundle
-if [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+# 1. compiler bundle (the watcher, which runs this script in the background, downloads nothing)
+if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
   echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~230 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
 fi
 # Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=latest, tools/proton-hook.py)
-if [ ! -f "$PKG/xess/libxess.dll" ]; then
+if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -f "$PKG/xess/libxess.dll" ]; then
   echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=latest)"
   bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=latest will use the games' own libraries"
 fi
 # AMD's FidelityFX loader and providers: FSR=xess / FSR_FG=xess in games with FSR 3.1.0-3.1.3 (one amd_fidelityfx_dx12.dll)
-if [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; then
+if [ -z "${XMX_WAIT_PREFIX:-}" ] && { [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; }; then
   echo "== fetching AMD's FidelityFX loader, upscaler and frame generation (~87 MB, for FSR_FG / FSR with FSR 3.1.0-3.1.3)"
   bash "$PKG/tools/get-ffx.sh" "$PKG" || echo "FidelityFX download failed - FSR=xess / FSR_FG=xess work only with FSR 3.1.4 and newer"
 fi

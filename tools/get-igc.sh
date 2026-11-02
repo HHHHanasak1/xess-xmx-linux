@@ -15,7 +15,17 @@ fetch() { # <repo> <tag> <name regex> <exclude regex> <dest>
   mkdir -p "$dest"
   for u in $(curl -s "https://api.github.com/repos/$repo/releases/tags/$tag" | grep browser_download_url | grep -E "$inc" | grep -v -E "$exc" | cut -d\" -f4); do
     echo "fetching $(basename "$u")"
-    curl -sL -o "$W/pkg.deb" "$u"
+    curl -sfL -o "$W/pkg.deb" "$u" || { echo "get-igc: download failed: $u (nothing was changed)"; exit 1; }
+    # the default versions are pinned; another IGC_TAG / NEO_TAG is the caller's choice and has no sum here
+    want=""
+    case "$(basename "$u")" in
+      intel-igc-core-2_2.10.10*) want=ec3b8e6bb3d6371d3b9963c32ddb1d5315e6b0c3f4ae1d91a7515b5a8907ffe6 ;;
+      intel-igc-opencl-2_2.10.10*) want=0c631f25cd8394a2f7640f9e35b593cc98ca3fbe922419c5cb20b2281477ef4c ;;
+      intel-ocloc_25.18.33578.6*) want=c772db8891539890237d50c357af1480b22cbd859c0b8afb5355f605a818d758 ;;
+    esac
+    if [ -n "$want" ] && [ "$(sha256sum "$W/pkg.deb" | cut -d' ' -f1)" != "$want" ]; then
+      echo "get-igc: checksum mismatch for $(basename "$u") (nothing was changed)"; exit 1
+    fi
     (cd "$W" && ar x pkg.deb && tar -xf data.tar.* -C "$dest" && rm -f pkg.deb data.tar.* control.tar.* debian-binary)
   done
 }
