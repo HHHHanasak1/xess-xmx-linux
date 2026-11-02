@@ -3,13 +3,14 @@
 | Game | XeSS | XeSS SR on XMX | XeSS FG on XMX | How | Notes |
 |---|---|---|---|---|---|
 | Wuthering Waves | 2.0.2.68, XeFG 1.3.1.78 | yes | yes, 2x / 3x / 4x | `install.sh` | the XeLL frame-cap fix applies here |
-| Forza Horizon 6 | 2.0.2.68 | yes | only through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
+| Forza Horizon 6 | 2.0.2.68 | yes | yes, from FSR upscaling: `FSR=xess FSR_FG=inject %command%` ([fsr-frame-generation.md](fsr-frame-generation.md)); or through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
 | Cyberpunk 2077 (2.31) | ships 2.0.1.41, XeFG 1.1.0.19 | yes, with newer XeSS libraries | yes, with newer XeSS libraries | `install.sh` + `XESS=latest %command%` (below); `XESS_FG=4` for 4x | with the shipped libraries: DP4a, no XeSS FG option. The game offers 2x; `XESS_FG=4` gives 4x, `XESS_FG=5`..`8` up to 8x (experimental) |
 | Resident Evil 4 (RE Engine) | none | yes, technically | no | REFramework (below) | worse than the game's FSR2; not recommended |
 | Satisfactory | XeSS + XeFG (Unreal plugin 2.0.10) | yes | not reported | `install.sh` | tested by a user on an Arc A310 (Xe-HPG, Mesa 26.3.0-rc1, #28) |
 
 The others were tested on an Arc B390 (Xe3), all on Mesa 26.1.2; Wuthering Waves and Cyberpunk 2077 also on
-Mesa 26.3.0-rc1, which was the default driver then (it is now 26.3.0-rc2).
+Mesa 26.3.0-rc1, which was the default driver then (it is now 26.3.0-rc2). Forza Horizon 6 with `FSR_FG=inject` was
+tested on 26.3.0-rc2.
 
 Anything else with XeSS 1.3 or later on its D3D12 renderer should work the same way: the kernels it needs are compiled
 on first use. Please report games you tried (working or not) in the issue tracker, with the `IGDEXT_TRACE=1` log.
@@ -44,8 +45,9 @@ Mesa has a second mechanism with the same effect for some games (`force_vk_vendo
 
 ## Frame generation in a game without XeSS-FG (OptiScaler)
 
-Forza Horizon 6 ships XeSS super resolution but no XeSS frame generation. OptiScaler can add XeFG on top of the
-game's own XeSS: put `OptiScaler.dll` as `dxgi.dll`, `libxess_fg.dll`, `libxell.dll`, `fakenvapi.dll` and
+Forza Horizon 6 ships XeSS super resolution but no XeSS frame generation. This package's `FSR_FG=inject`
+([fsr-frame-generation.md](fsr-frame-generation.md)) gives it XeSS frame generation from its FSR upscaling, without
+OptiScaler. OptiScaler can instead add XeFG on top of the game's own XeSS: put `OptiScaler.dll` as `dxgi.dll`, `libxess_fg.dll`, `libxell.dll`, `fakenvapi.dll` and
 `fakenvapi.ini` from the OptiScaler release into the game folder (not its `libxess.dll`: the game's own copy stays),
 use this `OptiScaler.ini`:
 
@@ -73,8 +75,11 @@ Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchai
 
 ## FSR 4 on XMX (upscaler builds from the OptiScaler Discord)
 
-**Experimental.** One build has been tested, on one GPU (Arc B390) and in two games; expect problems with other
-builds, GPUs and games, and please report them.
+**No longer developed.** This project no longer develops FSR 4 on XMX actively. It brought no significant
+performance gain, it adds complexity, and it conflicts with XeSS multi-frame generation: that combination did run, but
+needs image fixes for each game separately, which goes against this project's aim of not adapting to each game the
+way OptiScaler does. What is below stays as it is (a manual setup, nothing automated, one build tested on one GPU in two
+games). FSR 3.1+ games run on XMX through `FSR=xess` instead.
 
 Builds of an FSR 4 upscaler that runs as C-for-Metal kernels through Intel's extension are shared on the OptiScaler
 project's Discord server, several of them and under different file names. Such a build goes through this project's

@@ -1,7 +1,8 @@
 # Building from source
 
-The release archive contains binaries built from this repository: the shim `igdext64.dll`, the patched Mesa ANV
-drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD `lib/libvulkan_intel.so` that loads one of them.
+The release archive contains binaries built from this repository: the shim `igdext64.dll`, `ControlLib.dll`, the FSR
+DLLs in `ffxfg/`, the patched Mesa ANV drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD
+`lib/libvulkan_intel.so` that loads one of them.
 The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI
 (`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; a release
 archive is made with `tools/make-release.py` from the artifacts of the release commit.
@@ -29,6 +30,16 @@ The two placeholder tables are generated, not written by hand (both need `fxc.ex
     python tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
 The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TABLE=ON`.
+
+## The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
+
+The headers they are built against (AMD FSR SDK 2.4.0, Intel XeSS SDK) are not in the repository; `get-headers.sh`
+fetches them into `ffxfg/inc/` and checks each one by SHA-256. Then, on Windows with the same Build Tools:
+
+    bash ffxfg/get-headers.sh
+    ffxfg\build.bat           -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll, amd_fidelityfx_framegeneration_dx12.dll, dxgi.dll
+
+The package keeps them in `ffxfg/` ([fsr-frame-generation.md](fsr-frame-generation.md)).
 
 ## The driver (`libvulkan_intel.so`)
 
@@ -86,7 +97,7 @@ Two of the options are easy to get wrong:
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-`0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32) switches Large GRF Mode around CM kernels on
+`0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32, and in #39) switches Large GRF Mode around CM kernels on
 Xe-HPG and Xe2, including off before Mesa's own BLORP compute work, trace rays, internal shaders and generated commands
 (see how-it-works.md), and drops CM dispatches with
 a zero group count, which the Vulkan specification makes a no-op, on every generation.

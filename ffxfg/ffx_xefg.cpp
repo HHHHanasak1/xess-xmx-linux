@@ -1,0 +1,1671 @@
+// ffx_xefg.cpp - amd_fidelityfx_framegeneration_dx12.dll that implements AMD's FFX frame generation API on top of
+// Intel XeSS frame generation (libxess_fg.dll, proxy swap chain) and XeLL (libxell.dll).
+//
+// The game keeps its FSR 3.1+/4 integration; the FFX loader loads this DLL in place of AMD's frame generation
+// provider. Frame generation swap chain contexts (WRAP / NEW / FOR_HWND) create an XeSS-FG proxy swap chain,
+// wrapped in FgSwapChain for the XeLL present markers; FRAMEGENERATION contexts tag depth, motion vectors,
+// HUD-less color and the camera constants for XeSS-FG. A game that gives a HUD-less color gets XeSS-FG's UI composition
+// from it, as AMD's frame generation separates the UI that way. The game's own interpolation dispatch is a no-op:
+// XeSS-FG interpolates inside the proxy swap chain.
+//
+// The same DLL, as ffx_xefg_bridge.dll, serves a game without FSR frame generation (FSR_FG=inject, xefg_bridge.h).
+//
+// Environment:
+//   FFX_XEFG_MULT=n   frames shown per rendered frame (2 = one interpolated frame; default: XESS_FG, else 2)
+//   FFX_XEFG_LOG=path log file (default ffx_xefg.log next to the DLL); FFX_XEFG_LOG=0 turns it off
+//   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
+//   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
+//   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
+//   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
+// The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
+// the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <intrin.h>
+#include <atomic>
+#include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <mutex>
+
+#pragma warning(disable : 4996)
+#include "inc/ffx/api/include/ffx_api.h"
+#include "inc/ffx/api/include/ffx_api_types.h"
+#include "inc/ffx/api/include/dx12/ffx_api_dx12.h"
+#include "inc/ffx/framegeneration/include/ffx_framegeneration.h"
+#include "inc/ffx/framegeneration/include/dx12/ffx_api_framegeneration_dx12.h"
+#include "xefg_bridge.h"
+#include "inc/xess/xess_fg/xefg_swapchain.h"
+#include "inc/xess/xess_fg/xefg_swapchain_d3d12.h"
+#include "inc/xess/xell/xell.h"
+#include "inc/xess/xell/xell_d3d12.h"
+
+#pragma comment(lib, "dxgi.lib")
+
+// ---------------------------------------------------------------------------------------------------------------
+// Logging
+
+static HMODULE g_self;
+static FILE* g_log;
+static std::mutex g_logLock;
+static LARGE_INTEGER g_qpf, g_qp0;
+
+static void Log(const char* fmt, ...)
+{
+    if (!g_log)
+        return;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double ms = (double)(now.QuadPart - g_qp0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
+    std::lock_guard<std::mutex> lk(g_logLock);
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(g_log, "%10.3f t%-5lu ", ms, GetCurrentThreadId());
+    vfprintf(g_log, fmt, ap);
+    fputc('\n', g_log);
+    va_end(ap);
+    fflush(g_log);
+}
+
+static int EnvInt(const char* name, int def)
+{
+    char buf[32];
+    if (!GetEnvironmentVariableA(name, buf, sizeof(buf)))
+        return def;
+    return atoi(buf);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// XeSS-FG / XeLL entry points, loaded at run time
+
+#define XEFG_FUNCS(X)                                \
+    X(xefgSwapChainD3D12CreateContext, true)         \
+    X(xefgSwapChainD3D12InitFromSwapChain, true)     \
+    X(xefgSwapChainD3D12InitFromSwapChainDesc, true) \
+    X(xefgSwapChainD3D12GetSwapChainPtr, true)       \
+    X(xefgSwapChainD3D12TagFrameResource, true)      \
+    X(xefgSwapChainTagFrameConstants, true)          \
+    X(xefgSwapChainSetEnabled, true)                 \
+    X(xefgSwapChainSetPresentId, true)               \
+    X(xefgSwapChainGetProperties, true)              \
+    X(xefgSwapChainGetLastPresentStatus, true)       \
+    X(xefgSwapChainSetLoggingCallback, true)         \
+    X(xefgSwapChainDestroy, true)                    \
+    X(xefgSwapChainSetLatencyReduction, true)        \
+    X(xefgSwapChainGetVersion, true)                 \
+    X(xefgSwapChainSetNumInterpolatedFrames, false)  \
+    X(xefgSwapChainSetUiCompositionState, false)
+
+#define XELL_FUNCS(X)              \
+    X(xellD3D12CreateContext, true) \
+    X(xellDestroyContext, true)     \
+    X(xellSetSleepMode, true)       \
+    X(xellSleep, true)              \
+    X(xellAddMarkerData, true)
+
+#define DECLARE_FN(name, req) static decltype(&name) p_##name;
+XEFG_FUNCS(DECLARE_FN)
+XELL_FUNCS(DECLARE_FN)
+
+static bool g_libsOk;
+static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
+static int g_mult = 2;
+static int g_xefgLogLevel = 2;
+static bool g_sleep = true;
+static bool g_ownWait = true;
+static bool g_noExclusive = true;
+// debug: leave out one of the game's inputs at a time, to find the one behind an artifact
+static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
+static int g_camera = 1;        // FFX_XEFG_CAMERA=0: identity view and projection matrices, 6: the game's camera ignored
+static float g_jitter = 1.0f;   // FFX_XEFG_JITTER=0: no jitter, -1: jitter negated
+static int g_dumpEvery = 0;     // FFX_XEFG_DUMP=<n>: depth and motion vectors of every n-th frame into files (8 at most)
+static float g_renderTime = -1;  // FFX_XEFG_RENDERTIME=<value>: XeSS-FG's frame render time instead of the game's frame time (ms)
+static float g_renderScale = 1; // FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
+static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
+
+static HMODULE g_xefgModule, g_xellModule;
+
+// An Intel GPU that DXVK reports with another vendor id (dxgi.customVendorId, e.g. 1002 for a game that offers FSR only
+// on AMD): XeSS-FG and XeLL read the vendor from the DXGI adapter description and without 0x8086 they skip Intel's
+// Control Library (no multi-frame generation, 2x at most). The adapter's GetDesc* answer them, and only them, with
+// 0x8086 when the description is Intel's; the game keeps seeing the vendor DXVK reports. FFX_XEFG_VENDOR=0 turns it off.
+typedef HRESULT(STDMETHODCALLTYPE* PFN_GetDesc)(IDXGIAdapter*, void*);
+static PFN_GetDesc g_origGetDesc[4];
+static const int kGetDescSlot[4] = {8, 10, 11, 18};  // GetDesc, GetDesc1, GetDesc2, GetDesc3
+
+static bool CalledByXess(void* ret)
+{
+    HMODULE m = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)ret,
+                       &m);
+    return m && (m == g_xefgModule || m == g_xellModule);
+}
+
+// DXGI_ADAPTER_DESC, DESC1, DESC2 and DESC3 all start with Description[128] followed by VendorId
+template <int I> static HRESULT STDMETHODCALLTYPE HookGetDesc(IDXGIAdapter* a, void* desc)
+{
+    HRESULT hr = g_origGetDesc[I](a, desc);
+    if (SUCCEEDED(hr) && desc && CalledByXess(_ReturnAddress())) {
+        auto* d = (DXGI_ADAPTER_DESC*)desc;
+        if (d->VendorId != 0x8086 && wcsncmp(d->Description, L"Intel", 5) == 0)
+            d->VendorId = 0x8086;
+    }
+    return hr;
+}
+
+static void IntelVendorForXess(ID3D12Device* dev)
+{
+    static bool done;
+    if (done || EnvInt("FFX_XEFG_VENDOR", 1) == 0)
+        return;
+    IDXGIFactory4* f = nullptr;
+    IDXGIAdapter1* a = nullptr;
+    DXGI_ADAPTER_DESC1 d = {};
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))
+        return;
+    if (SUCCEEDED(f->EnumAdapterByLuid(dev->GetAdapterLuid(), IID_PPV_ARGS(&a))) && SUCCEEDED(a->GetDesc1(&d)) &&
+        d.VendorId != 0x8086 && wcsncmp(d.Description, L"Intel", 5) == 0) {
+        done = true;
+        static void* const hooks[4] = {(void*)HookGetDesc<0>, (void*)HookGetDesc<1>, (void*)HookGetDesc<2>,
+                                       (void*)HookGetDesc<3>};
+        IDXGIAdapter4* a4 = nullptr;
+        int slots = SUCCEEDED(a->QueryInterface(IID_PPV_ARGS(&a4))) ? 4 : 2;  // IDXGIAdapter1 has GetDesc and GetDesc1
+        if (a4)
+            a4->Release();
+        void** vt = *(void***)a;
+        for (int i = 0; i < slots; i++) {
+            DWORD old;
+            void** slot = &vt[kGetDescSlot[i]];
+            if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old))
+                continue;
+            g_origGetDesc[i] = (PFN_GetDesc)*slot;
+            *slot = hooks[i];
+            VirtualProtect(slot, sizeof(void*), old, &old);
+        }
+        Log("GPU '%ls' reported with vendor %04x: XeSS-FG and XeLL get 8086", d.Description, d.VendorId);
+    }
+    if (a)
+        a->Release();
+    f->Release();
+}
+
+// The upscalers the game's FidelityFX loader offers on this GPU, through the public version query; the first one is what
+// a game that does not choose (FSR 3.1.0 to 3.1.3 cannot) gets
+static void LogUpscalers(ID3D12Device* dev)
+{
+    static bool done;
+    if (done || !dev)
+        return;
+    done = true;
+    HMODULE m = GetModuleHandleA("amd_fidelityfx_loader_dx12.dll");
+    if (!m || m == g_self)
+        m = GetModuleHandleA("amd_fidelityfx_dx12.dll");
+    auto query = m && m != g_self ? (PfnFfxQuery)GetProcAddress(m, "ffxQuery") : nullptr;
+    if (!query)
+        return;
+    uint64_t n = 8, ids[8] = {};
+    const char* names[8] = {};
+    ffxQueryDescGetVersions q = {};
+    q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
+    q.createDescType = FFX_API_MAKE_EFFECT_SUB_ID(FFX_API_EFFECT_ID_UPSCALE, 0);
+    q.device = dev;
+    q.outputCount = &n;
+    q.versionIds = ids;
+    q.versionNames = names;
+    ffxReturnCode_t r = query(nullptr, &q.header);
+    char list[512] = "";
+    for (uint64_t i = 0; r == FFX_API_RETURN_OK && i < n && i < 8; i++)
+        snprintf(list + strlen(list), sizeof list - strlen(list), "%s%s", i ? ", " : "", names[i] ? names[i] : "?");
+    Log("upscalers on this GPU (%d): %s", (int)r, list);
+}
+
+static HMODULE LoadBeside(const char* dir, const char* name)
+{
+    char path[MAX_PATH];
+    snprintf(path, MAX_PATH, "%s%s", dir, name);
+    HMODULE m = LoadLibraryA(path);
+    if (!m)
+        m = LoadLibraryA(name);
+    Log("load %s -> %p", name, (void*)m);
+    return m;
+}
+
+static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
+{
+    QueryPerformanceFrequency(&g_qpf);
+    QueryPerformanceCounter(&g_qp0);
+
+    char dir[MAX_PATH];
+    GetModuleFileNameA(g_self, dir, MAX_PATH);
+    char* slash = strrchr(dir, '\\');
+    if (slash)
+        slash[1] = 0;
+
+    {
+        // ffx_xefg.env beside the DLL: KEY=VALUE lines, set into the environment unless already set
+        char path[MAX_PATH];
+        snprintf(path, MAX_PATH, "%sffx_xefg.env", dir);
+        if (FILE* f = fopen(path, "r")) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                for (size_t n = strlen(line); n && (line[n - 1] == 10 || line[n - 1] == 13);)  // strip CR LF
+                    line[--n] = 0;
+                char* eq = strchr(line, '=');
+                if (line[0] == '#' || !eq)
+                    continue;
+                *eq = 0;
+                if (!GetEnvironmentVariableA(line, nullptr, 0))
+                    SetEnvironmentVariableA(line, eq + 1);
+            }
+            fclose(f);
+        }
+    }
+
+    char env[MAX_PATH];
+    if (GetEnvironmentVariableA("FFX_XEFG_LOG", env, MAX_PATH)) {
+        if (strcmp(env, "0") != 0)
+            g_log = fopen(env, "a");
+    } else {
+        char path[MAX_PATH];
+        snprintf(path, MAX_PATH, "%sffx_xefg.log", dir);
+        g_log = fopen(path, "a");
+    }
+
+    g_mult = EnvInt("FFX_XEFG_MULT", EnvInt("XESS_FG", 2));
+    if (g_mult < 2)
+        g_mult = 2;
+    g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
+    g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
+    g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
+    g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
+    g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
+    g_camera = EnvInt("FFX_XEFG_CAMERA", 1);
+    g_jitter = (float)EnvInt("FFX_XEFG_JITTER", 1);
+    g_dumpEvery = EnvInt("FFX_XEFG_DUMP", 0);
+    if (GetEnvironmentVariableA("FFX_XEFG_RENDERTIME", env, MAX_PATH))
+        g_renderTime = (float)atof(env);
+    if (GetEnvironmentVariableA("FFX_XEFG_RENDERSCALE", env, MAX_PATH))
+        g_renderScale = (float)atof(env);
+    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
+    snprintf(g_dir, MAX_PATH, "%s", dir);
+    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d, exclusive fullscreen %s", GetCurrentProcessId(), g_mult,
+        g_sleep, g_ownWait, g_noExclusive ? "blocked" : "allowed");
+    if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait)
+        Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d", g_hudless, g_camera, g_jitter,
+            g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc);
+
+    HMODULE fg = LoadBeside(dir, "libxess_fg.dll");
+    HMODULE xell = LoadBeside(dir, "libxell.dll");
+    g_xefgModule = fg;
+    g_xellModule = xell;
+    bool ok = fg && xell;
+#define LOAD_FG(name, req)                                         \
+    p_##name = fg ? (decltype(p_##name))GetProcAddress(fg, #name) : nullptr; \
+    if (!p_##name && req) {                                        \
+        Log("missing %s", #name);                                  \
+        ok = false;                                                \
+    }
+#define LOAD_XELL(name, req)                                           \
+    p_##name = xell ? (decltype(p_##name))GetProcAddress(xell, #name) : nullptr; \
+    if (!p_##name && req) {                                            \
+        Log("missing %s", #name);                                      \
+        ok = false;                                                    \
+    }
+    XEFG_FUNCS(LOAD_FG)
+    XELL_FUNCS(LOAD_XELL)
+    g_libsOk = ok;
+    if (ok) {
+        xefg_swapchain_version_t v = {};
+        p_xefgSwapChainGetVersion(&v);
+        Log("XeSS-FG %u.%u.%u", v.major, v.minor, v.patch);
+    }
+    return TRUE;
+}
+
+static void Init() { InitOnceExecuteOnce(&g_once, InitOnce, nullptr, nullptr); }
+
+static void XefgLogCallback(const char* message, xefg_swapchain_logging_level_t level, void*)
+{
+    Log("xefg[%d] %s", (int)level, message);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Helpers
+
+static D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
+{
+    D3D12_RESOURCE_STATES r = D3D12_RESOURCE_STATE_COMMON;
+    if (s & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS)
+        r |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    if (s & FFX_API_RESOURCE_STATE_COMPUTE_READ)
+        r |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (s & FFX_API_RESOURCE_STATE_PIXEL_READ)
+        r |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (s & FFX_API_RESOURCE_STATE_COPY_SRC)
+        r |= D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (s & FFX_API_RESOURCE_STATE_COPY_DEST)
+        r |= D3D12_RESOURCE_STATE_COPY_DEST;
+    if (s & FFX_API_RESOURCE_STATE_INDIRECT_ARGUMENT)
+        r |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    if (s & FFX_API_RESOURCE_STATE_RENDER_TARGET)
+        r |= D3D12_RESOURCE_STATE_RENDER_TARGET;
+    if (s & FFX_API_RESOURCE_STATE_DEPTH_ATTACHMENT)
+        r |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    return r;
+}
+
+static void Mul4(const float* a, const float* b, float* out)
+{
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 4; c++) {
+            float s = 0;
+            for (int k = 0; k < 4; k++)
+                s += a[r * 4 + k] * b[k * 4 + c];
+            out[r * 4 + c] = s;
+        }
+}
+
+// Row-vector (DirectX) view matrix from camera position and basis.
+static void BuildView(const float* pos, const float* right, const float* up, const float* fwd, float* m)
+{
+    auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    const float r[16] = {right[0], up[0], fwd[0], 0, right[1], up[1], fwd[1], 0, right[2], up[2], fwd[2], 0,
+                         -dot(pos, right), -dot(pos, up), -dot(pos, fwd), 1};
+    memcpy(m, r, sizeof(r));
+}
+
+// Left-handed perspective projection, depth 0..1 (XMMatrixPerspectiveFovLH layout), with the FFX depth flags.
+static void BuildProjection(float fovY, float aspect, float n, float f, bool inverted, bool infinite, float* m)
+{
+    memset(m, 0, 16 * sizeof(float));
+    // the planes in either order (with inverted depth UE passes near FLT_MAX, far = the near plane), FLT_MAX = infinity
+    float lo = std::min(n, f), hi = std::max(n, f);
+    if (infinite || hi >= 1e30f)
+        hi = INFINITY;
+    n = lo;
+    f = hi;
+    if (!(fovY > 0.0001f) || !(aspect > 0.0001f) || !(n > 0) || n == f) {
+        m[0] = m[5] = m[10] = m[15] = 1;
+        return;
+    }
+    if (inverted) {
+        float t = n;
+        n = f;
+        f = t;
+    }
+    float ys = 1.0f / tanf(fovY * 0.5f);
+    m[0] = ys / aspect;
+    m[5] = ys;
+    m[11] = 1;
+    if (std::isinf(f)) {  // far at infinity
+        m[10] = 1;
+        m[14] = -n;
+    } else if (std::isinf(n)) {  // inverted infinite: near plane value at infinity
+        m[10] = 0;
+        m[14] = f;
+    } else {
+        m[10] = f / (f - n);
+        m[14] = -n * f / (f - n);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Contexts
+
+enum : uint32_t { MAGIC_FG = 0x46474658, MAGIC_SC = 0x43534658 };  // "XFGF", "XFSC"
+
+static const uint64_t kProviderVersionId = 0xf600000000c01006ull;  // what AMD's 4.0.1 DLL reports
+static const char* kProviderVersionName = "3.1.6";
+
+struct FgSwapChain;
+
+struct ScState {
+    uint32_t magic = MAGIC_SC;
+    std::mutex lock;
+    std::atomic<int> refs{1};  // the FFX context; the FgSwapChain adds one
+
+    xefg_swapchain_handle_t xefg = nullptr;
+    xell_context_handle_t xell = nullptr;
+    IDXGISwapChain4* proxy = nullptr;
+    ID3D12Device* device = nullptr;
+    FgSwapChain* wrapper = nullptr;
+    FgSwapChain* contextRef = nullptr;  // the context's own reference to the wrapper, as FFX's context holds one
+    uint32_t width = 0, height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    uint32_t maxInterpolations = 1;
+
+    // Objects handed to games that drive the interpolation dispatch themselves.
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* cmdList = nullptr;
+    ID3D12Resource* interpTex = nullptr;
+
+    // Per-frame state.
+    bool gameEnabled = false;
+    bool xefgEnabled = false;
+    bool havePrepare = false;     // PrepareV2 seen since the last present
+    bool uiComposition = false;
+    uint32_t frameId = 0;          // id of the frame being built
+    uint32_t simStartedFor = UINT32_MAX;
+    uint64_t presents = 0;
+    struct FfxApiResource ui = {};
+    uint32_t uiFlags = 0;
+    // Frame latency waitable object of our own: released once per Present that returned, so the game's
+    // wait follows our Present calls instead of XeSS-FG's presentation thread.
+    HANDLE latencySem = nullptr;
+    UINT maxLatency = 1;
+    BOOL fakeFullscreen = FALSE;   // what the game asked for while exclusive fullscreen is blocked
+
+    // FSR_FG=inject (xefg_bridge.h): the game knows nothing of frame generation, so the ids are ours. A frame's upscale
+    // can be recorded before the previous frame is presented; presents take the upscaled frames in order.
+    bool bridge = false;
+    uint32_t nextId = 0;
+    std::deque<uint32_t> pending;
+};
+
+struct FgCtx {
+    uint32_t magic = MAGIC_FG;
+    uint32_t flags = 0;
+    uint32_t displayW = 0, displayH = 0, maxRenderW = 0, maxRenderH = 0;
+    uint32_t backBufferFormat = 0;
+    ID3D12Device* device = nullptr;
+    uint64_t prepares = 0;
+};
+
+static std::mutex g_globalLock;
+static ScState* g_currentSc;     // the last created live swap chain context
+static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
+static bool g_haveFgFlags;
+
+static void TearDown(ScState* st)
+{
+    Log("teardown sc %p (xefg %p, presents %llu)", (void*)st, (void*)st->xefg, (unsigned long long)st->presents);
+    if (st->proxy) {
+        ULONG r = st->proxy->Release();
+        Log("  proxy released, refs left %lu", r);
+        st->proxy = nullptr;
+    }
+    if (st->xefg) {
+        xefg_swapchain_result_t r = p_xefgSwapChainDestroy(st->xefg);
+        Log("  xefgSwapChainDestroy -> %d", (int)r);
+    }
+    if (st->xell) {
+        xell_result_t r = p_xellDestroyContext(st->xell);
+        Log("  xellDestroyContext -> %d", (int)r);
+    }
+    if (st->cmdList)
+        st->cmdList->Release();
+    if (st->alloc)
+        st->alloc->Release();
+    if (st->interpTex)
+        st->interpTex->Release();
+    if (st->latencySem)
+        CloseHandle(st->latencySem);
+    if (st->ui.resource)
+        ((ID3D12Resource*)st->ui.resource)->Release();
+    if (st->device)
+        st->device->Release();
+    delete st;
+}
+
+static void ScRelease(ScState* st)
+{
+    if (--st->refs == 0)
+        TearDown(st);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Present handling (called by FgSwapChain around the proxy's Present)
+
+// FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
+static std::atomic<int> g_orderLeft{-1};
+static void Order(const char* what, uint64_t id)
+{
+    if (g_orderLeft.load() > 0 && g_orderLeft.fetch_sub(1) > 0)
+        Log("order %s %llu", what, (unsigned long long)id);
+}
+
+static void SetXefgEnabled(ScState* st, bool want)
+{
+    if (want == st->xefgEnabled)
+        return;
+    if (want && g_orderLeft.load() == -1 && EnvInt("FFX_XEFG_ORDER", 0))
+        g_orderLeft = 300;
+    if (want) {
+        BOOL fs = FALSE;
+        st->proxy->GetFullscreenState(&fs, nullptr);
+        Log("enabling interpolation: proxy fullscreen state %d", fs);
+    }
+    xefg_swapchain_result_t r = p_xefgSwapChainSetEnabled(st->xefg, want ? 1 : 0);
+    Log("xefgSwapChainSetEnabled(%d) frame %u -> %d", want, st->frameId, (int)r);
+    if (r == XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        st->xefgEnabled = want;
+}
+
+static void BeforePresent(ScState* st)
+{
+    std::lock_guard<std::mutex> lk(st->lock);
+    if (st->bridge) {
+        st->havePrepare = !st->pending.empty();
+        if (st->havePrepare) {
+            st->frameId = st->pending.front();
+            st->pending.pop_front();
+        } else {
+            st->frameId = ++st->nextId;
+        }
+    } else if (!st->havePrepare) {
+        st->frameId++;  // no frame data this time (menus, loading): keep the ids moving, no interpolation
+    }
+    uint32_t id = st->frameId;
+    Order(st->havePrepare ? "present" : "present (no prepare)", id);
+    SetXefgEnabled(st, st->gameEnabled && st->havePrepare);
+
+    if (st->havePrepare && st->ui.resource) {
+        xefg_swapchain_d3d12_resource_data_t rd = {};
+        rd.type = XEFG_SWAPCHAIN_RES_UI;
+        rd.validity = XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
+        rd.resourceSize = {st->ui.description.width, st->ui.description.height};
+        rd.pResource = (ID3D12Resource*)st->ui.resource;
+        rd.incomingState = ToD3D12State(st->ui.state);
+        p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, id, &rd);
+    }
+
+    if (st->simStartedFor != id) {
+        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
+        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
+        p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
+        st->simStartedFor = id;
+    }
+    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_END);
+    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_START);
+    p_xefgSwapChainSetPresentId(st->xefg, id);
+}
+
+static void AfterPresent(ScState* st, HRESULT hr)
+{
+    std::lock_guard<std::mutex> lk(st->lock);
+    uint32_t id = st->frameId;
+    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_END);
+    st->presents++;
+    if (st->presents <= 10 || st->presents % 600 == 0) {
+        xefg_swapchain_present_status_t ps = {};
+        p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
+        Log("present #%llu frame %u hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting", (unsigned long long)st->presents,
+            id, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult, ps.isFrameGenEnabled, st->pending.size());
+    }
+    st->havePrepare = false;
+
+    // Start the next frame: XeLL sleep and simulation markers use the id the next PrepareV2 is expected to carry.
+    uint32_t next = st->bridge ? st->nextId + 1 : id + 1;
+    if (st->bridge && st->simStartedFor == next)
+        return;
+    if (g_sleep)
+        p_xellSleep(st->xell, next);
+    p_xellAddMarkerData(st->xell, next, XELL_SIMULATION_START);
+    st->simStartedFor = next;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// FgSwapChain: forwards everything to the XeSS-FG proxy, adds the XeLL markers and the present id.
+
+struct FgSwapChain final : IDXGISwapChain4 {
+    std::atomic<ULONG> ref{1};
+    ScState* st;
+    IDXGISwapChain4* sc;
+
+    FgSwapChain(ScState* s) : st(s), sc(s->proxy) { st->refs++; }
+
+    // IUnknown
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (!ppv)
+            return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IDXGIObject) || riid == __uuidof(IDXGIDeviceSubObject) ||
+            riid == __uuidof(IDXGISwapChain) || riid == __uuidof(IDXGISwapChain1) ||
+            riid == __uuidof(IDXGISwapChain2) || riid == __uuidof(IDXGISwapChain3) ||
+            riid == __uuidof(IDXGISwapChain4)) {
+            AddRef();
+            *ppv = static_cast<IDXGISwapChain4*>(this);
+            return S_OK;
+        }
+        return sc->QueryInterface(riid, ppv);
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++ref; }
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        ULONG r = --ref;
+        if (r == 0) {
+            Log("FgSwapChain %p released by the game", (void*)this);
+            {
+                std::lock_guard<std::mutex> lk(st->lock);
+                st->wrapper = nullptr;
+            }
+            if (st->bridge) {   // no FFX context: the game's reference is the last one
+                std::lock_guard<std::mutex> lk(g_globalLock);
+                if (g_currentSc == st)
+                    g_currentSc = nullptr;
+            }
+            ScRelease(st);
+            delete this;
+        }
+        return r;
+    }
+
+    // IDXGIObject
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID g, UINT n, const void* d) override { return sc->SetPrivateData(g, n, d); }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID g, const IUnknown* u) override { return sc->SetPrivateDataInterface(g, u); }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID g, UINT* n, void* d) override { return sc->GetPrivateData(g, n, d); }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID riid, void** p) override { return sc->GetParent(riid, p); }
+    // IDXGIDeviceSubObject
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID riid, void** p) override { return sc->GetDevice(riid, p); }
+
+    // IDXGISwapChain
+    HRESULT STDMETHODCALLTYPE Present(UINT sync, UINT flags) override
+    {
+        if (flags & DXGI_PRESENT_TEST)
+            return sc->Present(sync, flags);
+        BeforePresent(st);
+        HRESULT hr = sc->Present(sync, flags);
+        if (st->latencySem && SUCCEEDED(hr))
+            ReleaseSemaphore(st->latencySem, 1, nullptr);
+        AfterPresent(st, hr);
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override { return sc->GetBuffer(i, riid, p); }
+    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL f, IDXGIOutput* o) override
+    {
+        HRESULT hr;
+        if (g_noExclusive) {
+            st->fakeFullscreen = f;
+            hr = S_OK;  // stay windowed (borderless under gamescope looks the same)
+        } else {
+            hr = sc->SetFullscreenState(f, o);
+        }
+        Log("SetFullscreenState(%d) -> 0x%08lx%s", f, (unsigned long)hr, g_noExclusive ? " (blocked)" : "");
+        Recheck();
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* f, IDXGIOutput** o) override
+    {
+        if (g_noExclusive) {
+            HRESULT hr = sc->GetFullscreenState(nullptr, o);
+            if (f)
+                *f = st->fakeFullscreen;
+            return hr;
+        }
+        return sc->GetFullscreenState(f, o);
+    }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* d) override
+    {
+        HRESULT hr = sc->GetDesc(d);
+        if (SUCCEEDED(hr) && d && g_noExclusive)
+            d->Windowed = !st->fakeFullscreen;
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl) override
+    {
+        HRESULT hr = sc->ResizeBuffers(n, w, h, f, fl);
+        Log("ResizeBuffers %u %ux%u fmt %d flags 0x%x -> 0x%08lx", n, w, h, (int)f, fl, (unsigned long)hr);
+        Recheck();
+        return hr;
+    }
+    // After a mode change XeSS-FG must be asked again: it checks fullscreen only when interpolation is enabled.
+    void Recheck()
+    {
+        std::lock_guard<std::mutex> lk(st->lock);
+        if (st->xefgEnabled) {
+            p_xefgSwapChainSetEnabled(st->xefg, 0);
+            st->xefgEnabled = false;  // the next present with frame data enables it again
+        }
+    }
+    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* m) override { return sc->ResizeTarget(m); }
+    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** o) override { return sc->GetContainingOutput(o); }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override { return sc->GetFrameStatistics(s); }
+    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* c) override { return sc->GetLastPresentCount(c); }
+
+    // IDXGISwapChain1
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* d) override { return sc->GetDesc1(d); }
+    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* d) override { return sc->GetFullscreenDesc(d); }
+    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* h) override { return sc->GetHwnd(h); }
+    HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID riid, void** p) override { return sc->GetCoreWindow(riid, p); }
+    HRESULT STDMETHODCALLTYPE Present1(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp) override
+    {
+        if (flags & DXGI_PRESENT_TEST)
+            return sc->Present1(sync, flags, pp);
+        BeforePresent(st);
+        HRESULT hr = sc->Present1(sync, flags, pp);
+        if (st->latencySem && SUCCEEDED(hr))
+            ReleaseSemaphore(st->latencySem, 1, nullptr);
+        AfterPresent(st, hr);
+        return hr;
+    }
+    BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc->IsTemporaryMonoSupported(); }
+    HRESULT STDMETHODCALLTYPE GetRestrictToOutput(IDXGIOutput** o) override { return sc->GetRestrictToOutput(o); }
+    HRESULT STDMETHODCALLTYPE SetBackgroundColor(const DXGI_RGBA* c) override { return sc->SetBackgroundColor(c); }
+    HRESULT STDMETHODCALLTYPE GetBackgroundColor(DXGI_RGBA* c) override { return sc->GetBackgroundColor(c); }
+    HRESULT STDMETHODCALLTYPE SetRotation(DXGI_MODE_ROTATION r) override { return sc->SetRotation(r); }
+    HRESULT STDMETHODCALLTYPE GetRotation(DXGI_MODE_ROTATION* r) override { return sc->GetRotation(r); }
+
+    // IDXGISwapChain2
+    HRESULT STDMETHODCALLTYPE SetSourceSize(UINT w, UINT h) override { return sc->SetSourceSize(w, h); }
+    HRESULT STDMETHODCALLTYPE GetSourceSize(UINT* w, UINT* h) override { return sc->GetSourceSize(w, h); }
+    HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT l) override
+    {
+        HRESULT hr = sc->SetMaximumFrameLatency(l);
+        Log("SetMaximumFrameLatency(%u) -> 0x%08lx", l, (unsigned long)hr);
+        if (g_ownWait && l >= 1) {
+            std::lock_guard<std::mutex> lk(st->lock);
+            if (st->latencySem && l > st->maxLatency)
+                ReleaseSemaphore(st->latencySem, (LONG)(l - st->maxLatency), nullptr);
+            st->maxLatency = l;
+            hr = S_OK;
+        }
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE GetMaximumFrameLatency(UINT* l) override
+    {
+        if (g_ownWait && l) {
+            *l = st->maxLatency;
+            return S_OK;
+        }
+        return sc->GetMaximumFrameLatency(l);
+    }
+    HANDLE STDMETHODCALLTYPE GetFrameLatencyWaitableObject() override
+    {
+        HANDLE h = nullptr;
+        if (g_ownWait) {
+            std::lock_guard<std::mutex> lk(st->lock);
+            if (!st->latencySem)
+                st->latencySem = CreateSemaphoreA(nullptr, (LONG)st->maxLatency, 64, nullptr);
+            // the caller closes the handle it gets, as with DXGI
+            DuplicateHandle(GetCurrentProcess(), st->latencySem, GetCurrentProcess(), &h, 0, FALSE,
+                            DUPLICATE_SAME_ACCESS);
+        } else {
+            h = sc->GetFrameLatencyWaitableObject();
+        }
+        Log("GetFrameLatencyWaitableObject -> %p (own %d)", (void*)h, g_ownWait);
+        return h;
+    }
+    HRESULT STDMETHODCALLTYPE SetMatrixTransform(const DXGI_MATRIX_3X2_F* m) override { return sc->SetMatrixTransform(m); }
+    HRESULT STDMETHODCALLTYPE GetMatrixTransform(DXGI_MATRIX_3X2_F* m) override { return sc->GetMatrixTransform(m); }
+
+    // IDXGISwapChain3
+    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override { return sc->GetCurrentBackBufferIndex(); }
+    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE c, UINT* s) override { return sc->CheckColorSpaceSupport(c, s); }
+    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override { return sc->SetColorSpace1(c); }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
+                                             IUnknown* const* queues) override
+    {
+        HRESULT hr = sc->ResizeBuffers1(n, w, h, f, fl, mask, queues);
+        Log("ResizeBuffers1 %u %ux%u fmt %d -> 0x%08lx", n, w, h, (int)f, (unsigned long)hr);
+        Recheck();
+        return hr;
+    }
+
+    // IDXGISwapChain4
+    HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d) override { return sc->SetHDRMetaData(t, n, d); }
+};
+
+static ScState* ScFromSwapChain(void* p)
+{
+    std::lock_guard<std::mutex> lk(g_globalLock);
+    if (g_currentSc && g_currentSc->wrapper && (void*)static_cast<IDXGISwapChain4*>(g_currentSc->wrapper) == p)
+        return g_currentSc;
+    return g_currentSc;  // single swap chain: fall back to the current one
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Swap chain context creation
+
+// XeSS-FG takes the depth direction and the kind of motion vectors when the swap chain is created, and games create
+// the swap chain before the frame generation context that says what they are. The flags a game gave last time are
+// kept per game (C:\users\<user>\AppData\Local\ffx_xefg\<exe>.flags in the prefix); without them inverted depth is
+// assumed, as in Unreal Engine, Northlight (Control) and RE Engine. With the wrong depth direction XeSS-FG takes the
+// foreground for the background: moving characters flicker, the more the lower the frame rate.
+static const uint32_t kXefgFfxFlags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED |
+                                      FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION |
+                                      FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS;
+static uint32_t g_initFfxFlags;   // the FFX flags the XeSS-FG swap chain was set up for
+
+static bool FlagsFile(char* path)
+{
+    char exe[MAX_PATH], base[MAX_PATH];
+    DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", base, MAX_PATH);
+    if (!n || n >= MAX_PATH || !GetModuleFileNameA(nullptr, exe, MAX_PATH))
+        return false;
+    const char* name = strrchr(exe, '\\');
+    name = name ? name + 1 : exe;
+    snprintf(path, MAX_PATH, "%s\\ffx_xefg", base);
+    CreateDirectoryA(path, nullptr);
+    snprintf(path, MAX_PATH, "%s\\ffx_xefg\\%s.flags", base, name);
+    return true;
+}
+
+static bool LoadFlags(uint32_t* flags)
+{
+    char path[MAX_PATH];
+    if (!FlagsFile(path))
+        return false;
+    FILE* f = fopen(path, "r");
+    if (!f)
+        return false;
+    bool ok = fscanf(f, "%x", flags) == 1;
+    fclose(f);
+    return ok;
+}
+
+static void SaveFlags(uint32_t flags)
+{
+    char path[MAX_PATH];
+    if (!FlagsFile(path))
+        return;
+    if (FILE* f = fopen(path, "w")) {
+        fprintf(f, "%x\n", flags);
+        fclose(f);
+    }
+}
+
+static uint32_t XefgInitFlags()
+{
+    uint32_t f = XEFG_SWAPCHAIN_INIT_FLAG_UITEXTURE_NOT_PREMUL_ALPHA;
+    uint32_t ffx;
+    bool have;
+    {
+        std::lock_guard<std::mutex> lk(g_globalLock);
+        have = g_haveFgFlags;
+        ffx = g_lastFgFlags;
+    }
+    if (have)
+        Log("XeSS-FG set up with the game's flags 0x%x", ffx);
+    else if (LoadFlags(&ffx))
+        Log("XeSS-FG set up with the flags the game gave last time (0x%x)", ffx);
+    else {
+        ffx = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED;
+        Log("XeSS-FG set up for inverted depth (the game's flags come later)");
+    }
+    g_initFfxFlags = ffx & kXefgFfxFlags;
+    if (ffx & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED)
+        f |= XEFG_SWAPCHAIN_INIT_FLAG_INVERTED_DEPTH;
+    if (ffx & FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION)
+        f |= XEFG_SWAPCHAIN_INIT_FLAG_JITTERED_MV;
+    if (ffx & FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS)
+        f |= XEFG_SWAPCHAIN_INIT_FLAG_HIGH_RES_MV;
+    if (g_mvNdc)
+        f |= XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY;
+    return f;
+}
+
+enum class ScKind { Wrap, New, ForHwnd };
+
+static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, const ffxApiHeader* desc)
+{
+    IDXGISwapChain4** out = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    IDXGISwapChain4* appSwapChain = nullptr;
+    HWND hwnd = nullptr;
+    DXGI_SWAP_CHAIN_DESC1 d1 = {};
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC fs = {};
+    const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pfs = nullptr;
+    IDXGIFactory* factory = nullptr;
+
+    if (kind == ScKind::Wrap) {
+        auto* d = (const ffxCreateContextDescFrameGenerationSwapChainWrapDX12*)desc;
+        out = d->swapchain;
+        queue = d->gameQueue;
+        appSwapChain = out ? *out : nullptr;
+        if (!appSwapChain)
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        appSwapChain->GetDesc1(&d1);
+    } else if (kind == ScKind::New) {
+        auto* d = (const ffxCreateContextDescFrameGenerationSwapChainNewDX12*)desc;
+        out = d->swapchain;
+        queue = d->gameQueue;
+        factory = d->dxgiFactory;
+        if (!d->desc)
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        const DXGI_SWAP_CHAIN_DESC& o = *d->desc;
+        hwnd = o.OutputWindow;
+        d1.Width = o.BufferDesc.Width;
+        d1.Height = o.BufferDesc.Height;
+        d1.Format = o.BufferDesc.Format;
+        d1.SampleDesc = o.SampleDesc;
+        d1.BufferUsage = o.BufferUsage;
+        d1.BufferCount = o.BufferCount;
+        d1.Scaling = o.BufferDesc.Scaling == DXGI_MODE_SCALING_UNSPECIFIED ? DXGI_SCALING_STRETCH
+                     : o.BufferDesc.Scaling == DXGI_MODE_SCALING_CENTERED  ? DXGI_SCALING_NONE
+                                                                           : DXGI_SCALING_STRETCH;
+        d1.SwapEffect = o.SwapEffect;
+        d1.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        d1.Flags = o.Flags;
+        fs.RefreshRate = o.BufferDesc.RefreshRate;
+        fs.ScanlineOrdering = o.BufferDesc.ScanlineOrdering;
+        fs.Scaling = o.BufferDesc.Scaling;
+        fs.Windowed = o.Windowed;
+        pfs = &fs;
+    } else {
+        auto* d = (const ffxCreateContextDescFrameGenerationSwapChainForHwndDX12*)desc;
+        out = d->swapchain;
+        queue = d->gameQueue;
+        factory = d->dxgiFactory;
+        hwnd = d->hwnd;
+        if (!d->desc)
+            return FFX_API_RETURN_ERROR_PARAMETER;
+        d1 = *d->desc;
+        pfs = d->fullscreenDesc;
+    }
+    if (!out || !queue)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+
+    auto* st = new ScState();
+    st->width = d1.Width;
+    st->height = d1.Height;
+    st->format = d1.Format;
+    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&st->device)))) {
+        delete st;
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+
+    auto fail = [&](const char* what, int code) {
+        Log("swap chain context: %s failed (%d)", what, code);
+        st->refs = 1;
+        if (st->proxy) {
+            st->proxy->Release();
+            st->proxy = nullptr;
+        }
+        TearDown(st);
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    };
+
+    xefg_swapchain_d3d12_init_params_t ip = {};
+    uint32_t want = 0;
+    IntelVendorForXess(st->device);
+    xefg_swapchain_result_t r = p_xefgSwapChainD3D12CreateContext(st->device, &st->xefg);
+    if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS) {
+        st->xefg = nullptr;
+        return fail("xefgSwapChainD3D12CreateContext", r);
+    }
+    if (g_xefgLogLevel >= 0 && g_xefgLogLevel <= 3)
+        p_xefgSwapChainSetLoggingCallback(st->xefg, (xefg_swapchain_logging_level_t)g_xefgLogLevel, XefgLogCallback,
+                                          nullptr);
+
+    xell_result_t xr = p_xellD3D12CreateContext(st->device, &st->xell);
+    if (xr != XELL_RESULT_SUCCESS) {
+        st->xell = nullptr;
+        return fail("xellD3D12CreateContext", xr);
+    }
+    xell_sleep_params_t sp = {};
+    sp.bLowLatencyMode = 1;
+    xr = p_xellSetSleepMode(st->xell, &sp);
+    if (xr != XELL_RESULT_SUCCESS)
+        Log("xellSetSleepMode -> %d", (int)xr);
+    r = p_xefgSwapChainSetLatencyReduction(st->xefg, st->xell);
+    if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        return fail("xefgSwapChainSetLatencyReduction", r);
+
+    ip.initFlags = XefgInitFlags();
+    ip.maxInterpolatedFrames = XEFG_SWAPCHAIN_USE_MAX_SUPPORTED_INTERPOLATED_FRAMES;
+    ip.uiMode = XEFG_SWAPCHAIN_UI_MODE_AUTO;
+
+    if (kind == ScKind::Wrap) {
+        // XeSS-FG takes the game's reference and recreates the native swap chain, as FFX's wrap does.
+        ULONG refsPlusOne = appSwapChain->AddRef();
+        appSwapChain->Release();
+        Log("wrap: game swap chain %p refs %lu", (void*)appSwapChain, refsPlusOne - 1);
+        ip.pApplicationSwapChain = appSwapChain;
+        r = p_xefgSwapChainD3D12InitFromSwapChain(st->xefg, queue, &ip);
+    } else {
+        IDXGIFactory2* f2 = nullptr;
+        if (!factory || FAILED(factory->QueryInterface(IID_PPV_ARGS(&f2))))
+            return fail("IDXGIFactory2", 0);
+        r = p_xefgSwapChainD3D12InitFromSwapChainDesc(st->xefg, hwnd, &d1, pfs, queue, f2, &ip);
+        f2->Release();
+    }
+    if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        return fail("xefgSwapChainD3D12InitFromSwapChain(Desc)", r);
+    r = p_xefgSwapChainD3D12GetSwapChainPtr(st->xefg, IID_PPV_ARGS(&st->proxy));
+    if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS || !st->proxy)
+        return fail("xefgSwapChainD3D12GetSwapChainPtr", r);
+
+    xefg_swapchain_properties_t props = {};
+    if (p_xefgSwapChainGetProperties(st->xefg, &props) == XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        st->maxInterpolations = props.maxSupportedInterpolations;
+    want = (uint32_t)(g_mult - 1);
+    if (want > st->maxInterpolations)
+        want = st->maxInterpolations;
+    if (p_xefgSwapChainSetNumInterpolatedFrames) {
+        r = p_xefgSwapChainSetNumInterpolatedFrames(st->xefg, want);
+        Log("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", want, (int)r);
+    }
+
+    // Command list and texture for games that query them and dispatch the interpolation themselves.
+    if (SUCCEEDED(st->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&st->alloc))) &&
+        SUCCEEDED(st->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, st->alloc, nullptr,
+                                                IID_PPV_ARGS(&st->cmdList))))
+        st->cmdList->Close();
+    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = st->width;
+    rd.Height = st->height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = st->format;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(st->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                   IID_PPV_ARGS(&st->interpTex))))
+        st->interpTex = nullptr;
+
+    st->wrapper = new FgSwapChain(st);
+    // FFX's context keeps a reference to the swap chain until ffxDestroyContext; Wuthering Waves (FSR 3.1.1) drops
+    // its own reference before that and still presents
+    st->wrapper->AddRef();
+    st->contextRef = st->wrapper;
+    *out = st->wrapper;
+    {
+        std::lock_guard<std::mutex> lk(g_globalLock);
+        g_currentSc = st;
+    }
+    *context = st;
+    Log("swap chain context %p: %ux%u fmt %d, init flags 0x%x, max interpolations %u, set %u, proxy %p, wrapper %p",
+        (void*)st, st->width, st->height, (int)st->format, ip.initFlags, st->maxInterpolations, want,
+        (void*)st->proxy, (void*)st->wrapper);
+    return FFX_API_RETURN_OK;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Frame generation context
+
+// FFX_XEFG_DUMP: copies of the game's depth and motion vectors, written some frames later (when the game's command
+// list has run) as ffx_xefg_<frame>_<what>.bin: header width, height, row pitch, DXGI format (4 x uint32), rows
+struct Dump {
+    ID3D12Resource* buf = nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = {};
+    uint32_t frame = 0, writeAt = 0;
+    const char* what = "";
+    float camera[13] = {};  // fov, position, right, up, forward
+};
+static Dump g_dumps[16];
+static int g_nDumps;
+
+static void DumpCopy(ID3D12Device* dev, ID3D12GraphicsCommandList* cl, ID3D12Resource* res, uint32_t state,
+                     uint32_t frame, uint32_t writeAt, const char* what, const float* camera)
+{
+    if (!dev || !cl || !res || g_nDumps >= 16)
+        return;
+    D3D12_RESOURCE_DESC rd = res->GetDesc();
+    Dump& d = g_dumps[g_nDumps];
+    UINT64 total = 0;
+    dev->GetCopyableFootprints(&rd, 0, 1, 0, &d.fp, nullptr, nullptr, &total);
+    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                            IID_PPV_ARGS(&d.buf))))
+        return;
+    D3D12_RESOURCE_STATES s = ToD3D12State(state);
+    D3D12_RESOURCE_BARRIER b = {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = res;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    b.Transition.StateBefore = s;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (s != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        cl->ResourceBarrier(1, &b);
+    D3D12_TEXTURE_COPY_LOCATION dst = {d.buf, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT}, src = {res};
+    dst.PlacedFootprint = d.fp;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    if (s != D3D12_RESOURCE_STATE_COPY_SOURCE) {
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cl->ResourceBarrier(1, &b);
+    }
+    d.frame = frame;
+    d.writeAt = writeAt;
+    d.what = what;
+    memcpy(d.camera, camera, sizeof(d.camera));
+    g_nDumps++;
+}
+
+static void DumpWrite(uint32_t now)
+{
+    for (int i = 0; i < g_nDumps; i++) {
+        Dump& d = g_dumps[i];
+        if (!d.buf || now < d.writeAt)
+            continue;
+        void* p = nullptr;
+        D3D12_RANGE r = {0, (SIZE_T)d.fp.Footprint.RowPitch * d.fp.Footprint.Height};
+        char path[MAX_PATH];
+        snprintf(path, MAX_PATH, "%sffx_xefg_%u_%s.bin", g_dir, d.frame, d.what);
+        if (SUCCEEDED(d.buf->Map(0, &r, &p))) {
+            if (FILE* f = fopen(path, "wb")) {
+                uint32_t h[4] = {d.fp.Footprint.Width, d.fp.Footprint.Height, d.fp.Footprint.RowPitch,
+                                 (uint32_t)d.fp.Footprint.Format};
+                fwrite(h, sizeof(h), 1, f);
+                fwrite(d.camera, sizeof(d.camera), 1, f);
+                fwrite((const uint8_t*)p + d.fp.Offset, 1, r.End, f);
+                fclose(f);
+                Log("dump %s: %ux%u format %u", path, h[0], h[1], h[3]);
+            }
+            d.buf->Unmap(0, nullptr);
+        }
+        d.buf->Release();
+        d.buf = nullptr;
+    }
+}
+
+static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensions2D renderSize,
+                       FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D mvScale, float frameTimeDelta, bool reset,
+                       float cameraNear, float cameraFar, float fovY, const struct FfxApiResource& depth,
+                       const struct FfxApiResource& mv, const float* camPos, const float* camUp, const float* camRight,
+                       const float* camFwd)
+{
+    ScState* st = ScFromSwapChain(nullptr);
+    if (!st)
+        return;
+    std::lock_guard<std::mutex> lk(st->lock);
+    uint32_t id = (uint32_t)frameID;
+    if (st->bridge) {
+        id = ++st->nextId;
+        st->pending.push_back(id);
+        if (st->pending.size() > 8)   // upscaled but never presented
+            st->pending.pop_front();
+    }
+    Order("prepare", id);
+
+    if (st->simStartedFor != id) {
+        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
+        st->simStartedFor = id;
+    }
+    p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
+    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
+
+    xefg_swapchain_d3d12_resource_data_t rd = {};
+    rd.validity = XEFG_SWAPCHAIN_RV_ONLY_NOW;
+    rd.resourceSize = {renderSize.width, renderSize.height};
+    rd.type = XEFG_SWAPCHAIN_RES_DEPTH;
+    rd.pResource = (ID3D12Resource*)depth.resource;
+    rd.incomingState = ToD3D12State(depth.state);
+    xefg_swapchain_result_t r1 =
+        p_xefgSwapChainD3D12TagFrameResource(st->xefg, (ID3D12CommandList*)cmdList, id, &rd);
+    rd.type = XEFG_SWAPCHAIN_RES_MOTION_VECTOR;
+    rd.pResource = (ID3D12Resource*)mv.resource;
+    rd.incomingState = ToD3D12State(mv.state);
+    if (fg->flags & FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS)
+        rd.resourceSize = {mv.description.width, mv.description.height};
+    xefg_swapchain_result_t r2 =
+        p_xefgSwapChainD3D12TagFrameResource(st->xefg, (ID3D12CommandList*)cmdList, id, &rd);
+
+    xefg_swapchain_frame_constant_data_t c = {};
+    static const float kPos[3] = {0, 0, 0}, kUp[3] = {0, 1, 0}, kRight[3] = {1, 0, 0}, kFwd[3] = {0, 0, 1};
+    if (g_camera == 5) {
+        // debug: all zero, no camera at all
+    } else if (g_camera) {
+        if (g_camera == 6)   // debug: as if the game gave no camera (a fixed view, the real projection)
+            camPos = camRight = camUp = camFwd = nullptr;
+        BuildView(camPos ? camPos : kPos, camRight ? camRight : kRight, camUp ? camUp : kUp, camFwd ? camFwd : kFwd,
+                  c.viewMatrix);
+        float aspect = renderSize.height ? (float)renderSize.width / (float)renderSize.height : 1.0f;
+        // debug: FFX_XEFG_CAMERA=2 transposed, 3 projection not inverted (only the init flag says so), 4 both
+        BuildProjection(fovY, aspect, cameraNear, cameraFar,
+                        (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0 && g_camera != 3 && g_camera != 4,
+                        (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE) != 0, c.projectionMatrix);
+        if (g_camera == 2 || g_camera == 4)
+            for (int r = 0; r < 4; ++r)
+                for (int k = r + 1; k < 4; ++k) {
+                    std::swap(c.viewMatrix[r * 4 + k], c.viewMatrix[k * 4 + r]);
+                    std::swap(c.projectionMatrix[r * 4 + k], c.projectionMatrix[k * 4 + r]);
+                }
+    } else {
+        for (int i = 0; i < 4; ++i)
+            c.viewMatrix[i * 5] = c.projectionMatrix[i * 5] = 1.0f;
+    }
+    c.jitterOffsetX = jitter.x * g_jitter;
+    c.jitterOffsetY = jitter.y * g_jitter;
+    // FFX: motion vectors times the scale are pixels of the render size; in NDC that is 2 / size, y up
+    c.motionVectorScaleX = g_mvNdc && renderSize.width ? mvScale.x * 2.0f / renderSize.width : mvScale.x;
+    c.motionVectorScaleY = g_mvNdc && renderSize.height ? -mvScale.y * 2.0f / renderSize.height : mvScale.y;
+    c.resetHistory = reset ? 1 : 0;
+    c.frameRenderTime = g_renderTime >= 0 ? g_renderTime : frameTimeDelta * g_renderScale;
+    xefg_swapchain_result_t r3 = p_xefgSwapChainTagFrameConstants(st->xefg, id, &c);
+
+    if (!st->bridge) {
+        st->frameId = id;
+        st->havePrepare = true;
+    }
+    fg->prepares++;
+    static uint32_t dumpFrames;   // frames with interpolation on (menus and loading screens have no depth)
+    if (g_dumpEvery > 0) {
+        if (st->xefgEnabled)
+            dumpFrames++;
+        DumpWrite((uint32_t)fg->prepares);
+        // two frames in a row, to compare what moved
+        if (st->xefgEnabled && dumpFrames > 1 && dumpFrames % g_dumpEvery <= 1 && g_nDumps < 16) {
+            float cam[13] = {fovY};
+            for (int i = 0; i < 3; i++) {
+                cam[1 + i] = camPos ? camPos[i] : 0;
+                cam[4 + i] = camRight ? camRight[i] : 0;
+                cam[7 + i] = camUp ? camUp[i] : 0;
+                cam[10 + i] = camFwd ? camFwd[i] : 0;
+            }
+            uint32_t at = (uint32_t)fg->prepares + 10;
+            auto* cl = (ID3D12GraphicsCommandList*)cmdList;
+            DumpCopy(st->device, cl, (ID3D12Resource*)depth.resource, depth.state, id, at, "depth", cam);
+            DumpCopy(st->device, cl, (ID3D12Resource*)mv.resource, mv.state, id, at, "mv", cam);
+        }
+    }
+    if (fg->prepares <= 5 || fg->prepares % 600 == 0 || r1 || r2 || r3)
+        Log("prepare #%llu frame %u render %ux%u jitter %.3f,%.3f mvScale %.1f,%.1f dt %.2f reset %d fov %.3f "
+            "near %.3f far %.1f -> tag depth %d mv %d const %d",
+            (unsigned long long)fg->prepares, id, renderSize.width, renderSize.height, jitter.x, jitter.y, mvScale.x,
+            mvScale.y, frameTimeDelta, reset, fovY, cameraNear, cameraFar, (int)r1, (int)r2, (int)r3);
+    if (fg->prepares <= 3 || fg->prepares % 600 == 0)
+        Log("  camera %s pos %.2f,%.2f,%.2f right %.3f,%.3f,%.3f up %.3f,%.3f,%.3f fwd %.3f,%.3f,%.3f, flags 0x%x, "
+            "depth %ux%u fmt %u, mv %ux%u fmt %u",
+            camPos ? "given" : "not given", camPos ? camPos[0] : 0, camPos ? camPos[1] : 0, camPos ? camPos[2] : 0,
+            camRight ? camRight[0] : 0, camRight ? camRight[1] : 0, camRight ? camRight[2] : 0, camUp ? camUp[0] : 0,
+            camUp ? camUp[1] : 0, camUp ? camUp[2] : 0, camFwd ? camFwd[0] : 0, camFwd ? camFwd[1] : 0,
+            camFwd ? camFwd[2] : 0, fg->flags, depth.description.width, depth.description.height,
+            depth.description.format, mv.description.width, mv.description.height, mv.description.format);
+}
+
+static ffxReturnCode_t FgConfigure(FgCtx* fg, const ffxApiHeader* desc)
+{
+    for (const ffxApiHeader* h = desc; h; h = h->pNext) {
+        switch (h->type) {
+        case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION: {
+            auto* d = (const ffxConfigureDescFrameGeneration*)h;
+            ScState* st = ScFromSwapChain(d->swapChain);
+            if (!st)
+                break;
+            std::lock_guard<std::mutex> lk(st->lock);
+            if (st->gameEnabled != d->frameGenerationEnabled)
+                Log("game frame generation %s (frame %llu, callbacks present %p fg %p)",
+                    d->frameGenerationEnabled ? "on" : "off", (unsigned long long)d->frameID,
+                    (void*)d->presentCallback, (void*)d->frameGenerationCallback);
+            st->gameEnabled = d->frameGenerationEnabled;
+            Order("configure", d->frameID);
+            // only while frame generation is on: RE Requiem configures with frame 0 every frame before that, and
+            // XeSS-FG rejects a second tag for the same frame
+            if (d->HUDLessColor.resource && d->frameGenerationEnabled && g_hudless) {
+                xefg_swapchain_d3d12_resource_data_t rd = {};
+                rd.type = XEFG_SWAPCHAIN_RES_HUDLESS_COLOR;
+                rd.validity = XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
+                rd.resourceSize = {d->HUDLessColor.description.width, d->HUDLessColor.description.height};
+                rd.pResource = (ID3D12Resource*)d->HUDLessColor.resource;
+                rd.incomingState = ToD3D12State(d->HUDLessColor.state);
+                p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, (uint32_t)d->frameID, &rd);
+                if (!st->uiComposition && p_xefgSwapChainSetUiCompositionState) {
+                    xefg_swapchain_result_t r =
+                        p_xefgSwapChainSetUiCompositionState(st->xefg, XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED);
+                    Log("UI composition on (HUD-less color) -> %d", (int)r);
+                    st->uiComposition = true;
+                }
+            }
+            break;
+        }
+        case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_KEYVALUE:
+        case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION_REGISTERDISTORTIONRESOURCE:  // XeSS-FG has no distortion input
+        case FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG:
+            break;
+        default:
+            if (h == desc)
+                return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+        }
+    }
+    return FFX_API_RETURN_OK;
+}
+
+static ffxReturnCode_t FgDispatch(FgCtx* fg, const ffxApiHeader* desc)
+{
+    switch (desc->type) {
+    case FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2: {
+        auto* d = (const ffxDispatchDescFrameGenerationPrepareV2*)desc;
+        TagPrepare(fg, d->frameID, d->commandList, d->renderSize, d->jitterOffset, d->motionVectorScale,
+                   d->frameTimeDelta, d->reset, d->cameraNear, d->cameraFar, d->cameraFovAngleVertical, d->depth,
+                   d->motionVectors, d->cameraPosition, d->cameraUp, d->cameraRight, d->cameraForward);
+        return FFX_API_RETURN_OK;
+    }
+    case FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE: {
+        auto* d = (const ffxDispatchDescFrameGenerationPrepare*)desc;
+        const ffxDispatchDescFrameGenerationPrepareCameraInfo* cam = nullptr;
+        for (const ffxApiHeader* h = desc->pNext; h; h = h->pNext)
+            if (h->type == FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO)
+                cam = (const ffxDispatchDescFrameGenerationPrepareCameraInfo*)h;
+        TagPrepare(fg, d->frameID, d->commandList, d->renderSize, d->jitterOffset, d->motionVectorScale,
+                   d->frameTimeDelta, false, d->cameraNear, d->cameraFar, d->cameraFovAngleVertical, d->depth,
+                   d->motionVectors, cam ? cam->cameraPosition : nullptr, cam ? cam->cameraUp : nullptr,
+                   cam ? cam->cameraRight : nullptr, cam ? cam->cameraForward : nullptr);
+        return FFX_API_RETURN_OK;
+    }
+    case FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION:
+        // The game dispatches the interpolation itself; XeSS-FG does it inside the proxy swap chain instead.
+        return FFX_API_RETURN_OK;
+    default:
+        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// FSR_FG=inject: a game with FSR upscaling and no FSR frame generation (xefg_bridge.h)
+
+extern "C" __declspec(dllexport) HRESULT XefgBridgeCreateSwapChain(IDXGIFactory* factory, ID3D12CommandQueue* queue, HWND hwnd,
+                                                                   const DXGI_SWAP_CHAIN_DESC1* desc,
+                                                                   const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen,
+                                                                   IDXGISwapChain1** out)
+{
+    Init();
+    if (!g_libsOk)
+        return E_FAIL;
+    DXGI_SWAP_CHAIN_DESC1 d1 = *desc;
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC fs = {};
+    if (fullscreen)
+        fs = *fullscreen;
+    IDXGISwapChain4* sc = nullptr;
+    ffxCreateContextDescFrameGenerationSwapChainForHwndDX12 d = {};
+    d.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12;
+    d.swapchain = &sc;
+    d.hwnd = hwnd;
+    d.desc = &d1;
+    d.fullscreenDesc = fullscreen ? &fs : nullptr;
+    d.dxgiFactory = factory;
+    d.gameQueue = queue;
+    ffxContext ctx = nullptr;
+    if (CreateSwapChainContext(&ctx, ScKind::ForHwnd, &d.header) != FFX_API_RETURN_OK)
+        return E_FAIL;
+    auto* st = (ScState*)ctx;
+    st->bridge = true;
+    st->gameEnabled = true;
+    // no FFX context here: only the game's reference stays
+    st->contextRef = nullptr;
+    st->wrapper->Release();
+    ScRelease(st);
+    *out = sc;
+    Log("injected swap chain %p for a game without FSR frame generation", (void*)sc);
+    return S_OK;
+}
+
+extern "C" __declspec(dllexport) void XefgBridgeFrame(const XefgBridgeFrameDesc* f)
+{
+    Init();
+    ScState* st;
+    {
+        std::lock_guard<std::mutex> lk(g_globalLock);
+        st = g_currentSc;
+        if (!st || !st->bridge)
+            return;
+        st->refs++;
+    }
+    uint32_t flags = (f->depthInverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0) |
+                     (f->depthInfinite ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE : 0) |
+                     (f->jitteredMotionVectors ? FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION : 0) |
+                     (f->displayResolutionMotionVectors ? FFX_FRAMEGENERATION_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS : 0);
+    static FgCtx fg;
+    if (!fg.prepares || fg.flags != flags) {
+        // the swap chain was made before the first frame: the next start uses these
+        uint32_t saved;
+        if (!LoadFlags(&saved) || (saved & kXefgFfxFlags) != (flags & kXefgFfxFlags))
+            SaveFlags(flags & kXefgFfxFlags);
+        if (g_initFfxFlags != (flags & kXefgFfxFlags))
+            Log("!! XeSS-FG was set up for flags 0x%x, the game uses 0x%x: wrong until the game starts again", g_initFfxFlags,
+                flags & kXefgFfxFlags);
+    }
+    fg.flags = flags;
+    fg.device = st->device;
+    TagPrepare(&fg, 0, f->commandList, f->renderSize, f->jitter, f->motionVectorScale, f->frameTimeDelta, f->reset,
+               f->cameraNear, f->cameraFar, f->cameraFovY, f->depth, f->motionVectors, nullptr, nullptr, nullptr, nullptr);
+    ScRelease(st);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Exports
+
+static bool IsOurType(uint64_t t)
+{
+    return t == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION ||
+           t == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WRAP_DX12 ||
+           t == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_NEW_DX12 ||
+           t == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12;
+}
+
+extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* context, ffxCreateContextDescHeader* desc,
+                                                                  const ffxAllocationCallbacks*)
+{
+    Init();
+    if (!context || !desc)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    if (!IsOurType(desc->type))
+        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+    if (!g_libsOk) {
+        Log("create %llx: XeSS-FG/XeLL not available", (unsigned long long)desc->type);
+        return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
+    }
+
+    if (desc->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION) {
+        auto* d = (const ffxCreateContextDescFrameGeneration*)desc;
+        auto* fg = new FgCtx();
+        fg->flags = d->flags;
+        fg->displayW = d->displaySize.width;
+        fg->displayH = d->displaySize.height;
+        fg->maxRenderW = d->maxRenderSize.width;
+        fg->maxRenderH = d->maxRenderSize.height;
+        fg->backBufferFormat = d->backBufferFormat;
+        for (const ffxApiHeader* h = desc->pNext; h; h = h->pNext)
+            if (h->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12)
+                fg->device = ((const ffxCreateBackendDX12Desc*)h)->device;
+        {
+            std::lock_guard<std::mutex> lk(g_globalLock);
+            g_lastFgFlags = d->flags;
+            g_haveFgFlags = true;
+        }
+        *context = fg;
+        Log("fg context %p: flags 0x%x display %ux%u maxRender %ux%u", (void*)fg, fg->flags, fg->displayW, fg->displayH,
+            fg->maxRenderW, fg->maxRenderH);
+        uint32_t saved;
+        if (!LoadFlags(&saved) || (saved & kXefgFfxFlags) != (d->flags & kXefgFfxFlags))
+            SaveFlags(d->flags & kXefgFfxFlags);
+        if (ScFromSwapChain(nullptr) && g_initFfxFlags != (d->flags & kXefgFfxFlags))
+            Log("!! XeSS-FG was set up for flags 0x%x, the game uses 0x%x (depth direction, motion vectors): wrong until "
+                "the game starts again, which then uses the game's",
+                g_initFfxFlags, d->flags & kXefgFfxFlags);
+        LogUpscalers(fg->device);
+        return FFX_API_RETURN_OK;
+    }
+    ScKind kind = desc->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WRAP_DX12  ? ScKind::Wrap
+                  : desc->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_NEW_DX12 ? ScKind::New
+                                                                                                     : ScKind::ForHwnd;
+    return CreateSwapChainContext(context, kind, desc);
+}
+
+extern "C" __declspec(dllexport) ffxReturnCode_t ffxDestroyContext(ffxContext* context, const ffxAllocationCallbacks*)
+{
+    Init();
+    if (!context || !*context)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    uint32_t magic = *(uint32_t*)*context;
+    if (magic == MAGIC_FG) {
+        auto* fg = (FgCtx*)*context;
+        Log("destroy fg context %p (prepares %llu)", (void*)fg, (unsigned long long)fg->prepares);
+        delete fg;
+    } else if (magic == MAGIC_SC) {
+        auto* st = (ScState*)*context;
+        {
+            std::lock_guard<std::mutex> lk(g_globalLock);
+            if (g_currentSc == st)
+                g_currentSc = nullptr;
+        }
+        FgSwapChain* w = st->contextRef;
+        st->contextRef = nullptr;
+        ULONG left = w ? w->Release() : 0;
+        Log("destroy swap chain context %p (game still holds the swap chain: %s)", (void*)st, left ? "yes" : "no");
+        ScRelease(st);
+    } else {
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    }
+    *context = nullptr;
+    return FFX_API_RETURN_OK;
+}
+
+extern "C" __declspec(dllexport) ffxReturnCode_t ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc)
+{
+    Init();
+    if (!desc)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    if (!context || !*context)
+        return desc->type == FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG ? FFX_API_RETURN_OK
+                                                                     : FFX_API_RETURN_ERROR_PARAMETER;
+    uint32_t magic = *(uint32_t*)*context;
+    if (magic == MAGIC_FG)
+        return FgConfigure((FgCtx*)*context, desc);
+    if (magic != MAGIC_SC)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+
+    auto* st = (ScState*)*context;
+    switch (desc->type) {
+    case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12: {
+        auto* d = (const ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12*)desc;
+        std::lock_guard<std::mutex> lk(st->lock);
+        if (st->ui.resource)
+            ((ID3D12Resource*)st->ui.resource)->Release();
+        st->ui = d->uiResource;
+        st->uiFlags = d->flags;
+        if (st->ui.resource) {
+            ((ID3D12Resource*)st->ui.resource)->AddRef();
+            if (!st->uiComposition && p_xefgSwapChainSetUiCompositionState) {
+                p_xefgSwapChainSetUiCompositionState(st->xefg, XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED);
+                st->uiComposition = true;
+            }
+        }
+        Log("UI resource %p flags 0x%x", st->ui.resource, d->flags);
+        return FFX_API_RETURN_OK;
+    }
+    case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_KEYVALUE_DX12:
+    case FFX_API_CONFIGURE_DESC_TYPE_GLOBALDEBUG:
+        return FFX_API_RETURN_OK;
+    default:
+        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+    }
+}
+
+extern "C" __declspec(dllexport) ffxReturnCode_t ffxQuery(ffxContext* context, ffxQueryDescHeader* desc)
+{
+    Init();
+    if (!desc)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_GET_VERSIONS) {
+        auto* d = (ffxQueryDescGetVersions*)desc;
+        if (!IsOurType(d->createDescType) || !g_libsOk) {
+            if (d->outputCount)
+                *d->outputCount = 0;
+            return FFX_API_RETURN_OK;
+        }
+        if (d->outputCount) {
+            uint64_t cap = *d->outputCount;
+            if (cap > 0 || d->versionIds || d->versionNames) {
+                if (d->versionIds)
+                    d->versionIds[0] = kProviderVersionId;
+                if (d->versionNames)
+                    d->versionNames[0] = kProviderVersionName;
+            }
+            *d->outputCount = 1;
+        }
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION) {
+        auto* d = (ffxQueryGetProviderVersion*)desc;
+        d->versionId = kProviderVersionId;
+        d->versionName = kProviderVersionName;
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE) {
+        auto* d = (ffxQueryDescFrameGenerationGetGPUMemoryUsage*)desc;
+        if (d->gpuMemoryUsageFrameGeneration)
+            *d->gpuMemoryUsageFrameGeneration = {};
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATION_GPU_MEMORY_USAGE_V2) {
+        auto* d = (ffxQueryDescFrameGenerationGetGPUMemoryUsageV2*)desc;
+        if (d->gpuMemoryUsageFrameGeneration)
+            *d->gpuMemoryUsageFrameGeneration = {};
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_DX12) {
+        auto* d = (ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12*)desc;
+        if (d->gpuMemoryUsageFrameGenerationSwapchain)
+            *d->gpuMemoryUsageFrameGenerationSwapchain = {};
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_GPU_MEMORY_USAGE_DX12_V2) {
+        auto* d = (ffxQueryFrameGenerationSwapChainGetGPUMemoryUsageDX12V2*)desc;
+        if (d->gpuMemoryUsageFrameGenerationSwapchain)
+            *d->gpuMemoryUsageFrameGenerationSwapchain = {};
+        return FFX_API_RETURN_OK;
+    }
+
+    if (!context || !*context || *(uint32_t*)*context != MAGIC_SC)
+        return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+    auto* st = (ScState*)*context;
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONCOMMANDLIST_DX12) {
+        auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12*)desc;
+        if (d->pOutCommandList)
+            *d->pOutCommandList = st->cmdList;
+        return FFX_API_RETURN_OK;
+    }
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONTEXTURE_DX12) {
+        auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12*)desc;
+        if (d->pOutTexture) {
+            *d->pOutTexture = {};
+            d->pOutTexture->resource = st->interpTex;
+            d->pOutTexture->description.type = FFX_API_RESOURCE_TYPE_TEXTURE2D;
+            d->pOutTexture->description.format = FFX_API_SURFACE_FORMAT_R10G10B10A2_UNORM;
+            if (st->format == DXGI_FORMAT_R8G8B8A8_UNORM)
+                d->pOutTexture->description.format = FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+            else if (st->format == DXGI_FORMAT_B8G8R8A8_UNORM)
+                d->pOutTexture->description.format = FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM;
+            else if (st->format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+                d->pOutTexture->description.format = FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+            d->pOutTexture->description.width = st->width;
+            d->pOutTexture->description.height = st->height;
+            d->pOutTexture->description.depth = 1;
+            d->pOutTexture->description.mipCount = 1;
+            d->pOutTexture->description.usage = FFX_API_RESOURCE_USAGE_UAV;
+            d->pOutTexture->state = FFX_API_RESOURCE_STATE_UNORDERED_ACCESS;
+        }
+        return FFX_API_RETURN_OK;
+    }
+    return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+}
+
+extern "C" __declspec(dllexport) ffxReturnCode_t ffxDispatch(ffxContext* context, const ffxDispatchDescHeader* desc)
+{
+    Init();
+    if (!desc || !context || !*context)
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    uint32_t magic = *(uint32_t*)*context;
+    if (magic == MAGIC_FG)
+        return FgDispatch((FgCtx*)*context, desc);
+    if (magic == MAGIC_SC && desc->type == FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_WAIT_FOR_PRESENTS_DX12)
+        return FFX_API_RETURN_OK;
+    return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
+}
+
+BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_self = inst;
+        DisableThreadLibraryCalls(inst);
+    }
+    return TRUE;
+}

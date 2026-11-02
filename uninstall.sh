@@ -40,14 +40,15 @@ while IFS= read -r lib; do
   for c in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/ControlLib.dll; do
     [ -f "$c" ] && grep -aq 'XESS_FG' "$c" && rm -f "$c"
   done
-  # XeSS libraries a killed XESS=latest run left as links into the package (tools/proton-hook.py): originals back,
-  # each in one rename over the link
-  while IFS= read -r -d '' o; do
-    f="${o%.xmx-orig}"
-    if [ -L "$f" ] && [ "$(readlink "$f")" = "$PKG/xess/$(basename "$f" | tr '[:upper:]' '[:lower:]')" ]; then
-      mv -f "$o" "$f" && echo "   restored $f"
-    fi
-  done < <(find "$lib"/steamapps/common -maxdepth 11 -name '*.xmx-orig' -print0 2>/dev/null)
+  # files a killed XESS=latest / FSR_FG=xess run left as links into the package (tools/proton-hook.py): originals back,
+  # each in one rename over the link; links to files the game never had go
+  while IFS= read -r -d '' f; do
+    if [ -f "$f.xmx-orig" ]; then mv -f "$f.xmx-orig" "$f" && echo "   restored $f"; else rm -f "$f" && echo "   removed $f"; fi
+  done < <(find "$lib"/steamapps/common -maxdepth 11 -type l \( -lname "$PKG/xess/*" -o -lname "$PKG/ffxfg/*" -o -lname "$PKG/ffx/*" \) -print0 2>/dev/null)
+  # games switched with tools/fsr-fg.sh on
+  for d in "$lib"/steamapps/common/*/; do
+    find "$d" -maxdepth 11 \( -name '*.ffxfg-orig' -o -name .ffxfg-added \) 2>/dev/null | grep -q . && bash "$PKG/tools/fsr-fg.sh" off "$d"
+  done
 done <<< "$LIBS"
 rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/xess-swap"
 echo "restored $n igdext64.dll file(s); environment and watcher removed. Reboot or re-login to drop the variables from Steam."

@@ -8,6 +8,16 @@
 #                           (IGDEXT_FORCE_FALLBACK=1)
 #   XESS_LOG=1 %command%    the shim's trace and the XeLL, XeSS-FG and ControlLib.dll logs (IGDEXT_TRACE=1
 #                           IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1)
+#   FSR=xess %command%      a game's FSR 3.1+ runs on XeSS: its amd_fidelityfx_upscaler_dx12.dll and
+#                           amd_fidelityfx_framegeneration_dx12.dll become the package's (ffxfg/, XeSS SR and XeSS-FG,
+#                           docs/fsr-frame-generation.md), with the SDK's libxess.dll, libxess_fg.dll and libxell.dll
+#                           next to them. FSR 3.1.0-3.1.3 has everything in one amd_fidelityfx_dx12.dll: AMD's loader
+#                           takes its place, with the providers next to it (tools/get-ffx.sh, <package>/ffx)
+#   FSR_FG=xess %command%   only the frame generation (the game's own FSR upscaler stays)
+#   FSR=xess FSR_FG=inject %command%   for a game with FSR 3.1+ upscaling and no FSR frame generation: dxgi.dll next to
+#                           the game gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/)
+# Debug: FSR=amd (AMD's FSR 3.1 upscaler from tools/get-ffx.sh), FSR_VENDOR=amd (DXVK reports the GPU as AMD's, for a
+# game that offers FSR only on AMD GPUs; XeSS still gets Intel's vendor id from the package's DLLs).
 # (XESS_FG=<n>, the frame generation override, needs no hook: ControlLib.dll and the shim read it in the game)
 # The game's own old libraries are not given the Intel GPU (DXVK_CONFIG=dxgi.customVendorId = 8086 would): Cyberpunk
 # 2077's XeSS-FG 1.1.0.19 then crashes on a null context (libxess_fg +0x238ea4); with the SDK's 1.3.1.78 it works.
@@ -18,10 +28,18 @@
 # next game start (with or without XESS) or uninstall.sh puts the originals back. Steam starts Proton more than once for
 # some games (a launcher, install scripts), so each run that swaps holds a lock file listing its links for as long as
 # it lives: links whose lock nobody holds any more are left over; links of a live run are not touched.
+# FSR / FSR_FG swap the same way; a file the game does not have (libxess_fg.dll, libxell.dll, the upscaler and frame
+# generation DLLs next to the loader) is added as a link (no .xmx-orig) and removed again.
 import atexit, fcntl, os, signal, sys
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(PKG, "xess")
+FFXFG = os.path.join(PKG, "ffxfg")   # the package's FidelityFX upscaler and frame generation on XeSS
+FFX = os.path.join(PKG, "ffx")   # AMD's loader and upscaler (tools/get-ffx.sh)
+FG_DLL = "amd_fidelityfx_framegeneration_dx12.dll"
+SINGLE_DLL = "amd_fidelityfx_dx12.dll"   # FSR 3.1.0-3.1.3: upscaler and frame generation in one
+LOADER_DLL = "amd_fidelityfx_loader_dx12.dll"
+UPSCALER_DLL = "amd_fidelityfx_upscaler_dx12.dll"
 LIBS = ("libxess.dll", "libxess_dx11.dll", "libxess_fg.dll", "libxell.dll")
 # one lock file per run that swapped: its links, one path per line; the run holds an exclusive lock on it until it ends
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
@@ -51,25 +69,28 @@ def vstr(v):
     return ".".join(map(str, v)) if v else "?"
 
 
-def game_libs(game):
+def game_libs(game, names=LIBS):
     for top, dirs, files in os.walk(game):
         if top[len(game):].count(os.sep) >= 10:
             dirs[:] = []
         for name in files:
-            if name.lower() in LIBS:
+            if name.lower() in names:
                 yield os.path.join(top, name)
 
 
 def ours(path):
-    return os.path.islink(path) and os.readlink(path) == os.path.join(STORE, os.path.basename(path).lower())
+    return os.path.islink(path) and os.path.dirname(os.readlink(path)) in (STORE, FFXFG, FFX)
 
 
 def put_back(path):
-    if ours(path) and os.path.isfile(path + ".xmx-orig"):
+    if not ours(path):
+        return False
+    if os.path.isfile(path + ".xmx-orig"):
         # one rename over the link: there is no moment without the file, whatever interrupts this
         os.replace(path + ".xmx-orig", path)
-        return True
-    return False
+    else:
+        os.remove(path)   # added by FSR_FG=xess: the game has no such file of its own
+    return True
 
 
 def clean_left_over():
@@ -93,70 +114,239 @@ def clean_left_over():
             paths = [l.rstrip("\n") for l in f if l.strip()]
             for p in paths:
                 if put_back(p):
-                    say("XESS=latest: %s put back (left by a run that was killed)" % p)
+                    say("XESS / FSR_FG: %s put back (left by a run that was killed)" % p)
             if not any(ours(p) for p in paths):
                 os.remove(lf)
+
+
+class Swaps:
+    """the links this run made; held in a lock file while the game runs (clean_left_over)"""
+
+    def __init__(self):
+        self.paths = []
+        self.lock = None
+
+    def link(self, f, target):
+        """f (existing or not) becomes a link to target; an existing f is kept as f.xmx-orig"""
+        if self.lock is None:
+            os.makedirs(LOCKS, exist_ok=True)
+            self.lock = open(os.path.join(LOCKS, "%d-%x" % (os.getpid(), id(self))), "w")
+            fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX)
+        self.lock.write(f + "\n")
+        self.lock.flush()
+        if os.path.exists(f):
+            os.rename(f, f + ".xmx-orig")
+        os.symlink(target, f)
+        self.paths.append(f)
+
+
+def fresh(f):
+    """False while another run of this game has f swapped; drops an .xmx-orig a killed run left behind"""
+    if os.path.islink(f):
+        return False
+    if os.path.exists(f + ".xmx-orig"):
+        os.remove(f + ".xmx-orig")   # from a killed run, and the game was updated or verified since: f is the original
+    return True
+
+
+def xess_latest(game, swaps):
+    for f in game_libs(game):
+        if not fresh(f):
+            continue
+        sdk = os.path.join(STORE, os.path.basename(f).lower())
+        vg, vs = version(f), version(sdk)
+        rel = os.path.relpath(f, game)
+        if vg and vs and vg < vs:
+            swaps.link(f, sdk)
+            say("XESS=latest: %s %s -> %s" % (rel, vstr(vg), vstr(vs)))
+        else:
+            say("XESS=latest: %s %s kept (the SDK has %s)" % (rel, vstr(vg), vstr(vs)))
+
+
+def inject_fg(top, swaps, ours_fg):
+    """FSR_FG=inject, for a game with FSR upscaling and no frame generation it can use here: our dxgi.dll gives it an
+    XeSS-FG swap chain and our upscaler feeds that. Beside the game's DLLs, none of which changes."""
+    dxgi = os.path.join(FFXFG, "dxgi.dll")
+    f = os.path.join(top, "dxgi.dll")
+    if not os.path.isfile(dxgi):
+        say("FSR_FG=inject: %s missing" % dxgi)
+    elif not any(n.lower().endswith(".exe") for n in os.listdir(top)):
+        say("FSR_FG=inject: no game exe next to the upscaler in %s; no frame generation" % top)
+    elif os.path.lexists(f):
+        say("FSR_FG=inject: the game folder already has a dxgi.dll; no frame generation")
+    else:
+        swaps.link(f, dxgi)
+        swaps.link(os.path.join(top, "ffx_xefg_bridge.dll"), ours_fg)
+        say("FSR_FG=inject: XeSS-FG swap chain through %s" % f)
+
+
+def fsr(game, swaps, fg, sr, inject=False):
+    """FSR=xess (upscaling on XeSS SR and frame generation on XeSS-FG), FSR_FG=xess (frame generation only) and the
+    debug FSR=amd (AMD's FSR 3.1 upscaler) in every folder with FidelityFX DLLs. FSR 3.1.4+ has a loader with the
+    providers next to it, and only those are swapped. FSR 3.1.0-3.1.3 has everything in one amd_fidelityfx_dx12.dll:
+    AMD's loader (the same five exports; it loads the providers by name from its own folder) takes its place, with an
+    upscaler and a frame generation provider next to it. Returns True when something was swapped."""
+    ours_up, ours_fg = os.path.join(FFXFG, UPSCALER_DLL), os.path.join(FFXFG, FG_DLL)
+    loader, amd_up, amd_fg = (os.path.join(FFX, n) for n in (LOADER_DLL, UPSCALER_DLL, FG_DLL))
+    if fg and not (os.path.isfile(ours_fg) and os.path.isfile(os.path.join(STORE, "libxess_fg.dll"))):
+        say("FSR: %s or the XeSS SDK (%s, tools/get-xess.sh) missing; the game's own frame generation is used"
+            % (ours_fg, STORE))
+        fg = False
+    if sr == "xess" and not (os.path.isfile(ours_up) and os.path.isfile(os.path.join(STORE, "libxess.dll"))):
+        say("FSR=xess: %s or the XeSS SDK (%s, tools/get-xess.sh) missing; the game's own upscaler is used"
+            % (ours_up, STORE))
+        sr = ""
+    if sr == "amd" and not os.path.isfile(amd_up):
+        say("FSR=amd: no %s (tools/get-ffx.sh); the game's own upscaler is used" % amd_up)
+        sr = ""
+    up = {"xess": ours_up, "amd": amd_up}.get(sr)
+    if not (fg or up):
+        return False
+    folders = {}
+    for f in game_libs(game, (FG_DLL, UPSCALER_DLL, SINGLE_DLL)):
+        folders.setdefault(os.path.dirname(f), set()).add(os.path.basename(f).lower())
+    if not folders:
+        say("FSR: no FidelityFX DLL in the game folder (the game has no FSR 3.1+)")
+    name = {"xess": "XeSS SR", "amd": "AMD's FSR 3.1"}
+    done = False
+    for top, names in sorted(folders.items()):
+        rel = os.path.relpath(top, game)
+        swapped = False
+        if SINGLE_DLL in names and not names & {FG_DLL, UPSCALER_DLL}:
+            single = os.path.join(top, SINGLE_DLL)
+            need = [loader] + ([] if sr == "xess" else [amd_up]) + ([] if fg else [amd_fg])
+            if not all(os.path.isfile(f) for f in need):
+                say("FSR: %s has FSR 3.1.0-3.1.3 (one %s); it needs AMD's loader and providers in %s "
+                    "(run %s/tools/get-ffx.sh)" % (rel, SINGLE_DLL, FFX, PKG))
+                continue
+            if not fresh(single):
+                continue
+            v = vstr(version(single))
+            swaps.link(single, loader)
+            swaps.link(os.path.join(top, UPSCALER_DLL), up or amd_up)
+            swaps.link(os.path.join(top, FG_DLL), ours_fg if fg else amd_fg)
+            say("FSR: %s FidelityFX %s in one DLL -> AMD's loader, upscaler %s, frame generation %s"
+                % (rel, v, name.get(sr, "AMD's FSR 3.1"), "XeSS-FG" if fg else "AMD's"))
+            swapped = True
+        else:
+            if fg and FG_DLL in names and fresh(os.path.join(top, FG_DLL)):
+                swaps.link(os.path.join(top, FG_DLL), ours_fg)
+                say("FSR: %s -> XeSS-FG" % os.path.join(rel, FG_DLL))
+                swapped = True
+            if up and UPSCALER_DLL in names and fresh(os.path.join(top, UPSCALER_DLL)):
+                swaps.link(os.path.join(top, UPSCALER_DLL), up)
+                say("FSR: %s -> %s" % (os.path.join(rel, UPSCALER_DLL), name[sr]))
+                swapped = True
+        if not swapped:
+            continue
+        done = True
+        xess_libs(top, swaps, (["libxess_fg.dll", "libxell.dll"] if fg else []) + (["libxess.dll"] if sr == "xess" else []))
+        if inject and fg and sr == "xess":
+            inject_fg(top, swaps, ours_fg)
+    return done
+
+
+def xess_libs(top, swaps, names):
+    """the SDK's libraries next to the FidelityFX providers that use them, unless the game's own are newer"""
+    for name in names:
+        lib = os.path.join(top, name)
+        if os.path.lexists(lib) and not fresh(lib):
+            continue   # already a link of ours (XESS=latest)
+        vg, vs = version(lib), version(os.path.join(STORE, name))
+        if vg and vs and vg > vs:
+            say("FSR: %s %s kept (newer than the SDK's %s)" % (name, vstr(vg), vstr(vs)))
+            continue
+        swaps.link(lib, os.path.join(STORE, name))
+
+
+def proton_session():
+    """Proton's Session while it imports user_settings.py: its env is a copy of the environment made before that, and its
+    dlloverrides go into WINEDLLOVERRIDES after it"""
+    s = getattr(sys.modules.get("__main__"), "g_session", None)
+    return s if isinstance(getattr(s, "env", None), dict) and isinstance(getattr(s, "dlloverrides", None), dict) else None
+
+
+def add_env(key, value, has):
+    """value for key; one the environment already has (launch options) gets it appended, unless it has <has> in it"""
+    s = proton_session()
+    cur = (s.env if s else os.environ).get(key)
+    if cur is None:
+        SETTINGS[key] = value
+    elif has in cur:
+        say("%s=%s from the launch options stays as it is" % (key, cur))
+    elif s:
+        s.env[key] = cur + "; " + value
+    else:
+        say("%s is set in the launch options, so it stays as it is; add %s there" % (key, value))
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in ("waitforexitandrun", "run"):
         return
     want = os.environ.get("XESS", "")
+    fg = os.environ.get("FSR_FG", "")
+    sr = os.environ.get("FSR", "")
     game = os.environ.get("STEAM_COMPAT_INSTALL_PATH", "")
     clean_left_over()
+    # a session started before install.sh disabled present wait 2 as well (frame generation crashed in
+    # vkWaitForPresent2KHR) still has the old value until the next login
+    s = proton_session()
+    if s and s.env.get("VKD3D_DISABLE_EXTENSIONS") == "VK_EXT_descriptor_buffer":
+        s.env["VKD3D_DISABLE_EXTENSIONS"] = "VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
     if os.environ.get("XESS_LOG", "") not in ("", "0"):
         SETTINGS.update({"IGDEXT_TRACE": "1", "IGDEXT_XELL_LOG": "1", "IGDEXT_XEFG_LOG": "1", "XESS_FG_LOG": "1"})
         say("XESS_LOG: C:\\igdext_trace.log, igdext_xell.log, igdext_xefg.log, igcl_stub.log in the prefix")
     if want == "dp4a":
         SETTINGS["IGDEXT_FORCE_FALLBACK"] = "1"
-        return
-    if want != "latest":
-        if want:
-            say("XESS=%s: unknown value (latest, dp4a); ignored" % want)
+    elif want and want != "latest":
+        say("XESS=%s: unknown value (latest, dp4a); ignored" % want)
+    inject = fg == "inject"
+    if inject and sr != "xess":
+        say("FSR_FG=inject needs FSR=xess; ignored")
+    if fg and fg not in ("xess", "inject"):
+        say("FSR_FG=%s: unknown value (xess, inject); ignored" % fg)
+    if sr and sr not in ("xess", "amd"):
+        say("FSR=%s: unknown value (xess; amd for AMD's FSR 3.1); ignored" % sr)
+        sr = ""
+    if sr == "xess":
+        fg = "xess"
+    if want != "latest" and fg != "xess" and not sr:
         return
     if not game or not os.path.isdir(game):
-        say("XESS=latest: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
+        say("XESS / FSR: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
         return
-    if not os.path.isfile(os.path.join(STORE, "libxess.dll")):
-        say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used" % (STORE, PKG))
-        return
-    swapped = []
-    lock = None
-    for f in game_libs(game):
-        if os.path.islink(f):
-            continue   # another run of this game swapped it and is still running
-        orig = f + ".xmx-orig"
-        if os.path.exists(orig):
-            os.remove(orig)   # from a killed run, and the game was updated or verified since: f is the original now
-        sdk = os.path.join(STORE, os.path.basename(f).lower())
-        vg, vs = version(f), version(sdk)
-        rel = os.path.relpath(f, game)
-        if vg and vs and vg < vs:
-            if lock is None:
-                os.makedirs(LOCKS, exist_ok=True)
-                lock = open(os.path.join(LOCKS, "%d-%x" % (os.getpid(), id(swapped))), "w")
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            lock.write(f + "\n")
-            lock.flush()
-            os.rename(f, orig)
-            os.symlink(sdk, f)
-            swapped.append(f)
-            say("XESS=latest: %s %s -> %s" % (rel, vstr(vg), vstr(vs)))
+    swaps = Swaps()
+    if want == "latest":
+        if os.path.isfile(os.path.join(STORE, "libxess.dll")):
+            xess_latest(game, swaps)
         else:
-            say("XESS=latest: %s %s kept (the SDK has %s)" % (rel, vstr(vg), vstr(vs)))
-    if not swapped:
+            say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
+                % (STORE, PKG))
+    if fsr(game, swaps, fg == "xess", sr, inject) and os.environ.get("FSR_VENDOR", "") == "amd":
+        # debug, for a game that offers FSR only on AMD GPUs; XeSS still gets Intel's vendor id from the package's DLLs
+        add_env("DXVK_CONFIG", "dxgi.customVendorId = 1002", "customVendorId")
+    if swaps.paths:
+        # XeSS finds the shim in the prefix's driver store only through this variable under Valve's Proton 11;
+        # GE-Proton sets it itself
+        store = os.path.join(os.environ.get("STEAM_COMPAT_DATA_PATH", ""), "pfx", "drive_c", "windows", "system32",
+                             "driverstore", "filerepository", "igd_faux.inf_1")
+        s = proton_session()
+        env = s.env if s else os.environ
+        if os.path.isfile(os.path.join(store, "igdext64.dll")) and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
+            SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
+    if not swaps.paths:
         return
 
     def restore():
-        n = sum(1 for f in swapped if put_back(f))
-        swapped.clear()
+        n = sum(1 for f in swaps.paths if put_back(f))
+        swaps.paths.clear()
         try:
-            os.remove(lock.name)
-            lock.close()
+            os.remove(swaps.lock.name)
+            swaps.lock.close()
         except OSError:
             pass
         if n:
-            say("XESS=latest: the game's own XeSS libraries are back")
+            say("XESS / FSR / DLSS: the game's own files are back")
 
     sigs = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 

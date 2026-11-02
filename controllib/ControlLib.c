@@ -113,11 +113,14 @@ static void enum_devices(void)
     for (UINT i = 0; g_ndev < 4 && f->lpVtbl->EnumAdapters1(f, i, &a) != DXGI_ERROR_NOT_FOUND; i++)
     {
         DXGI_ADAPTER_DESC1 d;
-        if (SUCCEEDED(a->lpVtbl->GetDesc1(a, &d)) && d.VendorId == 0x8086 && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+        // also an Intel GPU whose vendor id DXVK reports as another one (dxgi.customVendorId, e.g. 1002 for a game that
+        // offers FSR only on AMD): the description stays Intel's
+        if (SUCCEEDED(a->lpVtbl->GetDesc1(a, &d)) && (d.VendorId == 0x8086 || wcsncmp(d.Description, L"Intel", 5) == 0) &&
+            !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
         {
             dev_t* v = &g_devs[g_ndev++];
             v->magic = 0x49474344; v->luid = d.AdapterLuid;
-            v->vendor = d.VendorId; v->device = d.DeviceId; v->rev = d.Revision;
+            v->vendor = 0x8086; v->device = d.DeviceId; v->rev = d.Revision;
             WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, v->name, sizeof(v->name), NULL, NULL);
             say("  device %u: %04x:%04x '%s' luid %08lx:%08lx", g_ndev - 1, v->vendor, v->device, v->name,
                 (unsigned long)v->luid.HighPart, (unsigned long)v->luid.LowPart);

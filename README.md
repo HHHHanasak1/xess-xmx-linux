@@ -9,7 +9,12 @@ vkd3d-proton:
 * a patched Mesa **ANV** Vulkan driver compiles those kernels with Intel's compiler (IGC) on first use and runs them in
   place of the placeholders, inside the normal vkd3d-proton queue;
 * `ControlLib.dll`, a stand-in for Intel's Control Library, gives XeSS frame generation the override that Intel
-  Graphics Software sets on Windows: `XESS_FG=<n>` in a game's launch options.
+  Graphics Software sets on Windows: `XESS_FG=<n>` in a game's launch options;
+* `amd_fidelityfx_upscaler_dx12.dll` and `amd_fidelityfx_framegeneration_dx12.dll` run a game's FSR 3.1+ upscaling
+  and frame generation on XeSS, so a game without XeSS gets XeSS on XMX and multi-frame generation as well: `FSR=xess`
+  in its launch options ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)). A game that has XeSS itself
+  should use that: this route can flicker more. With `dxgi.dll`, a game with FSR upscaling and no FSR frame generation
+  gets XeSS frame generation as well: `FSR=xess FSR_FG=inject`.
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
 Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super resolution renders correctly and is
@@ -22,8 +27,8 @@ menu offers: up to 4x as Intel's override does, and experimentally up to **8x**
 
 Download the release archive, unpack it somewhere it can stay, and run:
 
-    ./install.sh     # once; fetches the compiler bundle (about 230 MB) and Intel's XeSS SDK libraries (77 MB),
-                     # then reboot or log out and in
+    ./install.sh     # once; fetches the compiler bundle (about 230 MB), Intel's XeSS SDK libraries (77 MB) and
+                     # AMD's FidelityFX loader and providers (87 MB), then reboot or log out and in
     ./uninstall.sh   # reverts everything
 
 Every game started from Steam afterwards uses the patched driver, no launch options needed. In the game, select XeSS
@@ -35,8 +40,8 @@ What `install.sh` does:
 * writes `~/.config/environment.d/50-xess-xmx.conf`:
   - the patched driver as the 64-bit Intel Vulkan driver (other GPUs' drivers and the 32-bit Intel driver stay in the
     list) and the kernel compiler;
-  - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`, which the kernel binding code needs (it applies to every D3D12
-    game of the session);
+  - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2`: the kernel binding code needs the first,
+    and present wait 2 crashed games with frame generation (it applies to every D3D12 game of the session);
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
 * puts the shim into every Proton that bundles an `igdext64.dll` and into every prefix, keeping the original as
   `.stock`, and enables a watcher that repeats this after a Proton update and for a new prefix. Every Steam library
@@ -45,8 +50,9 @@ What `install.sh` does:
   commands that put the shim in, and games on it run on DP4a until then;
 * puts `ControlLib.dll` into every prefix, for `XESS_FG`;
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
-  each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
-  runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));
+  each game the `XESS=...` and `FSR=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries
+  while the game runs, for a game whose XeSS is too old to see the Intel GPU
+  ([docs/launch-options.md](docs/launch-options.md));
 * enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
   the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
@@ -93,9 +99,11 @@ check before a session (for example after a system update), the other one become
 
 ## Games
 
-See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
+See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG with `FSR_FG=inject`), Cyberpunk
 2077 (SR + FG with `XESS=latest`, which replaces its older XeSS libraries while it runs; 4x and more with `XESS_FG`),
-FSR 4 on XMX through upscaler builds from the OptiScaler Discord (experimental), notes on OptiScaler and on a game without XeSS.
+FSR 4 on XMX through upscaler builds from the OptiScaler Discord (no longer developed, the notes stay), notes on
+OptiScaler and on a game without XeSS. FSR frame generation on XeSS-FG: CONTROL Resonant, Resident Evil Requiem;
+Forza Horizon 6 from its FSR upscaling ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)).
 
 ## Troubleshooting
 
@@ -155,10 +163,16 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
                                   RE Engine games
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
+    ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
+                                  amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
+                                  dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject);
+                                  get-headers.sh fetches the AMD / Intel headers they are built against
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
-    tools/proton-hook.py          XESS / XESS_LOG launch options, run by Proton through user_settings.py
+    tools/get-ffx.sh              fetches AMD's FidelityFX loader and upscaler into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
+    tools/proton-hook.py          XESS / XESS_LOG / FSR / FSR_FG launch options, run by Proton through user_settings.py
+    tools/fsr-fg.sh               FSR on XeSS for one game, for Protons without the hook
     tools/steam-libraries.sh      every Steam library (libraryfolders.vdf), for the scripts
     tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
     tools/switch-driver.sh        sets the default among the package's drivers (per game: MESA)
@@ -172,11 +186,12 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/xell-probe.sh           XeLL driver-mode probe (docs/debugging.md)
     tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
     docs/                         how it works, building, debugging, games, Steam launch options
-    .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the ICD and both drivers, checks the scripts
+    .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
+                                  drivers, checks the scripts
 
-The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the drivers in `lib/mesa-<version>/`, the
-ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from
-the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, the drivers in
+`lib/mesa-<version>/`, the ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are
+compiled on your machine from the SPIR-V inside the game's XeSS libraries.
 
 ## License
 

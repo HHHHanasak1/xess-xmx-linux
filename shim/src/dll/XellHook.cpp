@@ -354,7 +354,9 @@ static void XefgInitBefore(const char* name, void* ctx, const void* params)
 {
     XefgRaiseOnce(g_fgDevice, ctx);
     uint32_t want = params ? ((const XefgInitParams*) params)->maxInterpolatedFrames : 0;
-    FLog("%s: game asks maxInterpolatedFrames %u%s", name, want, want == 0xFFFFFFFFu ? " (maximum supported)" : "");
+    FLog("%s: game asks maxInterpolatedFrames %u%s, init flags 0x%x, ui mode %u", name, want,
+         want == 0xFFFFFFFFu ? " (maximum supported)" : "", params ? ((const XefgInitParams*) params)->initFlags : 0u,
+         params ? *(const uint32_t*) (((const XefgInitParams*) params)->rest + 40) : 0u);
 }
 static void XefgInitAfter(void* ctx, int32_t r)
 {
@@ -405,6 +407,61 @@ static int32_t Hook_XefgSetNum(void* ctx, uint32_t n)
     return r;
 }
 
+// xefgSwapChainTagFrameConstants(ctx, presentId, constants): with XESS_LOG the camera a game hands to XeSS-FG, two
+// frames in a row every 300 (what the header's "row-major" means in practice; FSR_FG=xess builds these itself)
+struct XefgFrameConstants { float view[16], proj[16], jitterX, jitterY, mvScaleX, mvScaleY; uint32_t reset; float renderTime; };
+typedef int32_t (*PFN_XefgTagConstants)(void* ctx, uint32_t id, const XefgFrameConstants* c);
+static PFN_XefgTagConstants g_fgTagConstants;
+static int32_t Hook_XefgTagConstants(void* ctx, uint32_t id, const XefgFrameConstants* c)
+{
+    static volatile LONG n;
+    LONG k = InterlockedIncrement(&n);
+    if (g_fgLog && c && (k % 300 == 0 || k % 300 == 1))
+    {
+        char b[1024]; int o = 0;
+        for (int i = 0; i < 16; ++i) o += snprintf(b + o, sizeof(b) - o, "%s%.5g", i ? (i % 4 ? " " : " | ") : "", c->view[i]);
+        o += snprintf(b + o, sizeof(b) - o, "   proj ");
+        for (int i = 0; i < 16; ++i) o += snprintf(b + o, sizeof(b) - o, "%s%.5g", i ? (i % 4 ? " " : " | ") : "", c->proj[i]);
+        FLog("constants #%ld id %u: view %s; jitter %.3f,%.3f mvScale %.1f,%.1f reset %u renderTime %.6g", k, id, b,
+             c->jitterX, c->jitterY, c->mvScaleX, c->mvScaleY, c->reset, c->renderTime);
+    }
+    return g_fgTagConstants(ctx, id, c);
+}
+
+// xefgSwapChainD3D12TagFrameResource / xefgSwapChainSetUiCompositionState: with XESS_LOG which inputs a game hands to
+// XeSS-FG (each new type, size, format and validity once)
+struct XefgResData { uint32_t type, validity, baseX, baseY, w, h; ID3D12Resource* res; uint32_t state; };
+typedef int32_t (*PFN_XefgTagRes)(void* ctx, void* cl, uint32_t id, const XefgResData* d);
+static PFN_XefgTagRes g_fgTagRes;
+static int32_t Hook_XefgTagRes(void* ctx, void* cl, uint32_t id, const XefgResData* d)
+{
+    int32_t r = g_fgTagRes(ctx, cl, id, d);
+    if (g_fgLog && d)
+    {
+        static uint64_t seen[32]; static volatile LONG nSeen;
+        uint32_t fmt = 0;
+        if (d->res) { D3D12_RESOURCE_DESC rd = d->res->GetDesc(); fmt = (uint32_t) rd.Format; }
+        uint64_t key = (uint64_t) d->type | (uint64_t) d->validity << 4 | (uint64_t) fmt << 8 | (uint64_t) d->w << 16 | (uint64_t) d->h << 40 | (uint64_t) (cl != nullptr) << 63;
+        bool known = false;
+        for (LONG i = 0; i < nSeen && i < 32; ++i) known |= seen[i] == key;
+        if (!known && nSeen < 32)
+        {
+            seen[InterlockedIncrement(&nSeen) - 1] = key;
+            FLog("tag resource id %u: type %u validity %u base %u,%u size %ux%u format %u state 0x%x cmdlist %d -> %d", id, d->type,
+                 d->validity, d->baseX, d->baseY, d->w, d->h, fmt, d->state, cl != nullptr, r);
+        }
+    }
+    return r;
+}
+typedef int32_t (*PFN_XefgUiState)(void* ctx, uint32_t state);
+static PFN_XefgUiState g_fgUiState;
+static int32_t Hook_XefgUiState(void* ctx, uint32_t state)
+{
+    int32_t r = g_fgUiState(ctx, state);
+    FLog("xefgSwapChainSetUiCompositionState(%u) -> %d", state, r);
+    return r;
+}
+
 static bool g_fgWanted = false;
 static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
 static volatile LONG g_fgHooked = 0;
@@ -429,6 +486,9 @@ static bool XefgInstallHooks()
         { "xefgSwapChainD3D12InitFromSwapChain", (void*) Hook_XefgInit, (void**) &g_fgInit, nullptr },
         { "xefgSwapChainD3D12InitFromSwapChainDesc", (void*) Hook_XefgInitDesc, (void**) &g_fgInitDescFn, nullptr },
         { "xefgSwapChainSetNumInterpolatedFrames", (void*) Hook_XefgSetNum, (void**) &g_fgSetNum, nullptr },
+        { "xefgSwapChainTagFrameConstants", (void*) Hook_XefgTagConstants, (void**) &g_fgTagConstants, nullptr },
+        { "xefgSwapChainD3D12TagFrameResource", (void*) Hook_XefgTagRes, (void**) &g_fgTagRes, nullptr },
+        { "xefgSwapChainSetUiCompositionState", (void*) Hook_XefgUiState, (void**) &g_fgUiState, nullptr },
     };
     bool ready = !done;
     for (auto& h : hooks)
