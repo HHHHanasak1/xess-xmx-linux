@@ -179,13 +179,12 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/switch-driver.sh        sets the default among the package's drivers (per game: MESA)
     icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
     tools/session-check.sh        the driver check run before each session
-    tools/cmk_pack.py             zebin -> .cmk packer;  tools/check-kernels.py validates a kernel folder
+    tools/cmk_pack.py             zebin -> .cmk packer, used by cm-compile.sh
+    tools/xell-probe.sh           XeLL driver-mode probe (docs/debugging.md)
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
-    tools/make-release.py         builds the release archive
-    tools/xell-probe.sh           XeLL driver-mode probe (docs/debugging.md)
-    tools/gen_all_dummies.py, s16_map.py, build-kernels.sh, kernel_map_*.txt   optional static kernel set
+    tools/make-release.py         builds the release archive (these four developer tools stay out of it)
     docs/                         how it works, building, debugging, games, Steam launch options
     .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
                                   drivers, checks the scripts

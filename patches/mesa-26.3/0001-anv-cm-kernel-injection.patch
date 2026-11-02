@@ -186,17 +186,16 @@ diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader
 index 50731c78..d44525d5 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1069,6 +1069,646 @@ wa_18019110168_load_per_primitive_remap_table(nir_builder *b, void *data)
+@@ -1069,6 +1069,634 @@ wa_18019110168_load_per_primitive_remap_table(nir_builder *b, void *data)
     return nir_iand_imm(b, val, ANV_WA_18019110168_PER_PRIMITIVE_REMAP_TABLE_OFFSET_MASK);
  }
  
 +/* ---- C-for-Metal kernel injection (xess-xmx-linux) ------------------------------------------------------------
 + * The igdext shim turns every C-for-Metal kernel XeSS submits into a placeholder D3D12 compute shader. The
-+ * placeholder stores ANV_CM_DUMMY_MAGIC and its workgroup size encodes a kernel id:
-+ *  - static ids (x, y, 5): prebuilt kernel $ANV_CM_KERNEL_DIR/wg<x>_<y>_5.cmk (developer option, IGDEXT_STATIC=1)
-+ *  - dynamic ids on the z = 7 / 11 / 13 planes: the shim wrote the kernel's SPIR-V + options and its hash to
-+ *    $WINEPREFIX/drive_c/igdext_kernels; the kernel is compiled on first use (ANV_CM_HELPER, default
-+ *    <package>/tools/cm-compile.sh) into the per-user cache ~/.cache/xess-xmx/kernels/<hash>_<pci id>.cmk.
++ * placeholder stores ANV_CM_DUMMY_MAGIC and its workgroup size encodes a kernel id on the z = 7 / 11 / 13 planes:
++ * the shim wrote the kernel's SPIR-V + options and its hash to $WINEPREFIX/drive_c/igdext_kernels; the kernel is
++ * compiled on first use (ANV_CM_HELPER, default <package>/tools/cm-compile.sh) into the per-user cache
++ * ~/.cache/xess-xmx/kernels/<hash>_<pci id>.cmk.
 + * The placeholder's bindings only provide the pipeline layout; code, GRF count, SLM and payload come from the .cmk
 + * file (tools/cmk_pack.py). Placeholders are never stored in the pipeline cache, so a changed kernel or a compile
 + * that failed once is picked up again on the next launch. */
@@ -672,26 +671,15 @@ index 50731c78..d44525d5 100644
 +   }
 +   const int dyn = anv_cm_dyn_id(wx, wy, wz);
 +   if (!path[0]) {
-+      if (wz != 5 && dyn < 0)
++      if (dyn < 0)
 +         return ANV_CM_NOT_PLACEHOLDER;
 +      if (!anv_cm_is_placeholder(nir)) {
 +         if (env->debug)
 +            fprintf(stderr, "ANV CM: workgroup %u,%u,%u is not a placeholder, left alone\n", wx, wy, wz);
 +         return ANV_CM_NOT_PLACEHOLDER;
 +      }
-+      if (wz == 5) {
-+         if (!env->kernel_dir) {
-+            fprintf(stderr, "ANV CM: static kernel wg %u,%u,5 requested but ANV_CM_KERNEL_DIR is not set\n", wx, wy);
-+            return ANV_CM_FAILED;
-+         }
-+         snprintf(path, sizeof(path), "%s/wg%u_%u_5.cmk", env->kernel_dir, wx, wy);
-+         if (access(path, R_OK) != 0) {
-+            fprintf(stderr, "ANV CM: no %s\n", path);
-+            return ANV_CM_FAILED;
-+         }
-+      } else if (!anv_cm_dyn_kernel(device, dyn, path, sizeof(path))) {
++      if (!anv_cm_dyn_kernel(device, dyn, path, sizeof(path)))
 +         return ANV_CM_FAILED;
-+      }
 +   }
 +   if (env->debug) {
 +      const struct vk_shader_compile_info *ci = shader_data->info;
@@ -833,7 +821,7 @@ index 50731c78..d44525d5 100644
  static void
  populate_compile_params_mesh(struct brw_compile_params *params,
                               struct anv_shader_data *shader_data,
-@@ -2472,7 +3112,14 @@ anv_shader_compile(struct vk_device *vk_device,
+@@ -2472,7 +3100,14 @@ anv_shader_compile(struct vk_device *vk_device,
  
        shader_data->prog_data.base.source_hash = shader_data->source_hash;
  
@@ -849,7 +837,7 @@ index 50731c78..d44525d5 100644
           struct jay_shader_bin *bin =
              anv_shader_compile_jay(devinfo, mem_ctx, nir, &params, shader_data);
  
-@@ -2497,6 +3144,10 @@ anv_shader_compile(struct vk_device *vk_device,
+@@ -2497,6 +3132,10 @@ anv_shader_compile(struct vk_device *vk_device,
           shader_data->code = brw_compile(compiler, &params);
        }
  

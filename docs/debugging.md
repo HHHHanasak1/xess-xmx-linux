@@ -127,7 +127,6 @@ Shim (game environment):
 | Variable | Effect |
 |---|---|
 | `IGDEXT_TRACE=1` | trace log and kernel dump (above) |
-| `IGDEXT_STATIC=1` | use the prebuilt kernel table (`kernels/wg*_5.cmk`) instead of run-time ids; only in shims built with `-DXMX_STATIC_TABLE=ON` |
 | `IGDEXT_IGNORE_FAILED=1` | do not fall back to DP4a after a failed compile |
 | `IGDEXT_SKIP_SELFTEST=1` | skip the self-test (the shim then assumes the patched driver is active) |
 | `IGDEXT_FORCE_FALLBACK=1` | decline the extension context: XeSS uses DP4a, XeSS frame generation its generic path (as without the shim). The shim does this by itself for an Intel device id its table does not know (trace: `fallback: unknown Intel device id`); `IGDEXT_GMD` declares such a device |

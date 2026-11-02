@@ -22,14 +22,11 @@ The DLL is linked against the static MSVC runtime and imports only `kernel32`/`a
 crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), and XeSS silently fell back to DP4a.
 `shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for releases.
 
-The two placeholder tables are generated, not written by hand (both need `fxc.exe` from the Windows SDK):
+The placeholder table is generated, not written by hand (needs `fxc.exe` from the Windows SDK):
 
     python tools/gen_dyn_dummies.py shim/src/dll/dyn_dummies.inc                       # run-time kernel ids
-    python tools/gen_all_dummies.py tools/kernel_map_xess_2.0.2.68.txt shim/src/dll/xess_dummies.inc   # static ids
     python tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch          # layout matches the driver
     python tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
-
-The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TABLE=ON`.
 
 ## The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
 
@@ -87,8 +84,8 @@ Two of the options are easy to get wrong:
 `0001` (mostly under `src/intel/vulkan`, plus a small hook in the common Vulkan runtime):
 
 * `anv_shader_compile.c`: recognises the shim's placeholder shaders (workgroup size on the reserved planes and the
-  stored magic value `0x584D5843`), resolves the kernel (static file or run-time compile into
-  `~/.cache/xess-xmx/kernels`), and fills `brw_cs_prog_data` from the `.cmk` header instead of compiling the NIR.
+  stored magic value `0x584D5843`), compiles the kernel on first use into `~/.cache/xess-xmx/kernels`, and fills
+  `brw_cs_prog_data` from the `.cmk` header instead of compiling the NIR.
 * `genX_cmd_buffer.c`: per-dispatch binding table built from the vkd3d-proton descriptor heap, the static sampler of
   the pipeline layout, null surfaces when the heap is not bound.
 * `genX_shader.c`, `genX_cmd_compute.c`: the NEO-style walker payload (cross-thread data, per-thread local ids).
@@ -120,15 +117,3 @@ samplers and does not take this path.
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
 writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
-
-## Kernels ahead of time (optional)
-
-A static kernel set, for example to measure the compiler or to avoid the first-launch compile:
-
-1. Run the game once with `IGDEXT_TRACE=1`. The shim writes `C:\igdext_trace.log` and dumps every kernel as
-   `C:\igdext_dump\cs_NNNN_type2.bin` + `cs_NNNN_options.txt` (inside the prefix's `drive_c`).
-2. `tools/s16_map.py <dump dir> map.txt`: the unique kernels with ids.
-3. `tools/build-kernels.sh <dump dir> map.txt kernels/`: compile and pack (variables at the top of the script).
-4. `tools/gen_all_dummies.py map.txt shim/src/dll/xess_dummies.inc`, then rebuild the shim with
-   `-DXMX_STATIC_TABLE=ON`.
-5. `tools/check-kernels.py kernels/` must report 0 bad files. Run the game with `IGDEXT_STATIC=1`.
