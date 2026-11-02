@@ -107,8 +107,7 @@ private:
             m_drain = 0;
         } else {
             m_backOffs = 0;
-            if (frameMs > m_capMs * kNotBinding) {   // the cap is not what limits the game: do not run away below it
-                m_capMs = Clamp(frameMs);
+            if (frameMs > m_capMs * kNotBinding) {   // the cap is not what limits the game (a hitch, the CPU): stay
                 m_clean = 0;
             } else {
                 // slowly near where a queue formed last; fast above it, and well below it, where the scene got lighter
@@ -135,7 +134,7 @@ private:
     static constexpr double kMaxMs = 100;
     static constexpr int kProbeWindows = 8;
     static constexpr int kHoldWindows = 12;
-    static constexpr int kCleanFast = 8;
+    static constexpr int kCleanFast = 4;
     static constexpr int kDrainWindows = 4;
     static constexpr int kMaxBackOffs = 8;
     static constexpr int kIdleFirst = 8;
