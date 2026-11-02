@@ -41,20 +41,25 @@ while IFS= read -r lib; do
   for c in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/ControlLib.dll; do
     [ -f "$c" ] && grep -aq 'XESS_FG' "$c" && rm -f "$c"
   done
-  # files a killed XESS=latest / FSR_FG=xess run left as links into this package or one in another folder
-  # (tools/proton-hook.py): originals back, each in one rename over the link; links to files the game never had go
+  # one walk over the game folders for both: files a killed XESS=latest / FSR_FG=xess run left as links into this
+  # package or one in another folder (tools/proton-hook.py), and the markers of games switched with tools/fsr-fg.sh on
+  declare -A ffxfg=()   # game folders with such markers
   while IFS= read -r -d '' f; do
+    case "$f" in
+      *.ffxfg-orig|*/.ffxfg-added)
+        g=${f#"$lib"/steamapps/common/}; ffxfg["$lib/steamapps/common/${g%%/*}"]=1
+        continue ;;
+    esac
     # a link of the user's own that merely looks alike stays: ours has an original beside it, a lock file listing it, or
-    # a package at its target
+    # a package at its target. Originals back, each in one rename over the link; links to files the game never had go
     t=$(readlink "$f"); p=${t%/*/*}
     if [ ! -f "$f.xmx-orig" ] && [ ! -f "$p/tools/proton-hook.py" ] &&
        ! grep -qsxF "$f" "${XDG_CACHE_HOME:-$HOME/.cache}"/xess-xmx/xess-swap/*; then continue; fi
     if [ -f "$f.xmx-orig" ]; then mv -f "$f.xmx-orig" "$f" && echo "   restored $f"; else rm -f "$f" && echo "   removed $f"; fi
-  done < <(find "$lib"/steamapps/common -maxdepth 11 -type l \( -lname "*/xess/lib*.dll" -o -lname "*/ffxfg/*.dll" -o -lname "*/ffx/amd_fidelityfx*.dll" \) -print0 2>/dev/null)
-  # games switched with tools/fsr-fg.sh on
-  for d in "$lib"/steamapps/common/*/; do
-    find "$d" -maxdepth 11 \( -name '*.ffxfg-orig' -o -name .ffxfg-added \) 2>/dev/null | grep -q . && bash "$PKG/tools/fsr-fg.sh" off "$d"
-  done
+  done < <(find "$lib"/steamapps/common -maxdepth 12 \( -type l \( -lname "*/xess/lib*.dll" -o -lname "*/ffxfg/*.dll" -o -lname "*/ffx/amd_fidelityfx*.dll" \) \
+             -o -name '*.ffxfg-orig' -o -name .ffxfg-added \) -print0 2>/dev/null)
+  for d in "${!ffxfg[@]}"; do bash "$PKG/tools/fsr-fg.sh" off "$d"; done
+  unset ffxfg
 done <<< "$LIBS"
 rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/xess-swap"
 echo "restored $n igdext64.dll file(s); environment and watcher removed. Reboot or re-login to drop the variables from Steam."
