@@ -452,8 +452,20 @@ struct ScState {
     bool havePrepare = false;     // PrepareV2 seen since the last present
     bool uiComposition = false;
     uint32_t frameId = 0;          // id of the frame being built
-    uint32_t simStartedFor = UINT32_MAX;
     uint64_t presents = 0;
+    // XeLL wants, per frame id, xellSleep first and then the six markers once each in order. The game prepares and
+    // presents on different threads, some prepare frame N+1 before presenting frame N, and FFX frame ids can repeat
+    // or restart, so what went out is kept per id in a small ring (no allocation): a marker asked for out of order
+    // fills in the ones before it, a repeated marker is not sent again.
+    struct XellFrame {
+        uint32_t id = 0;
+        bool used = false;
+        bool sleeping = false;   // xellSleep(id) in flight outside the lock: markers for the id wait for it
+        bool slept = false;      // xellSleep done, or forgone because a marker went out first
+        uint8_t wanted = 0, sent = 0;   // bit (1 << xell_latency_marker_type_t)
+    };
+    XellFrame xellFrames[8];
+    unsigned xellNext = 0;   // the slot taken next
     struct FfxApiResource ui = {};
     uint32_t uiFlags = 0;
     // Frame latency waitable object of our own: released once per Present that returned, so the game's
@@ -548,7 +560,90 @@ static void SetXefgEnabled(ScState* st, bool want)
         st->xefgEnabled = want;
 }
 
-static void BeforePresent(ScState* st)
+// --- XeLL markers (all with st->lock held, except XellStartFrame) ---
+
+static const uint8_t XM_SIM_START = 1 << XELL_SIMULATION_START, XM_PRESENT_END = 1 << XELL_PRESENT_END;
+
+// The ring entry of a frame id. An id whose PRESENT_END went out and that comes up again is a new frame (FFX ids
+// repeat when the game restarts its counter); a slot with a sleep in flight is never taken over.
+static ScState::XellFrame* XellFrameFor(ScState* st, uint32_t id)
+{
+    for (auto& f : st->xellFrames)
+        if (f.used && f.id == id) {
+            if ((f.sent & XM_PRESENT_END) && !f.sleeping) {
+                f = ScState::XellFrame();
+                f.used = true;
+                f.id = id;
+            }
+            return &f;
+        }
+    for (unsigned i = 0; i < 8; i++) {
+        auto& f = st->xellFrames[(st->xellNext + i) % 8];
+        if (f.sleeping)
+            continue;
+        st->xellNext = (st->xellNext + i + 1) % 8;
+        f = ScState::XellFrame();
+        f.used = true;
+        f.id = id;
+        return &f;
+    }
+    return nullptr;   // not reached: at most one sleep is in flight
+}
+
+// Sends the wanted markers that have not gone out, in order. A marker before the sleep would break XeLL's order, so
+// once one went out the id gets no sleep any more.
+static void XellFlush(ScState* st, ScState::XellFrame* f)
+{
+    if (f->sleeping)
+        return;
+    for (int m = XELL_SIMULATION_START; m <= XELL_PRESENT_END; m++) {
+        uint8_t bit = (uint8_t)(1u << m);
+        if ((f->wanted & bit) && !(f->sent & bit)) {
+            f->slept = true;
+            p_xellAddMarkerData(st->xell, f->id, (xell_latency_marker_type_t)m);
+            f->sent |= bit;
+        }
+    }
+}
+
+// Marker `type` for `id`, with the ones before it that are still missing.
+static void XellMarker(ScState* st, uint32_t id, xell_latency_marker_type_t type)
+{
+    if (auto* f = XellFrameFor(st, id)) {
+        f->wanted |= (uint8_t)((2u << type) - 1);
+        XellFlush(st, f);
+    }
+}
+
+// Starts frame `id` for XeLL: xellSleep(id), then SIMULATION_START(id). The sleep can block, so it runs without the
+// lock; markers the other thread asks for the id meanwhile wait until it returns. Nothing if the id already started.
+static void XellStartFrame(ScState* st, uint32_t id)
+{
+    {
+        std::lock_guard<std::mutex> lk(st->lock);
+        auto* f = XellFrameFor(st, id);
+        if (!f)
+            return;
+        f->wanted |= XM_SIM_START;
+        if (f->slept || f->sleeping || !g_sleep) {
+            XellFlush(st, f);
+            return;
+        }
+        f->sleeping = true;
+    }
+    p_xellSleep(st->xell, id);
+    std::lock_guard<std::mutex> lk(st->lock);
+    auto* f = XellFrameFor(st, id);   // the same slot: a sleeping slot is not taken over
+    if (!f)
+        return;
+    f->sleeping = false;
+    f->slept = true;
+    XellFlush(st, f);
+}
+
+// --- Present ---
+
+static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
     if (st->bridge) {
@@ -576,39 +671,34 @@ static void BeforePresent(ScState* st)
         p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, id, &rd);
     }
 
-    if (st->simStartedFor != id) {
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
-        p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
-        st->simStartedFor = id;
-    }
-    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_END);
-    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_START);
+    // SIMULATION_START .. RENDERSUBMIT_START fill in when no prepare sent them (menus, loading)
+    XellMarker(st, id, XELL_RENDERSUBMIT_END);
+    XellMarker(st, id, XELL_PRESENT_START);
     p_xefgSwapChainSetPresentId(st->xefg, id);
+    return id;
 }
 
-static void AfterPresent(ScState* st, HRESULT hr)
+// `id` is what BeforePresent returned: a prepare for the next frame may have changed st->frameId during the present.
+static void AfterPresent(ScState* st, uint32_t id, HRESULT hr)
 {
-    std::lock_guard<std::mutex> lk(st->lock);
-    uint32_t id = st->frameId;
-    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_END);
-    st->presents++;
-    if (st->presents <= 10 || st->presents % 600 == 0) {
-        xefg_swapchain_present_status_t ps = {};
-        p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
-        Log("present #%llu frame %u hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting", (unsigned long long)st->presents,
-            id, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult, ps.isFrameGenEnabled, st->pending.size());
+    uint32_t next;
+    {
+        std::lock_guard<std::mutex> lk(st->lock);
+        XellMarker(st, id, XELL_PRESENT_END);
+        st->presents++;
+        if (st->presents <= 10 || st->presents % 600 == 0) {
+            xefg_swapchain_present_status_t ps = {};
+            p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
+            Log("present #%llu frame %u hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting", (unsigned long long)st->presents,
+                id, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult, ps.isFrameGenEnabled, st->pending.size());
+        }
+        if (st->frameId == id)   // else a newer prepare arrived during the present and is kept for the next one
+            st->havePrepare = false;
+        // the id the next prepare is expected to carry
+        next = st->bridge ? st->nextId + 1 : id + 1;
     }
-    st->havePrepare = false;
-
-    // Start the next frame: XeLL sleep and simulation markers use the id the next PrepareV2 is expected to carry.
-    uint32_t next = st->bridge ? st->nextId + 1 : id + 1;
-    if (st->bridge && st->simStartedFor == next)
-        return;
-    if (g_sleep)
-        p_xellSleep(st->xell, next);
-    p_xellAddMarkerData(st->xell, next, XELL_SIMULATION_START);
-    st->simStartedFor = next;
+    // without the lock: the sleep can block
+    XellStartFrame(st, next);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -670,11 +760,11 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present(sync, flags);
-        BeforePresent(st);
+        uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present(sync, flags);
         if (st->latencySem && SUCCEEDED(hr))
             ReleaseSemaphore(st->latencySem, 1, nullptr);
-        AfterPresent(st, hr);
+        AfterPresent(st, id, hr);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override { return sc->GetBuffer(i, riid, p); }
@@ -738,11 +828,11 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present1(sync, flags, pp);
-        BeforePresent(st);
+        uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present1(sync, flags, pp);
         if (st->latencySem && SUCCEEDED(hr))
             ReleaseSemaphore(st->latencySem, 1, nullptr);
-        AfterPresent(st, hr);
+        AfterPresent(st, id, hr);
         return hr;
     }
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc->IsTemporaryMonoSupported(); }
@@ -1180,12 +1270,9 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
     }
     Order("prepare", id);
 
-    if (st->simStartedFor != id) {
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
-        st->simStartedFor = id;
-    }
-    p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
-    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
+    // SIMULATION_START went out with the sleep after the last present when the id was the expected one, else now
+    XellMarker(st, id, XELL_SIMULATION_END);
+    XellMarker(st, id, XELL_RENDERSUBMIT_START);
 
     xefg_swapchain_d3d12_resource_data_t rd = {};
     rd.validity = XEFG_SWAPCHAIN_RV_ONLY_NOW;
