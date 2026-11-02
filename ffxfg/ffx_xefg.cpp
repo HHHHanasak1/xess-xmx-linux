@@ -16,6 +16,8 @@
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
 //   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
 //   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
+//   FFX_XEFG_PACE=0        release our waitable object when Present returns instead of when the GPU finished the frame
+//   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
@@ -118,15 +120,27 @@ static int g_mult = 2;
 static int g_xefgLogLevel = 2;
 static bool g_sleep = true;
 static bool g_ownWait = true;
+static bool g_pace = true;      // FFX_XEFG_PACE=0: the waitable object is released when Present returns, not when the frame is done
 static bool g_noExclusive = true;
-// debug: leave out one of the game's inputs at a time, to find the one behind an artifact
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
-static int g_camera = 1;        // FFX_XEFG_CAMERA=0: identity view and projection matrices, 6: the game's camera ignored
-static float g_jitter = 1.0f;   // FFX_XEFG_JITTER=0: no jitter, -1: jitter negated
-static int g_dumpEvery = 0;     // FFX_XEFG_DUMP=<n>: depth and motion vectors of every n-th frame into files (8 at most)
-static float g_renderTime = -1;  // FFX_XEFG_RENDERTIME=<value>: XeSS-FG's frame render time instead of the game's frame time (ms)
-static float g_renderScale = 1; // FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
+static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+#ifdef FFXFG_DEBUG
+// debug build (build.bat with FFXFG_DEBUG=1): change or leave out one of the game's inputs at a time, to find the one
+// behind an artifact
+//   FFX_XEFG_CAMERA=0: identity view and projection matrices, 2: transposed, 3: projection not inverted, 4: both,
+//                      5: all zero, 6: the game's camera ignored (a fixed view, the real projection)
+//   FFX_XEFG_JITTER=0: no jitter, -1: jitter negated
+//   FFX_XEFG_DUMP=<n>: depth and motion vectors of every n-th frame into files (8 at most)
+//   FFX_XEFG_RENDERTIME=<ms>: XeSS-FG's frame render time instead of the game's frame time
+//   FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
+//   FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
+static float g_jitter = 1.0f;
+static int g_dumpEvery = 0;
+static float g_renderTime = -1;
+static float g_renderScale = 1;
+#endif
+static bool g_validityNow = true;  // FFX_XEFG_VALIDITY=0: depth and motion vectors tagged UNTIL_NEXT_PRESENT (no copy; can flicker)
 static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
 
 static HMODULE g_xefgModule, g_xellModule;
@@ -283,8 +297,17 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
     g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
     g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
+    g_pace = EnvInt("FFX_XEFG_PACE", 1) != 0;
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
+    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
+    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
+    snprintf(g_dir, MAX_PATH, "%s", dir);
+    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
+        GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
+    if (!g_hudless || g_mvNdc || !g_sleep || !g_ownWait || !g_validityNow)
+        Log("inputs: HUD-less %d, NDC mv %d, validity only now %d", g_hudless, g_mvNdc, g_validityNow);
+#ifdef FFXFG_DEBUG
     g_camera = EnvInt("FFX_XEFG_CAMERA", 1);
     g_jitter = (float)EnvInt("FFX_XEFG_JITTER", 1);
     g_dumpEvery = EnvInt("FFX_XEFG_DUMP", 0);
@@ -292,13 +315,9 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         g_renderTime = (float)atof(env);
     if (GetEnvironmentVariableA("FFX_XEFG_RENDERSCALE", env, MAX_PATH))
         g_renderScale = (float)atof(env);
-    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
-    snprintf(g_dir, MAX_PATH, "%s", dir);
-    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d, exclusive fullscreen %s", GetCurrentProcessId(), g_mult,
-        g_sleep, g_ownWait, g_noExclusive ? "blocked" : "allowed");
-    if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait)
-        Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d", g_hudless, g_camera, g_jitter,
-            g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc);
+    Log("debug build: camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g", g_camera, g_jitter, g_dumpEvery,
+        g_renderTime, g_renderScale);
+#endif
 
     HMODULE fg = LoadBeside(dir, "libxess_fg.dll");
     HMODULE xell = LoadBeside(dir, "libxell.dll");
@@ -440,7 +459,8 @@ struct ScState {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t maxInterpolations = 1;
 
-    // Objects handed to games that drive the interpolation dispatch themselves.
+    // Objects handed to games that drive the interpolation dispatch themselves, made on the first query.
+    bool interpMade = false;
     ID3D12CommandAllocator* alloc = nullptr;
     ID3D12GraphicsCommandList* cmdList = nullptr;
     ID3D12Resource* interpTex = nullptr;
@@ -451,14 +471,38 @@ struct ScState {
     bool havePrepare = false;     // PrepareV2 seen since the last present
     bool uiComposition = false;
     uint32_t frameId = 0;          // id of the frame being built
-    uint32_t simStartedFor = UINT32_MAX;
     uint64_t presents = 0;
+    // XeLL wants, per frame id, xellSleep first and then the six markers once each in order. The game prepares and
+    // presents on different threads, some prepare frame N+1 before presenting frame N, and FFX frame ids can repeat
+    // or restart, so what went out is kept per id in a small ring (no allocation): a marker asked for out of order
+    // fills in the ones before it, a repeated marker is not sent again.
+    struct XellFrame {
+        uint32_t id = 0;
+        bool used = false;
+        bool sleeping = false;   // xellSleep(id) in flight outside the lock: markers for the id wait for it
+        bool slept = false;      // xellSleep done, or forgone because a marker went out first
+        uint8_t wanted = 0, sent = 0;   // bit (1 << xell_latency_marker_type_t)
+    };
+    XellFrame xellFrames[8];
+    unsigned xellNext = 0;   // the slot taken next
     struct FfxApiResource ui = {};
     uint32_t uiFlags = 0;
-    // Frame latency waitable object of our own: released once per Present that returned, so the game's
-    // wait follows our Present calls instead of XeSS-FG's presentation thread.
+    // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
+    // presentation thread. FFX_XEFG_PACE=1 (default): released when the GPU has finished the presented frame, like
+    // DXGI's own object: after each Present the game's queue signals `fence`, and `paceThread` releases the semaphore
+    // when the value is reached, or after 200 ms regardless (a stuck wait is the worst case: CONTROL Resonant
+    // deadlocked on the proxy's object). FFX_XEFG_PACE=0: released as soon as Present returns.
     HANDLE latencySem = nullptr;
     UINT maxLatency = 1;
+    ID3D12CommandQueue* queue = nullptr;   // the game's, given at creation (XeSS-FG presents on it)
+    ID3D12Fence* fence = nullptr;          // made with the thread on the first GetFrameLatencyWaitableObject
+    HANDLE paceEvent = nullptr;            // a new signal, a fence completion, or stop
+    HANDLE paceThread = nullptr;
+    std::atomic<bool> paceStop{false};
+    std::mutex paceLock;                   // around signal + publish of fenceValue (presents should not overlap, but)
+    std::atomic<uint64_t> fenceValue{0};   // last value signalled on the queue
+    uint64_t paceReleased = 0;             // values the thread has released the semaphore for (thread only)
+    uint64_t watchdogs = 0;                // releases by the 200 ms watchdog (thread only)
     BOOL fakeFullscreen = FALSE;   // what the game asked for while exclusive fullscreen is blocked
 
     // FSR_FG=inject (xefg_bridge.h): the game knows nothing of frame generation, so the ids are ours. A frame's upscale
@@ -482,9 +526,15 @@ static ScState* g_currentSc;     // the last created live swap chain context
 static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
 static bool g_haveFgFlags;
 
+static bool PaceStop(ScState* st);
+
 static void TearDown(ScState* st)
 {
     Log("teardown sc %p (xefg %p, presents %llu)", (void*)st, (void*)st->xefg, (unsigned long long)st->presents);
+    if (!PaceStop(st)) {
+        Log("!! the pacing thread did not stop: the state stays allocated");
+        return;
+    }
     if (st->proxy) {
         ULONG r = st->proxy->Release();
         Log("  proxy released, refs left %lu", r);
@@ -508,6 +558,8 @@ static void TearDown(ScState* st)
         CloseHandle(st->latencySem);
     if (st->ui.resource)
         ((ID3D12Resource*)st->ui.resource)->Release();
+    if (st->queue)
+        st->queue->Release();
     if (st->device)
         st->device->Release();
     delete st;
@@ -522,6 +574,7 @@ static void ScRelease(ScState* st)
 // ---------------------------------------------------------------------------------------------------------------
 // Present handling (called by FgSwapChain around the proxy's Present)
 
+#ifdef FFXFG_DEBUG
 // FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
 static std::atomic<int> g_orderLeft{-1};
 static void Order(const char* what, uint64_t id)
@@ -529,13 +582,18 @@ static void Order(const char* what, uint64_t id)
     if (g_orderLeft.load() > 0 && g_orderLeft.fetch_sub(1) > 0)
         Log("order %s %llu", what, (unsigned long long)id);
 }
+#else
+static inline void Order(const char*, uint64_t) {}
+#endif
 
 static void SetXefgEnabled(ScState* st, bool want)
 {
     if (want == st->xefgEnabled)
         return;
+#ifdef FFXFG_DEBUG
     if (want && g_orderLeft.load() == -1 && EnvInt("FFX_XEFG_ORDER", 0))
         g_orderLeft = 300;
+#endif
     if (want) {
         BOOL fs = FALSE;
         st->proxy->GetFullscreenState(&fs, nullptr);
@@ -547,7 +605,90 @@ static void SetXefgEnabled(ScState* st, bool want)
         st->xefgEnabled = want;
 }
 
-static void BeforePresent(ScState* st)
+// --- XeLL markers (all with st->lock held, except XellStartFrame) ---
+
+static const uint8_t XM_SIM_START = 1 << XELL_SIMULATION_START, XM_PRESENT_END = 1 << XELL_PRESENT_END;
+
+// The ring entry of a frame id. An id whose PRESENT_END went out and that comes up again is a new frame (FFX ids
+// repeat when the game restarts its counter); a slot with a sleep in flight is never taken over.
+static ScState::XellFrame* XellFrameFor(ScState* st, uint32_t id)
+{
+    for (auto& f : st->xellFrames)
+        if (f.used && f.id == id) {
+            if ((f.sent & XM_PRESENT_END) && !f.sleeping) {
+                f = ScState::XellFrame();
+                f.used = true;
+                f.id = id;
+            }
+            return &f;
+        }
+    for (unsigned i = 0; i < 8; i++) {
+        auto& f = st->xellFrames[(st->xellNext + i) % 8];
+        if (f.sleeping)
+            continue;
+        st->xellNext = (st->xellNext + i + 1) % 8;
+        f = ScState::XellFrame();
+        f.used = true;
+        f.id = id;
+        return &f;
+    }
+    return nullptr;   // not reached: at most one sleep is in flight
+}
+
+// Sends the wanted markers that have not gone out, in order. A marker before the sleep would break XeLL's order, so
+// once one went out the id gets no sleep any more.
+static void XellFlush(ScState* st, ScState::XellFrame* f)
+{
+    if (f->sleeping)
+        return;
+    for (int m = XELL_SIMULATION_START; m <= XELL_PRESENT_END; m++) {
+        uint8_t bit = (uint8_t)(1u << m);
+        if ((f->wanted & bit) && !(f->sent & bit)) {
+            f->slept = true;
+            p_xellAddMarkerData(st->xell, f->id, (xell_latency_marker_type_t)m);
+            f->sent |= bit;
+        }
+    }
+}
+
+// Marker `type` for `id`, with the ones before it that are still missing.
+static void XellMarker(ScState* st, uint32_t id, xell_latency_marker_type_t type)
+{
+    if (auto* f = XellFrameFor(st, id)) {
+        f->wanted |= (uint8_t)((2u << type) - 1);
+        XellFlush(st, f);
+    }
+}
+
+// Starts frame `id` for XeLL: xellSleep(id), then SIMULATION_START(id). The sleep can block, so it runs without the
+// lock; markers the other thread asks for the id meanwhile wait until it returns. Nothing if the id already started.
+static void XellStartFrame(ScState* st, uint32_t id)
+{
+    {
+        std::lock_guard<std::mutex> lk(st->lock);
+        auto* f = XellFrameFor(st, id);
+        if (!f)
+            return;
+        f->wanted |= XM_SIM_START;
+        if (f->slept || f->sleeping || !g_sleep) {
+            XellFlush(st, f);
+            return;
+        }
+        f->sleeping = true;
+    }
+    p_xellSleep(st->xell, id);
+    std::lock_guard<std::mutex> lk(st->lock);
+    auto* f = XellFrameFor(st, id);   // the same slot: a sleeping slot is not taken over
+    if (!f)
+        return;
+    f->sleeping = false;
+    f->slept = true;
+    XellFlush(st, f);
+}
+
+// --- Present ---
+
+static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
     if (st->bridge) {
@@ -575,39 +716,160 @@ static void BeforePresent(ScState* st)
         p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, id, &rd);
     }
 
-    if (st->simStartedFor != id) {
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
-        p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
-        st->simStartedFor = id;
-    }
-    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_END);
-    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_START);
+    // SIMULATION_START .. RENDERSUBMIT_START fill in when no prepare sent them (menus, loading)
+    XellMarker(st, id, XELL_RENDERSUBMIT_END);
+    XellMarker(st, id, XELL_PRESENT_START);
     p_xefgSwapChainSetPresentId(st->xefg, id);
+    return id;
 }
 
-static void AfterPresent(ScState* st, HRESULT hr)
+// `id` is what BeforePresent returned: a prepare for the next frame may have changed st->frameId during the present.
+static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags)
 {
-    std::lock_guard<std::mutex> lk(st->lock);
-    uint32_t id = st->frameId;
-    p_xellAddMarkerData(st->xell, id, XELL_PRESENT_END);
-    st->presents++;
-    if (st->presents <= 10 || st->presents % 600 == 0) {
-        xefg_swapchain_present_status_t ps = {};
-        p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
-        Log("present #%llu frame %u hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting", (unsigned long long)st->presents,
-            id, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult, ps.isFrameGenEnabled, st->pending.size());
+    uint32_t next;
+    {
+        std::lock_guard<std::mutex> lk(st->lock);
+        XellMarker(st, id, XELL_PRESENT_END);
+        st->presents++;
+        if (st->presents <= 10 || st->presents % 600 == 0) {
+            xefg_swapchain_present_status_t ps = {};
+            p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
+            Log("present #%llu frame %u sync %u flags 0x%x hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting",
+                (unsigned long long)st->presents, id, sync, flags, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult,
+                ps.isFrameGenEnabled, st->pending.size());
+        }
+        if (st->frameId == id)   // else a newer prepare arrived during the present and is kept for the next one
+            st->havePrepare = false;
+        // the id the next prepare is expected to carry
+        next = st->bridge ? st->nextId + 1 : id + 1;
     }
-    st->havePrepare = false;
+    // without the lock: the sleep can block
+    XellStartFrame(st, next);
+}
 
-    // Start the next frame: XeLL sleep and simulation markers use the id the next PrepareV2 is expected to carry.
-    uint32_t next = st->bridge ? st->nextId + 1 : id + 1;
-    if (st->bridge && st->simStartedFor == next)
+// ---------------------------------------------------------------------------------------------------------------
+// Frame latency waitable object, paced by the GPU (FFX_XEFG_PACE=1)
+
+static const DWORD kPaceWatchdogMs = 200;
+
+// Releases the semaphore once per signalled value when the fence reaches it. The thread touches only the fence, the
+// events, the semaphore and the three counters; never st->lock, so stopping it from TearDown cannot deadlock, and
+// TearDown frees nothing before it has stopped.
+static DWORD WINAPI PaceThread(void* p)
+{
+    auto* st = (ScState*)p;
+    while (!st->paceStop.load()) {
+        uint64_t target = st->fenceValue.load();
+        if (st->paceReleased >= target) {
+            WaitForSingleObject(st->paceEvent, INFINITE);   // a new signal or stop
+            continue;
+        }
+        uint64_t want = st->paceReleased + 1;
+        if (st->fence->GetCompletedValue() < want) {
+            st->fence->SetEventOnCompletion(want, st->paceEvent);
+            DWORD r = WaitForSingleObject(st->paceEvent, kPaceWatchdogMs);
+            if (st->paceStop.load())
+                break;
+            if (r == WAIT_TIMEOUT && st->fence->GetCompletedValue() < want) {
+                // watchdog: the frame is not done after 200 ms; the game must not wait on us for that
+                LONG n = (LONG)(st->fenceValue.load() - st->paceReleased);
+                ReleaseSemaphore(st->latencySem, n, nullptr);
+                st->paceReleased += n;
+                st->watchdogs++;
+                if (st->watchdogs <= 5 || st->watchdogs % 100 == 0)
+                    Log("pace watchdog #%llu: frame %llu not done after %lu ms, %ld released", (unsigned long long)st->watchdogs,
+                        (unsigned long long)want, kPaceWatchdogMs, n);
+            }
+            continue;   // done, or woken by a newer signal: look again
+        }
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+        st->paceReleased++;
+    }
+    return 0;
+}
+
+// With the lock held, after the semaphore exists. Without fence or thread the semaphore is released at Present.
+static void PaceStart(ScState* st)
+{
+    if (!g_pace || st->fence || !st->queue)
         return;
-    if (g_sleep)
-        p_xellSleep(st->xell, next);
-    p_xellAddMarkerData(st->xell, next, XELL_SIMULATION_START);
-    st->simStartedFor = next;
+    ID3D12Fence* fence = nullptr;
+    if (FAILED(st->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
+        Log("pace: no fence, the waitable object is released at Present");
+        return;
+    }
+    st->paceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    st->paceThread = st->paceEvent ? CreateThread(nullptr, 0, PaceThread, st, CREATE_SUSPENDED, nullptr) : nullptr;
+    if (!st->paceThread) {
+        Log("pace: no thread (%lu), the waitable object is released at Present", GetLastError());
+        if (st->paceEvent)
+            CloseHandle(st->paceEvent);
+        st->paceEvent = nullptr;
+        fence->Release();
+        return;
+    }
+    st->fence = fence;   // last: FrameDone on the present thread reads it without the lock
+    SetThreadPriority(st->paceThread, THREAD_PRIORITY_HIGHEST);
+    ResumeThread(st->paceThread);
+    Log("pace: the waitable object follows the GPU (fence %p, watchdog %lu ms)", (void*)fence, kPaceWatchdogMs);
+}
+
+// After a Present that returned: the frame's work, including what XeSS-FG queued on the game's queue inside Present,
+// precedes the signal on that queue (a command queue is free-threaded, so the present thread may signal it).
+static void FrameDone(ScState* st, HRESULT hr)
+{
+    if (!st->latencySem || FAILED(hr))
+        return;
+    ID3D12Fence* fence = st->fence;
+    if (!fence) {
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+        return;
+    }
+    // one value per present, each released once by the thread; the signal is queued before the value is published,
+    // so the thread never waits for a value that will not come
+    std::lock_guard<std::mutex> lk(st->paceLock);
+    uint64_t v = st->fenceValue.load() + 1;
+    if (SUCCEEDED(st->queue->Signal(fence, v))) {
+        st->fenceValue.store(v);
+        SetEvent(st->paceEvent);
+    } else {
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+    }
+}
+
+// Stops the thread and frees the fence; false if the thread did not stop (then nothing of st may be freed). Called
+// from TearDown only, with no lock held and no present in flight (a present holds a reference to st).
+static bool PaceStop(ScState* st)
+{
+    if (!st->paceThread) {
+        if (st->fence)
+            st->fence->Release();
+        st->fence = nullptr;
+        if (st->paceEvent)
+            CloseHandle(st->paceEvent);
+        st->paceEvent = nullptr;
+        return true;
+    }
+    st->paceStop.store(true);
+    SetEvent(st->paceEvent);
+    DWORD r = WaitForSingleObject(st->paceThread, 2000);   // its waits are at most the watchdog long
+    if (r != WAIT_OBJECT_0)
+        return false;
+    CloseHandle(st->paceThread);
+    st->paceThread = nullptr;
+    // a completion the thread armed may still be pending on the event: let the last value land before closing it
+    uint64_t last = st->fenceValue.load();
+    if (st->fence->GetCompletedValue() < last) {
+        st->fence->SetEventOnCompletion(last, st->paceEvent);
+        WaitForSingleObject(st->paceEvent, 500);
+    }
+    Log("pace: thread stopped, %llu frames released, %llu by the watchdog", (unsigned long long)st->paceReleased,
+        (unsigned long long)st->watchdogs);
+    st->fence->Release();
+    st->fence = nullptr;
+    CloseHandle(st->paceEvent);
+    st->paceEvent = nullptr;
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -669,11 +931,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present(sync, flags);
-        BeforePresent(st);
+        uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present(sync, flags);
-        if (st->latencySem && SUCCEEDED(hr))
-            ReleaseSemaphore(st->latencySem, 1, nullptr);
-        AfterPresent(st, hr);
+        FrameDone(st, hr);
+        AfterPresent(st, id, hr, sync, flags);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override { return sc->GetBuffer(i, riid, p); }
@@ -737,11 +998,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present1(sync, flags, pp);
-        BeforePresent(st);
+        uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present1(sync, flags, pp);
-        if (st->latencySem && SUCCEEDED(hr))
-            ReleaseSemaphore(st->latencySem, 1, nullptr);
-        AfterPresent(st, hr);
+        FrameDone(st, hr);
+        AfterPresent(st, id, hr, sync, flags);
         return hr;
     }
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc->IsTemporaryMonoSupported(); }
@@ -782,6 +1042,8 @@ struct FgSwapChain final : IDXGISwapChain4 {
             std::lock_guard<std::mutex> lk(st->lock);
             if (!st->latencySem)
                 st->latencySem = CreateSemaphoreA(nullptr, (LONG)st->maxLatency, 64, nullptr);
+            if (st->latencySem)
+                PaceStart(st);
             // the caller closes the handle it gets, as with DXGI
             DuplicateHandle(GetCurrentProcess(), st->latencySem, GetCurrentProcess(), &h, 0, FALSE,
                             DUPLICATE_SAME_ACCESS);
@@ -983,6 +1245,8 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         delete st;
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
+    queue->AddRef();
+    st->queue = queue;
 
     auto fail = [&](const char* what, int code) {
         Log("swap chain context: %s failed (%d)", what, code);
@@ -1056,26 +1320,6 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         Log("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", want, (int)r);
     }
 
-    // Command list and texture for games that query them and dispatch the interpolation themselves.
-    if (SUCCEEDED(st->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&st->alloc))) &&
-        SUCCEEDED(st->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, st->alloc, nullptr,
-                                                IID_PPV_ARGS(&st->cmdList))))
-        st->cmdList->Close();
-    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
-    D3D12_RESOURCE_DESC rd = {};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = st->width;
-    rd.Height = st->height;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = st->format;
-    rd.SampleDesc.Count = 1;
-    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    if (FAILED(st->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                   IID_PPV_ARGS(&st->interpTex))))
-        st->interpTex = nullptr;
-
     st->wrapper = new FgSwapChain(st);
     // FFX's context keeps a reference to the swap chain until ffxDestroyContext; Wuthering Waves (FSR 3.1.1) drops
     // its own reference before that and still presents
@@ -1096,6 +1340,7 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
 // ---------------------------------------------------------------------------------------------------------------
 // Frame generation context
 
+#ifdef FFXFG_DEBUG
 // FFX_XEFG_DUMP: copies of the game's depth and motion vectors, written some frames later (when the game's command
 // list has run) as ffx_xefg_<frame>_<what>.bin: header width, height, row pitch, DXGI format (4 x uint32), rows
 struct Dump {
@@ -1178,6 +1423,7 @@ static void DumpWrite(uint32_t now)
         d.buf = nullptr;
     }
 }
+#endif
 
 static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensions2D renderSize,
                        FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D mvScale, float frameTimeDelta, bool reset,
@@ -1199,15 +1445,14 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
     }
     Order("prepare", id);
 
-    if (st->simStartedFor != id) {
-        p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_START);
-        st->simStartedFor = id;
-    }
-    p_xellAddMarkerData(st->xell, id, XELL_SIMULATION_END);
-    p_xellAddMarkerData(st->xell, id, XELL_RENDERSUBMIT_START);
+    // SIMULATION_START went out with the sleep after the last present when the id was the expected one, else now
+    XellMarker(st, id, XELL_SIMULATION_END);
+    XellMarker(st, id, XELL_RENDERSUBMIT_START);
 
     xefg_swapchain_d3d12_resource_data_t rd = {};
-    rd.validity = XEFG_SWAPCHAIN_RV_ONLY_NOW;
+    // ONLY_NOW: XeSS-FG records a copy on the game's command list; UNTIL_NEXT_PRESENT (FFX_XEFG_VALIDITY=0, for
+    // measuring the copy's cost) reads the game's texture at present time, which the game may have written since
+    rd.validity = g_validityNow ? XEFG_SWAPCHAIN_RV_ONLY_NOW : XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
     rd.resourceSize = {renderSize.width, renderSize.height};
     rd.type = XEFG_SWAPCHAIN_RES_DEPTH;
     rd.pResource = (ID3D12Resource*)depth.resource;
@@ -1224,35 +1469,45 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
 
     xefg_swapchain_frame_constant_data_t c = {};
     static const float kPos[3] = {0, 0, 0}, kUp[3] = {0, 1, 0}, kRight[3] = {1, 0, 0}, kFwd[3] = {0, 0, 1};
+    bool projInverted = (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0;
+#ifdef FFXFG_DEBUG
+    if (g_camera == 6)   // as if the game gave no camera (a fixed view, the real projection)
+        camPos = camRight = camUp = camFwd = nullptr;
+    if (g_camera == 3 || g_camera == 4)   // projection not inverted (only the init flag says so)
+        projInverted = false;
+#endif
     if (g_camera == 5) {
         // debug: all zero, no camera at all
     } else if (g_camera) {
-        if (g_camera == 6)   // debug: as if the game gave no camera (a fixed view, the real projection)
-            camPos = camRight = camUp = camFwd = nullptr;
         BuildView(camPos ? camPos : kPos, camRight ? camRight : kRight, camUp ? camUp : kUp, camFwd ? camFwd : kFwd,
                   c.viewMatrix);
         float aspect = renderSize.height ? (float)renderSize.width / (float)renderSize.height : 1.0f;
-        // debug: FFX_XEFG_CAMERA=2 transposed, 3 projection not inverted (only the init flag says so), 4 both
-        BuildProjection(fovY, aspect, cameraNear, cameraFar,
-                        (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0 && g_camera != 3 && g_camera != 4,
+        BuildProjection(fovY, aspect, cameraNear, cameraFar, projInverted,
                         (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE) != 0, c.projectionMatrix);
-        if (g_camera == 2 || g_camera == 4)
+#ifdef FFXFG_DEBUG
+        if (g_camera == 2 || g_camera == 4)   // transposed
             for (int r = 0; r < 4; ++r)
                 for (int k = r + 1; k < 4; ++k) {
                     std::swap(c.viewMatrix[r * 4 + k], c.viewMatrix[k * 4 + r]);
                     std::swap(c.projectionMatrix[r * 4 + k], c.projectionMatrix[k * 4 + r]);
                 }
+#endif
     } else {
         for (int i = 0; i < 4; ++i)
             c.viewMatrix[i * 5] = c.projectionMatrix[i * 5] = 1.0f;
     }
-    c.jitterOffsetX = jitter.x * g_jitter;
-    c.jitterOffsetY = jitter.y * g_jitter;
+    c.jitterOffsetX = jitter.x;
+    c.jitterOffsetY = jitter.y;
     // FFX: motion vectors times the scale are pixels of the render size; in NDC that is 2 / size, y up
     c.motionVectorScaleX = g_mvNdc && renderSize.width ? mvScale.x * 2.0f / renderSize.width : mvScale.x;
     c.motionVectorScaleY = g_mvNdc && renderSize.height ? -mvScale.y * 2.0f / renderSize.height : mvScale.y;
     c.resetHistory = reset ? 1 : 0;
+    c.frameRenderTime = frameTimeDelta;
+#ifdef FFXFG_DEBUG
+    c.jitterOffsetX *= g_jitter;
+    c.jitterOffsetY *= g_jitter;
     c.frameRenderTime = g_renderTime >= 0 ? g_renderTime : frameTimeDelta * g_renderScale;
+#endif
     xefg_swapchain_result_t r3 = p_xefgSwapChainTagFrameConstants(st->xefg, id, &c);
 
     if (!st->bridge) {
@@ -1260,6 +1515,7 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
         st->havePrepare = true;
     }
     fg->prepares++;
+#ifdef FFXFG_DEBUG
     static uint32_t dumpFrames;   // frames with interpolation on (menus and loading screens have no depth)
     if (g_dumpEvery > 0) {
         if (st->xefgEnabled)
@@ -1280,6 +1536,7 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
             DumpCopy(st->device, cl, (ID3D12Resource*)mv.resource, mv.state, id, at, "mv", cam);
         }
     }
+#endif
     if (fg->prepares <= 5 || fg->prepares % 600 == 0 || r1 || r2 || r3)
         Log("prepare #%llu frame %u render %ux%u jitter %.3f,%.3f mvScale %.1f,%.1f dt %.2f reset %d fov %.3f "
             "near %.3f far %.1f -> tag depth %d mv %d const %d",
@@ -1446,6 +1703,34 @@ extern "C" __declspec(dllexport) void XefgBridgeFrame(const XefgBridgeFrameDesc*
 
 // ---------------------------------------------------------------------------------------------------------------
 // Exports
+
+// Command list and texture for a game that queries them to dispatch the interpolation itself, made on the first
+// query (with the lock held): most games never ask, and FSR_FG=inject never does.
+static void InterpObjects(ScState* st)
+{
+    if (st->interpMade)
+        return;
+    st->interpMade = true;
+    if (SUCCEEDED(st->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&st->alloc))) &&
+        SUCCEEDED(st->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, st->alloc, nullptr,
+                                                IID_PPV_ARGS(&st->cmdList))))
+        st->cmdList->Close();
+    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = st->width;
+    rd.Height = st->height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = st->format;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(st->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                   IID_PPV_ARGS(&st->interpTex))))
+        st->interpTex = nullptr;
+    Log("interpolation command list %p and texture %p for the game's own dispatch", (void*)st->cmdList, (void*)st->interpTex);
+}
 
 static bool IsOurType(uint64_t t)
 {
@@ -1635,12 +1920,16 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxQuery(ffxContext* context, f
     auto* st = (ScState*)*context;
     if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONCOMMANDLIST_DX12) {
         auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12*)desc;
+        std::lock_guard<std::mutex> lk(st->lock);
+        InterpObjects(st);
         if (d->pOutCommandList)
             *d->pOutCommandList = st->cmdList;
         return FFX_API_RETURN_OK;
     }
     if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONTEXTURE_DX12) {
         auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12*)desc;
+        std::lock_guard<std::mutex> lk(st->lock);
+        InterpObjects(st);
         if (d->pOutTexture) {
             *d->pOutTexture = {};
             d->pOutTexture->resource = st->interpTex;

@@ -152,7 +152,10 @@ assumes inverted depth; the log says when the game's flags differ (`wrong until 
 Three things the game would otherwise trip over are handled in the DLL:
 
 * **frame latency waitable object.** The game waits on it before each frame. The proxy's object deadlocked CONTROL
-  Resonant within seconds, so the game gets an object of the DLL's own that is signalled once per present;
+  Resonant within seconds, so the game gets an object of the DLL's own. As with DXGI's, it is released when the GPU
+  has finished the presented frame: after each present the game's queue signals a fence, and a thread of the DLL
+  releases the object when the fence is reached, or after 200 ms regardless, so that the game never waits for a frame
+  that does not finish. `FFX_XEFG_PACE=0` releases it as soon as the present returns instead (the behaviour before);
 * **swap chain lifetime.** FFX's swap chain context holds a reference to the swap chain until it is destroyed, and a
   game may rely on it: Wuthering Waves releases its own reference and goes on presenting. The DLL's context does the
   same;
@@ -166,7 +169,8 @@ The logs hold the last run and stay in the game's folder (`FFX_XESS_LOG=0`, `FFX
 file check ignores them. `ffx_xess.log` next to the upscaler DLL: the XeSS version, the context, the quality setting and flags XeSS was set up
 with, the first dispatches and every 600th. `ffx_xefg.log` next to the frame generation DLL: the upscalers the game's
 FidelityFX loader offers on this GPU (the first is the default), the swap chain, the maximum XeSS-FG reports and the
-number set, the first frames and every 600th present (`presented 4` = 4x), XeSS-FG's warnings. With `FSR_FG=inject`,
+number set, the first frames and every 600th present (`presented 4` = 4x, with the sync interval and flags the game
+passed), XeSS-FG's warnings. With `FSR_FG=inject`,
 `dxgi_xefg.log` next to `dxgi.dll` says what became of each swap chain. The same `KEY=VALUE`
 lines can go into `ffx_xess.env` / `ffx_xefg.env` next to the DLL (the environment wins; `XESS_FG` belongs in the
 launch options, the shim reads it before the DLLs load).
@@ -176,21 +180,29 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XESS_LOG=<path>` | upscaler log file; `0` turns it off |
 | `FFX_XESS_XESSLOG=0..3` | XeSS's own messages: 0 debug, 1 info, 2 warnings (default), 3 errors |
 | `FFX_XESS_QUALITY=100..106` | the XeSS quality setting (100 Ultra Performance ... 105 Ultra Quality Plus, 106 Native AA) |
-| `FFX_XESS_JITTER=<f>`, `FFX_XESS_AUTOEXPOSURE=0` | debug: jitter times f; no XeSS auto exposure |
+| `FFX_XESS_AUTOEXPOSURE=0` | debug: no XeSS auto exposure |
 | `FFX_XEFG_MULT=<n>` | frames per rendered frame (default `XESS_FG`, else 2), capped at XeSS-FG's maximum |
 | `FFX_XEFG_LOG=<path>` | frame generation log file; `0` turns it off |
 | `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG's own messages: 0 debug, 1 info, 2 warnings (default), 3 errors |
 | `FFX_XEFG_HUDLESS=0` | no HUD-less image and no UI composition (Known limits) |
 | `FFX_XEFG_SLEEP=0` | no `xellSleep` (XeLL stays on, XeSS-FG requires it) |
 | `FFX_XEFG_OWNWAIT=0` | the game gets the proxy's frame latency waitable object |
+| `FFX_XEFG_PACE=0` | the DLL's waitable object is released when the present returns, not when the GPU has finished the frame (How it works) |
+| `FFX_XEFG_VALIDITY=0` | measuring aid: depth and motion vectors are tagged as valid until the next present instead of copied at the prepare, to see what the copy costs; the game may write them again before the present, so the image can flicker |
 | `FFX_XEFG_EXCLUSIVE=1` | exclusive fullscreen is let through (then no interpolation) |
 | `FFX_XEFG_VENDOR=0` | XeSS-FG and XeLL see the vendor DXVK reports, also when it is not Intel's (see above) |
-| `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_MVNDC`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER` | debug: change or log one input at a time; the comments at their variables in `ffxfg/ffx_xefg.cpp` say how |
+| `FFX_XEFG_MVNDC=1` | motion vectors in NDC (as Cyberpunk 2077 passes them) |
+
+The switches that change or log one input at a time to find the one behind an artifact (`FFX_XEFG_CAMERA`,
+`FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XESS_JITTER`)
+are only in a build with `FFXFG_DEBUG` (`FFXFG_DEBUG=1` in the environment of `build.bat`); the comments at their
+variables in `ffxfg/ffx_xefg.cpp` say how.
 
 ## Building
 
     bash ffxfg/get-headers.sh      AMD FSR SDK 2.4.0 and Intel XeSS SDK headers into ffxfg/inc (checked by SHA-256)
     ffxfg\build.bat                Visual Studio 2022 Build Tools -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll,
-                                   amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll
+                                   amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (FFXFG_DEBUG=1: with the
+                                   debug switches)
 
 The release archive has the DLLs in `ffxfg/`. CI builds them next to the shim.
