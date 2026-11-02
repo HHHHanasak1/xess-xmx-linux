@@ -12,9 +12,6 @@ static const unsigned char kDummyCS[] = {
 static const unsigned char kDummyUAV[] = {
 #include "dummy_uav_bytes.inc"
 };
-#ifdef XMX_STATIC_TABLE   // developer builds only (cmake -DXMX_STATIC_TABLE=ON)
-#include "xess_dummies.inc"
-#endif
 #include "dyn_dummies.inc"
 static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_t nb)
 {
@@ -41,43 +38,89 @@ static bool WriteFileOnce(const char* path, const void* data, size_t size)
     if (!ok || !MoveFileExA(tmp, path, 0)) { DeleteFileA(tmp); return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
     return true;
 }
-static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, const char* opts)
+// The map is read into memory once (and again when its size changed, see below); lookups and the ids this process has
+// already written its files for cost no file access. All of this runs under g_dynCs.
+static const int kNDyn = (int)(sizeof(kDynDummies) / sizeof(kDynDummies[0]));
+struct DynMapLine { int id; unsigned long long hash; };
+static std::vector<DynMapLine> g_dynMap;   // map.txt in file order
+static int g_dynMaxId = -1;
+static unsigned long long g_dynMapSize = 0;   // size of map.txt the table was read from, plus the lines appended since
+static bool g_dynMapLoaded = false;
+static bool g_dynWritten[kNDyn];              // dyn_<id>.spv / .opt confirmed on disk by this process
+
+static unsigned long long DynMapFileSize(const char* mapPath)
 {
-    InitOnceExecuteOnce(&g_dynOnce, DynInit, nullptr, nullptr);
-    EnterCriticalSection(&g_dynCs);
-    CreateDirectoryA(kDynDir, nullptr);
-    char mapPath[MAX_PATH]; snprintf(mapPath, sizeof(mapPath), "%s\\map.txt", kDynDir);
-    int id = -1, maxId = -1;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(mapPath, GetFileExInfoStandard, &fa)) return 0;
+    return ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+}
+
+static void DynReadMap(const char* mapPath)
+{
+    g_dynMap.clear(); g_dynMaxId = -1;
+    g_dynMapSize = DynMapFileSize(mapPath);   // taken before the read: a line added in between is read now and re-read later, never missed
     if (FILE* f = nullptr; fopen_s(&f, mapPath, "rb") == 0 && f)
     {
         int i; unsigned long long h; char line[128];
         while (fgets(line, sizeof(line), f))
-            if (sscanf(line, "%d %llx", &i, &h) == 2) { if (i > maxId) maxId = i; if (h == hash) id = i; }
+            if (sscanf(line, "%d %llx", &i, &h) == 2) { g_dynMap.push_back({ i, h }); if (i > g_dynMaxId) g_dynMaxId = i; }
         fclose(f);
     }
-    const int nDyn = (int)(sizeof(kDynDummies) / sizeof(kDynDummies[0]));
+    g_dynMapLoaded = true;
+}
+
+static int DynLookup(unsigned long long hash)
+{
+    int id = -1;
+    for (const DynMapLine& l : g_dynMap) if (l.hash == hash) id = l.id;   // the last line wins, as when the file was scanned
+    return id;
+}
+
+static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, const char* opts)
+{
+    InitOnceExecuteOnce(&g_dynOnce, DynInit, nullptr, nullptr);
+    EnterCriticalSection(&g_dynCs);
+    char mapPath[MAX_PATH]; snprintf(mapPath, sizeof(mapPath), "%s\\map.txt", kDynDir);
+    if (!g_dynMapLoaded) { CreateDirectoryA(kDynDir, nullptr); DynReadMap(mapPath); }
+    int id = DynLookup(hash);
+    // another process sharing the prefix may have appended ids since the map was read (unprotected, as before): before a
+    // new id is taken, a map.txt of a different size is read again, so its ids are not handed out a second time
+    if (id < 0 && DynMapFileSize(mapPath) != g_dynMapSize) { DynReadMap(mapPath); id = DynLookup(hash); }
     if (id < 0)
     {
-        id = maxId + 1;
-        if (id >= nDyn)
+        id = g_dynMaxId + 1;
+        if (id >= kNDyn)
         {
             // all placeholders in use: start a new map (old one kept as map.old.txt); ids are only names for this prefix
             char oldPath[MAX_PATH]; snprintf(oldPath, sizeof(oldPath), "%s\\map.old.txt", kDynDir);
             MoveFileExA(mapPath, oldPath, MOVEFILE_REPLACE_EXISTING);
-            for (int i = 0; i < nDyn; ++i)
+            for (int i = 0; i < kNDyn; ++i)
             {
                 char q[MAX_PATH];
                 snprintf(q, sizeof(q), "%s\\dyn_%d.spv", kDynDir, i); DeleteFileA(q);
                 snprintf(q, sizeof(q), "%s\\dyn_%d.opt", kDynDir, i); DeleteFileA(q);
             }
-            TraceF("  all %d placeholder ids used: map restarted", nDyn);
+            TraceF("  all %d placeholder ids used: map restarted", kNDyn);
+            g_dynMap.clear(); g_dynMaxId = -1; g_dynMapSize = 0;
+            memset(g_dynWritten, 0, sizeof(g_dynWritten));
             id = 0;
         }
-        if (FILE* f = nullptr; fopen_s(&f, mapPath, "ab") == 0 && f) { fprintf(f, "%d %016llx\n", id, hash); fclose(f); }
+        // the line goes into the table only once it is in the file: a failed append is tried again at the next call
+        char line[64]; const int len = snprintf(line, sizeof(line), "%d %016llx\n", id, hash);
+        if (FILE* f = nullptr; fopen_s(&f, mapPath, "ab") == 0 && f)
+        {
+            const bool ok = fputs(line, f) >= 0;
+            fclose(f);
+            if (ok) { g_dynMapSize += len; g_dynMap.push_back({ id, hash }); g_dynMaxId = id; }
+        }
     }
-    char p[MAX_PATH];
-    snprintf(p, sizeof(p), "%s\\dyn_%d.spv", kDynDir, id); WriteFileOnce(p, spv, spvLen);
-    snprintf(p, sizeof(p), "%s\\dyn_%d.opt", kDynDir, id); WriteFileOnce(p, opts, strlen(opts));
+    if (!g_dynWritten[id])
+    {
+        char p[MAX_PATH];
+        snprintf(p, sizeof(p), "%s\\dyn_%d.spv", kDynDir, id); const bool a = WriteFileOnce(p, spv, spvLen);
+        snprintf(p, sizeof(p), "%s\\dyn_%d.opt", kDynDir, id); const bool b = WriteFileOnce(p, opts, strlen(opts));
+        g_dynWritten[id] = a && b;
+    }
     LeaveCriticalSection(&g_dynCs);
     return id;
 }
@@ -183,24 +226,27 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
     if (!d || !pp) return E_INVALIDARG;
     static std::atomic<int> counter{0};
     const int id = counter++;
-    char b1[400], b2[400];
-    TraceF("CreateComputePipelineState #%d: inputType=%d csLen=%zu csPtr=%p d3d12desc=%p", id, (int)d->ShaderInputType,
-           (size_t)d->CS.BytecodeLength, d->CS.pShaderBytecode, d->pD3D12Desc);
-    TraceCallers("CreateComputePipelineState");
-    TraceF("  CompileOptions : %s", SafeStr(d->CompileOptions, b1, sizeof(b1)));
-    TraceF("  InternalOptions: %s", SafeStr(d->InternalOptions, b2, sizeof(b2)));
-    if (d->pD3D12Desc)
-        TraceF("  rootSig=%p nodeMask=%u cachedBlobLen=%zu flags=0x%x", d->pD3D12Desc->pRootSignature, d->pD3D12Desc->NodeMask,
-               (size_t)d->pD3D12Desc->CachedPSO.CachedBlobSizeInBytes, (unsigned)d->pD3D12Desc->Flags);
-    char name[96];
-    snprintf(name, sizeof(name), "cs_%04d_type%d.bin", id, (int)d->ShaderInputType);
-    if (d->CS.pShaderBytecode && d->CS.BytecodeLength) DumpBlob(name, d->CS.pShaderBytecode, d->CS.BytecodeLength);
-    if (d->CompileOptions) { snprintf(name, sizeof(name), "cs_%04d_options.txt", id); DumpBlob(name, d->CompileOptions, strlen((const char*)d->CompileOptions)); }
-    if (d->CS.pShaderBytecode && d->CS.BytecodeLength >= 4)
+    if (TraceOn())
     {
-        const unsigned char* p = (const unsigned char*)d->CS.pShaderBytecode;
-        TraceF("  first bytes: %02x %02x %02x %02x  %02x %02x %02x %02x", p[0], p[1], p[2], p[3],
-               d->CS.BytecodeLength > 7 ? p[4] : 0, d->CS.BytecodeLength > 7 ? p[5] : 0, d->CS.BytecodeLength > 7 ? p[6] : 0, d->CS.BytecodeLength > 7 ? p[7] : 0);
+        char b1[400], b2[400];
+        TraceF("CreateComputePipelineState #%d: inputType=%d csLen=%zu csPtr=%p d3d12desc=%p", id, (int)d->ShaderInputType,
+               (size_t)d->CS.BytecodeLength, d->CS.pShaderBytecode, d->pD3D12Desc);
+        TraceCallers("CreateComputePipelineState");
+        TraceF("  CompileOptions : %s", SafeStr(d->CompileOptions, b1, sizeof(b1)));
+        TraceF("  InternalOptions: %s", SafeStr(d->InternalOptions, b2, sizeof(b2)));
+        if (d->pD3D12Desc)
+            TraceF("  rootSig=%p nodeMask=%u cachedBlobLen=%zu flags=0x%x", d->pD3D12Desc->pRootSignature, d->pD3D12Desc->NodeMask,
+                   (size_t)d->pD3D12Desc->CachedPSO.CachedBlobSizeInBytes, (unsigned)d->pD3D12Desc->Flags);
+        char name[96];
+        snprintf(name, sizeof(name), "cs_%04d_type%d.bin", id, (int)d->ShaderInputType);
+        if (d->CS.pShaderBytecode && d->CS.BytecodeLength) DumpBlob(name, d->CS.pShaderBytecode, d->CS.BytecodeLength);
+        if (d->CompileOptions) { snprintf(name, sizeof(name), "cs_%04d_options.txt", id); DumpBlob(name, d->CompileOptions, strlen((const char*)d->CompileOptions)); }
+        if (d->CS.pShaderBytecode && d->CS.BytecodeLength >= 4)
+        {
+            const unsigned char* p = (const unsigned char*)d->CS.pShaderBytecode;
+            TraceF("  first bytes: %02x %02x %02x %02x  %02x %02x %02x %02x", p[0], p[1], p[2], p[3],
+                   d->CS.BytecodeLength > 7 ? p[4] : 0, d->CS.BytecodeLength > 7 ? p[5] : 0, d->CS.BytecodeLength > 7 ? p[6] : 0, d->CS.BytecodeLength > 7 ? p[7] : 0);
+        }
     }
     ID3D12Device* dev = DevOf(ctx);
     if (dev && d->pD3D12Desc && (d->ShaderInputType == NONE || d->ShaderInputType == HLSL))
@@ -212,28 +258,20 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
     }
     if (dev && d->pD3D12Desc)
     {
-        // experiment: hand back a no-op pipeline (same root signature) so XeSS keeps requesting the rest of its kernels
+        // a CM kernel: the pipeline handed back is the placeholder for the kernel's id (same root signature), which the
+        // patched driver replaces by the compiled kernel; anything else gets a no-op so XeSS keeps requesting its kernels
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc = *d->pD3D12Desc;
         desc.CS.pShaderBytecode = kDummyUAV; desc.CS.BytecodeLength = sizeof(kDummyUAV);
         {
             const char* opts = d->CompileOptions ? (const char*)d->CompileOptions : "";
             const unsigned long long h = Fnv1a64(d->CS.pShaderBytecode, d->CS.BytecodeLength, opts, strlen(opts));
-            bool known = false;
-#ifdef XMX_STATIC_TABLE
-            // IGDEXT_STATIC=1: kernels of the prebuilt table use their static ids (needs the kernels/ directory of a
-            // developer build); by default every kernel goes through the run-time path
-            static int useStatic = -1;
-            if (useStatic < 0) { char b[8]; useStatic = GetEnvironmentVariableA("IGDEXT_STATIC", b, sizeof(b)) > 0 && atoi(b); }
-            if (useStatic) for (const XessDummy& xd : kXessDummies)
-                if (xd.hash == h) { desc.CS.pShaderBytecode = xd.bytes; desc.CS.BytecodeLength = xd.size; TraceF("  kernel hash %016llx -> dummy id %d (workgroup %d,%d,5)", h, xd.id, 1 + xd.id % 16, 1 + xd.id / 16); known = true; break; }
-#endif
-            if (!known && d->ShaderInputType == CM_SPIRV)
+            if (d->ShaderInputType == CM_SPIRV)
             {
                 const int dyn = DynKernelId(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts);
                 if (dyn >= 0) { desc.CS.pShaderBytecode = kDynDummies[dyn].bytes; desc.CS.BytecodeLength = kDynDummies[dyn].size; TraceF("  kernel hash %016llx -> dynamic id %d", h, dyn); }
                 else TraceF("  WARNING: no dynamic id for kernel hash %016llx: this kernel runs as a no-op", h);
             }
-            else if (!known)
+            else
                 TraceF("  WARNING: shader input type %d is not handled (only CM SPIR-V is): this kernel runs as a no-op", (int)d->ShaderInputType);
         }
         HRESULT hr = dev->CreateComputePipelineState(&desc, riid, pp);
@@ -417,11 +455,16 @@ HRESULT _INTC_D3D12_CheckFeatureSupport(INTCExtensionContext* ctx, INTC_D3D12_FE
         // SIMD16Required=1 (Xe2 and later) makes XeSS and XeFG hand out their SIMD16 + LSC-typed kernel variant, the only
         // one those GPUs can compile (the SIMD8 variant uses legacy typed messages); Xe-HPG gets the SIMD8 variant.
         // The same answer goes to every caller; the fallbacks happen at context creation (XmxFallbackActive).
-        // Overrides: IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>, IGDEXT_OPTIONS2_FG=... for calls from libxess_fg.dll.
+        // Overrides: IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>, IGDEXT_OPTIONS2_FG=... for calls from libxess_fg.dll; an FG
+        // caller takes only the _FG one (the default otherwise), so with either override set the caller must be known.
         TraceCallers("OPTIONS2");
-        const bool fgCtx = CalledFromXeFG();
+        char sr[32], fg[32];
+        const bool haveSr = GetEnvironmentVariableA("IGDEXT_OPTIONS2", sr, sizeof(sr)) > 0;
+        const bool haveFg = GetEnvironmentVariableA("IGDEXT_OPTIONS2_FG", fg, sizeof(fg)) > 0;
+        // CalledFromXeFG walks the stack and resolves every frame's module: only when its answer is used
+        const bool fgCtx = (haveSr || haveFg || TraceOn()) && CalledFromXeFG();
         int simd16 = XmxDetectGpu().simd16 ? 1 : 0, lsc = 1, legacy = 0;
-        { char b[32]; if (GetEnvironmentVariableA(fgCtx ? "IGDEXT_OPTIONS2_FG" : "IGDEXT_OPTIONS2", b, sizeof(b)) > 0) sscanf(b, "%d,%d,%d", &simd16, &lsc, &legacy); }
+        if (fgCtx ? haveFg : haveSr) sscanf(fgCtx ? fg : sr, "%d,%d,%d", &simd16, &lsc, &legacy);
         o->SIMD16Required = simd16 ? TRUE : FALSE; o->LSCSupported = lsc ? TRUE : FALSE; o->LegacyTranslationRequired = legacy ? TRUE : FALSE;
         TraceF("  OPTIONS2 (%s ctx) -> SIMD16Required=%d LSCSupported=%d LegacyTranslationRequired=%d", fgCtx ? "FG" : "SR", simd16, lsc, legacy);
         return S_OK;
