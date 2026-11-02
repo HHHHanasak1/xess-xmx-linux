@@ -78,12 +78,23 @@ def game_libs(game, names=LIBS):
                 yield os.path.join(top, name)
 
 
-def ours(path):
-    return os.path.islink(path) and os.path.dirname(os.readlink(path)) in (STORE, FFXFG, FFX)
+def ours(path, listed=False):
+    """a link of this package, or of one in another folder (moved or unpacked elsewhere) that is still there or that a
+    lock file lists (listed); a link of the user's own that merely looks alike stays"""
+    if not os.path.islink(path):
+        return False
+    d = os.path.dirname(os.readlink(path))
+    if d in (STORE, FFXFG, FFX):
+        return True
+    return os.path.basename(d) in ("xess", "ffxfg", "ffx") and (
+        listed or os.path.isfile(os.path.join(os.path.dirname(d), "tools", "proton-hook.py")))
 
 
-def put_back(path):
-    if not ours(path):
+def put_back(path, listed=False):
+    if not os.path.lexists(path) and os.path.isfile(path + ".xmx-orig"):
+        os.rename(path + ".xmx-orig", path)   # a run stopped between the two steps of an older link()
+        return True
+    if not ours(path, listed):
         return False
     if os.path.isfile(path + ".xmx-orig"):
         # one rename over the link: there is no moment without the file, whatever interrupts this
@@ -113,9 +124,9 @@ def clean_left_over():
         with os.fdopen(fd) as f:
             paths = [l.rstrip("\n") for l in f if l.strip()]
             for p in paths:
-                if put_back(p):
+                if put_back(p, True):
                     say("XESS / FSR_FG: %s put back (left by a run that was killed)" % p)
-            if not any(ours(p) for p in paths):
+            if not any(ours(p, True) for p in paths):
                 os.remove(lf)
 
 
@@ -134,18 +145,31 @@ class Swaps:
             fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX)
         self.lock.write(f + "\n")
         self.lock.flush()
-        if os.path.exists(f):
-            os.rename(f, f + ".xmx-orig")
-        os.symlink(target, f)
+        # the link first (a folder without links fails here, with nothing changed); the original stays in place as a
+        # hard link until the new link replaces it, so f exists at every moment
+        tmp = f + ".xmx-tmp"
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        os.symlink(target, tmp)
         self.paths.append(f)
+        if os.path.exists(f):
+            try:
+                os.link(f, f + ".xmx-orig")
+            except OSError:
+                os.rename(f, f + ".xmx-orig")
+        os.replace(tmp, f)
 
 
 def fresh(f):
-    """False while another run of this game has f swapped; drops an .xmx-orig a killed run left behind"""
+    """False while another run of this game has f swapped; an .xmx-orig a killed run left behind goes back if f is
+    missing, and is dropped if f is there (the game was updated or verified since: f is the original)"""
     if os.path.islink(f):
         return False
     if os.path.exists(f + ".xmx-orig"):
-        os.remove(f + ".xmx-orig")   # from a killed run, and the game was updated or verified since: f is the original
+        if os.path.lexists(f):
+            os.remove(f + ".xmx-orig")
+        else:
+            os.rename(f + ".xmx-orig", f)
     return True
 
 
@@ -316,6 +340,35 @@ def main():
         say("XESS / FSR: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
         return
     swaps = Swaps()
+    # before the first swap: if one of them fails, the top level catches it and the game still starts, and what was
+    # swapped must go back when it exits
+    def restore():
+        n = sum(1 for f in swaps.paths if put_back(f))
+        swaps.paths.clear()
+        try:
+            if swaps.lock:
+                os.remove(swaps.lock.name)
+                swaps.lock.close()
+        except OSError:
+            pass
+        if n:
+            say("XESS / FSR: the game's own files are back")
+
+    sigs = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+    def on_signal(sig, frame):
+        # Steam stops a game with SIGINT and SIGTERM right after each other: the second one must not interrupt the
+        # restore the first one started (that left a library missing), so further signals are ignored from here on
+        for s in sigs:
+            signal.signal(s, signal.SIG_IGN)
+        # files a running game has open stay valid when they are renamed, so this is safe before the game is gone
+        restore()
+        signal.signal(sig, signal.SIG_DFL)
+        os.kill(os.getpid(), sig)
+
+    atexit.register(restore)
+    old = [(s, signal.signal(s, on_signal)) for s in sigs]
+
     if want == "latest":
         if os.path.isfile(os.path.join(STORE, "libxess.dll")):
             xess_latest(game, swaps)
@@ -335,34 +388,8 @@ def main():
         if os.path.isfile(os.path.join(store, "igdext64.dll")) and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
             SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
     if not swaps.paths:
-        return
-
-    def restore():
-        n = sum(1 for f in swaps.paths if put_back(f))
-        swaps.paths.clear()
-        try:
-            os.remove(swaps.lock.name)
-            swaps.lock.close()
-        except OSError:
-            pass
-        if n:
-            say("XESS / FSR / DLSS: the game's own files are back")
-
-    sigs = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
-
-    def on_signal(sig, frame):
-        # Steam stops a game with SIGINT and SIGTERM right after each other: the second one must not interrupt the
-        # restore the first one started (that left a library missing), so further signals are ignored from here on
-        for s in sigs:
-            signal.signal(s, signal.SIG_IGN)
-        # files a running game has open stay valid when they are renamed, so this is safe before the game is gone
-        restore()
-        signal.signal(sig, signal.SIG_DFL)
-        os.kill(os.getpid(), sig)
-
-    atexit.register(restore)
-    for s in sigs:
-        signal.signal(s, on_signal)
+        for sig, h in old:
+            signal.signal(sig, h)   # nothing to put back: this run does not touch how Proton ends
 
 
 try:
