@@ -11,8 +11,8 @@
 #   XMX_GAME    process name of the game; if set, enable/disable refuse to run while it is running
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APPID="${XMX_APPID:-${WUWA_APPID:-}}"
-PFXROOT="${XMX_PREFIX:-${WUWA_PREFIX:-}}"
+APPID="${XMX_APPID:-}"
+PFXROOT="${XMX_PREFIX:-}"
 . "$ROOT/tools/steam-libraries.sh"
 # the prefix in whichever Steam library holds the game (SD card, second disk)
 [ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$(steam_prefix_of "$APPID" || printf '%s' "${STEAM_DIR:-$HOME/.local/share/Steam}/steamapps/compatdata/$APPID/pfx")"
@@ -40,17 +40,8 @@ rm -f "$PFXROOT/drive_c/igdext_kernels/compile_failed.txt"
 
 # 2. driver: ICD json with an absolute library path; every non-Intel driver stays visible
 mkdir -p "$ROOT/run" "$ROOT/kernels"
-cat > "$ROOT/run/intel_icd.json" <<EOF
-{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "$ROOT/lib/libvulkan_intel.so" }, "file_format_version": "1.0.1" }
-EOF
-drivers="$ROOT/run/intel_icd.json"
-for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
-  for j in "$d"/*.json; do
-    [ -f "$j" ] || continue
-    case "$(basename "$j")" in intel_icd.x86_64.json|intel_icd.json) continue ;; esac   # 32-bit Intel ICD stays (32-bit games)
-    drivers="$drivers:$j"
-  done
-done
+xmx_icd_json "$ROOT/lib/libvulkan_intel.so" > "$ROOT/run/intel_icd.json"
+drivers=$(xmx_driver_files "$ROOT/run/intel_icd.json")
 mkdir -p "$(dirname "$CONF")"; touch "$CONF"
 sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF"
 cat >> "$CONF" <<EOF
