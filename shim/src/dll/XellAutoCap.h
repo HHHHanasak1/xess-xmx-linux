@@ -21,6 +21,12 @@ public:
             Reset();
             return m_capMs;
         }
+        // a hitch lifts both numbers at once and looks like a queue: it says nothing about the GPU. Many in a row are a
+        // new scene.
+        if (m_typicalMs > 0 && frameMs > m_typicalMs * kHitch && ++m_hitches < kHitchWindows)
+            return m_capMs;
+        m_hitches = 0;
+        m_typicalMs = m_typicalMs > 0 ? m_typicalMs + (frameMs - m_typicalMs) * kTypicalRise : frameMs;
         switch (m_state) {
         case State::Idle:
             if (--m_left <= 0)
@@ -57,6 +63,9 @@ public:
         m_floorMs = 0;
         m_before = 0;
         m_queueCapMs = 0;
+        m_ceilMs = 0;
+        m_typicalMs = 0;
+        m_hitches = 0;
         m_hold = 0;
         m_clean = 0;
         m_backOffs = 0;
@@ -77,6 +86,7 @@ private:
     {
         m_before = submitMs;
         m_capMs = Clamp(frameMs * kProbeMargin);
+        m_ceilMs = frameMs * kCeiling;        // the frame rate the game has without a cap, whatever happens later
         m_state = State::Probe;
         m_left = kProbeWindows;
     }
@@ -97,7 +107,9 @@ private:
                 return;
             }
             m_queueCapMs = m_capMs;
-            m_capMs = Clamp((m_capMs > frameMs ? m_capMs : frameMs) * kBackOff);
+            m_capMs = Clamp(m_capMs * (frameMs > m_capMs * kNotBinding ? kBackOffFar : kBackOff));
+            if (m_ceilMs > 0 && m_capMs > m_ceilMs)
+                m_capMs = m_ceilMs;
             ++m_backOffs;
             m_hold = kHoldWindows;
             m_drain = kDrainWindows;
@@ -123,6 +135,10 @@ private:
     static constexpr double kLoadingMs = 150;      // slower than this is a loading screen
     static constexpr double kProbeMargin = 1.12;
     static constexpr double kBackOff = 1.03;
+    static constexpr double kBackOffFar = 1.06;    // the frame time is well above the cap
+    static constexpr double kCeiling = 1.25;
+    static constexpr double kHitch = 1.5;
+    static constexpr double kTypicalRise = 0.1;
     static constexpr double kStepSlow = 0.996;
     static constexpr double kStepFast = 0.98;      // after kCleanFast clean windows: the scene got lighter
     static constexpr double kNotBinding = 1.03;
@@ -133,6 +149,7 @@ private:
     static constexpr double kMinMs = 2;
     static constexpr double kMaxMs = 100;
     static constexpr int kProbeWindows = 8;
+    static constexpr int kHitchWindows = 6;
     static constexpr int kHoldWindows = 12;
     static constexpr int kCleanFast = 4;
     static constexpr int kDrainWindows = 4;
@@ -147,6 +164,9 @@ private:
     double m_floorMs = 0;
     double m_before = 0;
     double m_queueCapMs = 0;
+    double m_ceilMs = 0;
+    double m_typicalMs = 0;
+    int m_hitches = 0;
     int m_hold = 0;
     int m_clean = 0;
     int m_backOffs = 0;
