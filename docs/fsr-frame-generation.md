@@ -56,8 +56,8 @@ through the FidelityFX DLLs. The game offers FSR 4 only when the upscaler DLL re
 option appears and runs on XeSS SR. Choose it: with FSR 2 upscaling and XeSS-FG at 5x, near and far objects moved at
 different speeds while the camera turned fast.
 
-The hook runs in every Proton `install.sh` could write to. For another one (GE-Proton, a Proton of a distribution
-package) `tools/fsr-fg.sh` changes the game folder until it is switched back:
+The hook runs in every Proton `install.sh` could write to, GE-Proton in `compatibilitytools.d` included. For another
+one (a Proton of a distribution package) `tools/fsr-fg.sh` changes the game folder until it is switched back:
 
     tools/fsr-fg.sh all <app id | game folder>      as FSR=xess, originals kept as <name>.ffxfg-orig
     tools/fsr-fg.sh on <app id | game folder>       as FSR_FG=xess: frame generation only

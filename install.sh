@@ -73,7 +73,6 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "# Protons without Intel's driver store (Proton 11.0) never load the shim from the prefix; XeSS looks here first"
     echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$ALT_EXT'"
   } > "$ENVD/50-xess-xmx.conf"
-  systemctl --user import-environment 2>/dev/null
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
     "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
     "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$ALT_EXT" 2>/dev/null

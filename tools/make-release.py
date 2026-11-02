@@ -14,7 +14,7 @@ name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration_dx12.dll", "ffxfg/amd_fidelityfx_upscaler_dx12.dll", "ffxfg/dxgi.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-tools = ["cm-compile.sh", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh", "steam-libraries.sh", "session-check.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
+tools = ["cm-compile.sh", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh", "steam-libraries.sh", "session-check.sh", "xell-probe.sh", "build-deps.sh", "rebuild-driver.sh", "switch-driver.sh", "cmk_pack.py", "check-kernels.py", "build-kernels.sh", "s16_map.py",
          "gen_all_dummies.py", "gen_dyn_dummies.py", "check_dyn_ids.py"]
 files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):
