@@ -11,14 +11,17 @@
 # XeSS use DP4a) - unless another driver of the package (lib/mesa-<version>/) passes; that one is then activated.
 # A Mesa version that differs from the system's is only reported (the patched driver is a complete driver).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
+# The two loading checks run at every login. What only depends on a file's content (the drivers' library names, the
+# drirc report, the system's Mesa version) is kept in ~/.cache/xess-xmx/ until that file changes.
 # Environment: XMX_CHECK_LIB / XMX_CHECK_ICD override the library / ICD file to test (tests only).
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 # the default driver (lib/libvulkan_intel.so only forwards to the one lib/active names)
 LIB="${XMX_CHECK_LIB:-$PKG/lib/mesa-$(cat "$PKG/lib/active" 2>/dev/null)/libvulkan_intel.so}"
 [ -f "$LIB" ] || LIB="$PKG/lib/libvulkan_intel.so"
 ICD="${XMX_CHECK_ICD:-$PKG/run/intel_icd.json}"
-STATUS="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/driver-status"
-mkdir -p "$(dirname "$STATUS")"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx"
+STATUS="$CACHE/driver-status"
+mkdir -p "$CACHE"
 
 fail() { # <reason>
   # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers
@@ -51,6 +54,25 @@ fail() { # <reason>
 }
 [ "${1:-}" = --dry-run ] && DRY=1
 
+cached() { # <name> <file> <command...>: the command's output, kept in CACHE/<name> for as long as <file> keeps its
+  # size, modification time and inode (a package unpacked again or an OS image changes those, a newer mtime alone
+  # would miss a downgrade). The output goes to stdout either way
+  local c="$CACHE/$1" key out lines=()
+  key=$(stat -c '%s %.Y %i' "$2" 2>/dev/null)
+  shift 2
+  if [ -n "$key" ]; then
+    mapfile -t lines 2>/dev/null < "$c"
+    if [ "${lines[0]:-}" = "$key" ]; then
+      [ ${#lines[@]} -gt 1 ] && printf '%s\n' "${lines[@]:1}"
+      return 0
+    fi
+  fi
+  out=$("$@")
+  # nothing is not kept: vulkaninfo may have failed this once (a timeout), and the next login should ask again
+  [ -n "$key" ] && [ -n "$out" ] && printf '%s\n' "$key" "$out" > "$c.new" && mv -f "$c.new" "$c"
+  printf '%s\n' "$out"
+}
+
 # 0. lib/deps (the drivers' run path): copies of the host libraries that games under Proton cannot reach otherwise.
 #    Inside the Steam Linux Runtime container the host's /usr is not visible; pressure-vessel brings in only the
 #    libraries the host's own Vulkan drivers need, and the runtime has neither libSPIRV-Tools nor libdisplay-info. So a
@@ -60,21 +82,49 @@ fail() { # <reason>
 #    Refreshed every session, so a system update of either library reaches the copy. A system without the library
 #    (Debian, Ubuntu and Fedora ship libdisplay-info 0.1/0.2; Debian and Ubuntu have no shared SPIRV-Tools) gets the
 #    package's own build from lib/bundled/ (tools/build-deps.sh).
+LDCACHE=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null)   # the host's libraries, once
 hostlib() { # <soname, or an awk regex with -r> -> path of the host's 64-bit library
   local p d
   if [ "$1" = -r ]; then
-    p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v r="$2" '$1 ~ r && /x86-64/ { print $NF; exit }')
+    p=$(awk -v r="$2" '$1 ~ r && /x86-64/ { print $NF; exit }' <<< "$LDCACHE")
     [ -n "$p" ] && [ -f "$p" ] && echo "$p"
     return
   fi
-  p=$({ /sbin/ldconfig -p || ldconfig -p; } 2>/dev/null | awk -v n="$1" '$1 == n && /x86-64/ { print $NF; exit }')
+  p=$(awk -v n="$1" '$1 == n && /x86-64/ { print $NF; exit }' <<< "$LDCACHE")
   [ -n "$p" ] && [ -f "$p" ] && { echo "$p"; return; }
   for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /lib64 /lib/x86_64-linux-gnu /usr/lib; do
     [ -f "$d/$1" ] && { echo "$d/$1"; return; }
   done
 }
+driver_facts() { # <driver>: what the deps and the reports need from the file, read once per build of it (cached):
+  #   needed <name>    a library it links that the Steam Linux Runtime lacks (SPIRV-Tools, libdisplay-info)
+  #   drirc yes|no     whether it reads /usr/share/drirc.d
+  # objdump / readelf read only the ELF headers; without binutils the 25 MB file is scanned for the names
+  local names
+  if command -v objdump >/dev/null 2>&1; then
+    names=$(objdump -p "$1" 2>/dev/null | awk '$1 == "NEEDED" { print $2 }')
+  elif command -v readelf >/dev/null 2>&1; then
+    names=$(readelf -d "$1" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')
+  else
+    names=$(grep -aoE 'lib(SPIRV-Tools[A-Za-z-]*|display-info)\.so[.0-9]*' "$1")
+  fi
+  printf '%s\n' "$names" | grep -E '^lib(SPIRV-Tools[A-Za-z-]*|display-info)\.so' | sort -u | sed 's/^/needed /'
+  if grep -aq '/usr/share/drirc.d' "$1"; then echo "drirc yes"; else echo "drirc no"; fi
+}
+facts_of() { # <driver> -> its driver_facts, from the cache when the file is unchanged
+  local d=${1%/*}
+  cached "driver-facts-${d##*/}" "$1" driver_facts "$1"
+}
 mkdir -p "$PKG/lib/deps"
-for n in $(cat "$PKG"/lib/mesa-*/libvulkan_intel.so 2>/dev/null | grep -aoE 'lib(SPIRV-Tools[A-Za-z-]*|display-info)\.so[.0-9]*' | sort -u); do
+needed=""
+for so in "$PKG"/lib/mesa-*/libvulkan_intel.so; do
+  [ -f "$so" ] || continue
+  while read -r k v; do
+    [ "$k" = needed ] || continue
+    case " $needed " in *" $v "*) ;; *) needed="$needed $v" ;; esac
+  done <<< "$(facts_of "$so")"
+done
+for n in $needed; do
   src=$(hostlib "$n")
   [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib libSPIRV-Tools-shared.so)
   [ -z "$src" ] && [ "$n" = libSPIRV-Tools.so ] && src=$(hostlib -r '^libSPIRV-Tools-[0-9][^ ]*\.so$')
@@ -102,17 +152,28 @@ else
   note=" (note: vulkaninfo not installed, device enumeration not checked)"
 fi
 
-# 3. Mesa version against the system's (report only)
+# 3. Mesa version against the system's (report only; asked of the stock driver once per build of it)
 note="${note:-}"
+system_mesa() { # the driverInfo of the stock Intel driver
+  VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>/dev/null \
+    | grep -m1 "driverInfo" | sed 's/.*= *//'
+}
 if [ -n "$ours" ] && command -v vulkaninfo >/dev/null 2>&1; then
-  sys=$(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>/dev/null \
-        | grep -m1 "driverInfo" | sed 's/.*= *//')
+  # the stock driver's file, from its ICD; a bare name there (Fedora) is looked up in the usual places
+  syslib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' /usr/share/vulkan/icd.d/intel_icd.x86_64.json 2>/dev/null | head -1)
+  case "$syslib" in
+    /*) ;;
+    *) for d in /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib; do
+         [ -f "$d/${syslib:-libvulkan_intel.so}" ] && { syslib="$d/${syslib:-libvulkan_intel.so}"; break; }
+       done ;;
+  esac
+  sys=$(cached system-mesa "$syslib" system_mesa)
   v_ours=$(printf '%s' "$ours" | grep -o 'Mesa [0-9.]*'); v_sys=$(printf '%s' "$sys" | grep -o 'Mesa [0-9.]*')
   [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the patched driver is $v_ours)"
 fi
 # 4. per-game workarounds: a driver built with meson's default /usr/local prefix never reads /usr/share/drirc.d
 #    (report only; e.g. Wuthering Waves with ray tracing hangs the GPU without them)
-if [ -d /usr/share/drirc.d ] && ! grep -aq '/usr/share/drirc.d' "$LIB"; then
+if [ -d /usr/share/drirc.d ] && facts_of "$LIB" | grep -q '^drirc no$'; then
   note="$note (note: this driver does not read /usr/share/drirc.d, so Mesa's per-game workarounds are off - update the package or rebuild with tools/rebuild-driver.sh)"
 fi
 echo "ok $(date '+%F %T') $LIB ${ours}${note}" > "$STATUS"
