@@ -106,8 +106,7 @@ Forza Horizon 6 on an Arc B390 at SoC 27 W, 1920x1200 output, 1280x800 rendered,
 | 3x | ~38 fps | ~115 fps |
 
 The SoC is at its power limit in both. The third frame costs about 4.8 ms there: about 2.7 ms in XeSS-FG, 0.9 ms for
-gamescope to compose it, the rest not attributed. The Steam performance overlay made no measurable difference. 2x is
-the better choice in this game.
+gamescope to compose it, the rest not attributed. The Steam performance overlay made no measurable difference.
 
 ### Known limits
 
