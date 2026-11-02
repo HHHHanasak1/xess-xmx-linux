@@ -80,6 +80,7 @@ public:
         m_clean = 0;
         m_backOffs = 0;
         m_drain = 0;
+        m_over = 0;
     }
 
     double CapMs() const { return m_capMs; }
@@ -106,6 +107,9 @@ private:
     {
         // the empty-queue value: the lowest submit time, which follows a heavier scene slowly
         m_floorMs = submitMs < m_floorMs ? submitMs : m_floorMs + (submitMs - m_floorMs) * kFloorRise;
+        if (submitMs > m_floorMs + QueueMs(frameMs) && ++m_over < kOverWindows) {
+            return;                            // one window is a blip, a queue stays
+        }
         if (submitMs > m_floorMs + QueueMs(frameMs)) {
             m_clean = 0;
             if (m_drain > 0) {                 // the last step back needs a few windows to show
@@ -129,7 +133,10 @@ private:
             ++m_backOffs;
             m_hold = m_holdNext;
             m_drain = kDrainWindows;
-        } else if (workMs > 0 && m_capMs > kWorkFar * (m_limitMs > workMs * kWorkMargin ? m_limitMs : workMs * kWorkMargin)) {
+            return;
+        }
+        m_over = 0;
+        if (workMs > 0 && m_capMs > kWorkFar * (m_limitMs > workMs * kWorkMargin ? m_limitMs : workMs * kWorkMargin)) {
             // no queue, and the cap is far above both a frame's work and the known limit: the game is waiting for nothing
             // (a stutter pushed the cap up). Down to the better of the two, the best estimates there are
             m_capMs = Clamp(m_limitMs > workMs * kWorkMargin ? m_limitMs : workMs * kWorkMargin);
@@ -180,7 +187,8 @@ private:
     static constexpr int kHitchWindows = 6;
     static constexpr int kCalmWindows = 20;
     static constexpr int kHoldWindows = 12;
-    static constexpr int kHoldMax = 96;
+    static constexpr int kHoldMax = 30;
+    static constexpr int kOverWindows = 2;
     static constexpr int kCleanFast = 2;
     static constexpr int kDrainWindows = 4;
     static constexpr int kMaxBackOffs = 8;
@@ -203,4 +211,5 @@ private:
     int m_clean = 0;
     int m_backOffs = 0;
     int m_drain = 0;
+    int m_over = 0;
 };
