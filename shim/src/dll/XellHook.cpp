@@ -6,6 +6,7 @@
 // The fix is on for Wuthering Waves only (process path contains "Wuthering Waves"), a cap set at that moment in any other game
 // is left alone.
 //   IGDEXT_XELL_FIXCAP=1    apply the fix in any game;  IGDEXT_XELL_KEEPCAP=1   turn it off everywhere
+//   IGDEXT_XELL_CAP=<us>    experimental: at least this interval per displayed frame (XeLL's frame cap, in both of its modes)
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
 #include "Stdafx.h"
 #include "Trace.h"
@@ -24,6 +25,7 @@ typedef uint32_t (*PFN_XellFg)(void*, uint32_t, uint32_t);
 
 static PFN_XellSet g_origSet; static PFN_XellSleep g_origSleep; static PFN_XellFg g_origFg;
 static bool g_log = false;
+static uint32_t g_capUs = 0;
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
 static volatile LONG g_sleepCalls = 0;
 typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
@@ -68,6 +70,8 @@ static uint32_t Hook_SetSleepMode(void* ctx, const XellSleepParams* p)
     if (g_fixCap && q.minimumIntervalUs != 0 && g_fgOnTick && GetTickCount64() - g_fgOnTick < 1500)
     { XLog("   -> frame cap %u us set right after frame generation was enabled: keeping %u us", q.minimumIntervalUs, g_savedInterval); q.minimumIntervalUs = g_savedInterval; }
     g_effInterval = q.minimumIntervalUs;
+    if (q.minimumIntervalUs < g_capUs)
+    { XLog("   -> IGDEXT_XELL_CAP: %u us instead of %u us", g_capUs, q.minimumIntervalUs); q.minimumIntervalUs = g_capUs; }
     return g_origSet(ctx, &q);
 }
 
@@ -272,7 +276,8 @@ void StartXellHook()
     g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
     if (GetEnvironmentVariableA("IGDEXT_XELL_FIXCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = true;
     if (GetEnvironmentVariableA("IGDEXT_XELL_KEEPCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = false;
-    if (!g_fixCap && !g_log) return;
+    if (GetEnvironmentVariableA("IGDEXT_XELL_CAP", b, sizeof(b)) > 0) g_capUs = (uint32_t) strtoul(b, nullptr, 10);
+    if (!g_fixCap && !g_log && !g_capUs) return;
     XLog("XellHook start in %s", exe);
     if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
