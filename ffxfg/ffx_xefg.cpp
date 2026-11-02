@@ -440,7 +440,8 @@ struct ScState {
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t maxInterpolations = 1;
 
-    // Objects handed to games that drive the interpolation dispatch themselves.
+    // Objects handed to games that drive the interpolation dispatch themselves, made on the first query.
+    bool interpMade = false;
     ID3D12CommandAllocator* alloc = nullptr;
     ID3D12GraphicsCommandList* cmdList = nullptr;
     ID3D12Resource* interpTex = nullptr;
@@ -1056,26 +1057,6 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         Log("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", want, (int)r);
     }
 
-    // Command list and texture for games that query them and dispatch the interpolation themselves.
-    if (SUCCEEDED(st->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&st->alloc))) &&
-        SUCCEEDED(st->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, st->alloc, nullptr,
-                                                IID_PPV_ARGS(&st->cmdList))))
-        st->cmdList->Close();
-    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
-    D3D12_RESOURCE_DESC rd = {};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    rd.Width = st->width;
-    rd.Height = st->height;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels = 1;
-    rd.Format = st->format;
-    rd.SampleDesc.Count = 1;
-    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    if (FAILED(st->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                                   IID_PPV_ARGS(&st->interpTex))))
-        st->interpTex = nullptr;
-
     st->wrapper = new FgSwapChain(st);
     // FFX's context keeps a reference to the swap chain until ffxDestroyContext; Wuthering Waves (FSR 3.1.1) drops
     // its own reference before that and still presents
@@ -1447,6 +1428,34 @@ extern "C" __declspec(dllexport) void XefgBridgeFrame(const XefgBridgeFrameDesc*
 // ---------------------------------------------------------------------------------------------------------------
 // Exports
 
+// Command list and texture for a game that queries them to dispatch the interpolation itself, made on the first
+// query (with the lock held): most games never ask, and FSR_FG=inject never does.
+static void InterpObjects(ScState* st)
+{
+    if (st->interpMade)
+        return;
+    st->interpMade = true;
+    if (SUCCEEDED(st->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&st->alloc))) &&
+        SUCCEEDED(st->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, st->alloc, nullptr,
+                                                IID_PPV_ARGS(&st->cmdList))))
+        st->cmdList->Close();
+    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = st->width;
+    rd.Height = st->height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = st->format;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(st->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                   D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                   IID_PPV_ARGS(&st->interpTex))))
+        st->interpTex = nullptr;
+    Log("interpolation command list %p and texture %p for the game's own dispatch", (void*)st->cmdList, (void*)st->interpTex);
+}
+
 static bool IsOurType(uint64_t t)
 {
     return t == FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION ||
@@ -1635,12 +1644,16 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxQuery(ffxContext* context, f
     auto* st = (ScState*)*context;
     if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONCOMMANDLIST_DX12) {
         auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationCommandListDX12*)desc;
+        std::lock_guard<std::mutex> lk(st->lock);
+        InterpObjects(st);
         if (d->pOutCommandList)
             *d->pOutCommandList = st->cmdList;
         return FFX_API_RETURN_OK;
     }
     if (desc->type == FFX_API_QUERY_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_INTERPOLATIONTEXTURE_DX12) {
         auto* d = (ffxQueryDescFrameGenerationSwapChainInterpolationTextureDX12*)desc;
+        std::lock_guard<std::mutex> lk(st->lock);
+        InterpObjects(st);
         if (d->pOutTexture) {
             *d->pOutTexture = {};
             d->pOutTexture->resource = st->interpTex;
