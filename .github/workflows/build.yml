@@ -7,16 +7,20 @@ name: build
 # plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
 # these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
 
+# A push that only touches docs/ or Markdown runs nothing. Path filters are not evaluated for tag pushes, so a release
+# tag always builds.
 on:
   push:
+    paths-ignore: ['docs/**', '**.md']
   pull_request:
+    paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
 
 jobs:
   scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shell syntax
         run: for f in *.sh tools/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
@@ -32,13 +36,13 @@ jobs:
   icd:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: build
         run: |
           mkdir -p out
           gcc -O2 -Wall -shared -fPIC -fvisibility=hidden -o out/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
           nm -D --defined-only out/libvulkan_intel.so | grep -c ' vk_icd' | grep -qx 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: xmx-icd
           path: out/libvulkan_intel.so
@@ -49,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:bookworm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: build
         run: bash tools/build-deps.sh out
       - name: glibc floor at most 2.38, sonames the drivers ask for
@@ -61,7 +65,7 @@ jobs:
           done
           objdump -p out/libdisplay-info.so.3 | grep -q 'SONAME *libdisplay-info\.so\.3$'
           objdump -T out/libSPIRV-Tools.so | grep -q ' spvContextCreate$'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundled-deps
           path: out/
@@ -69,7 +73,7 @@ jobs:
   shim:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -77,7 +81,7 @@ jobs:
         run: cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: build
         run: cmake --build shim/build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: igdext64
           path: shim/build/igdext64.dll
@@ -87,7 +91,7 @@ jobs:
           mkdir controllib\build
           cl /nologo /O2 /W3 /MT /LD controllib\ControlLib.c /Focontrollib\build\ /Fe:controllib\build\ControlLib.dll /link dxgi.lib dxguid.lib
         shell: cmd
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ControlLib
           path: controllib/build/ControlLib.dll
@@ -114,7 +118,7 @@ jobs:
           cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\dxgi_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\dxgi.dll
           dumpbin /exports ffxfg\build\dxgi.dll | findstr /c:"CreateDXGIFactory2" /c:"DXGIGetDebugInterface1"
         shell: cmd
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ffx-xess
           path: |
@@ -156,7 +160,7 @@ jobs:
             echo "toolchain download failed (try $try), waiting"
             sleep $((try * 60))
           done
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # the release tarball, not the git tag: upstream deleted the mesa-26.3.0-rc1 tag and its commit when staging/26.3
       # was branched again, and a tag can move; the tarball is checked against a fixed sha256
       - name: mesa source (release tarball from archive.mesa3d.org)
@@ -188,7 +192,8 @@ jobs:
           objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -q 'RUNPATH *[$]ORIGIN/[.][.]/deps$'
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBC_2\.[0-9]*" | sort -t. -k2 -n -u | tail -1
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name == '26.1.2' && 'libvulkan_intel' || format('libvulkan_intel-{0}', matrix.name) }}
           path: mesa/build/src/intel/vulkan/libvulkan_intel.so
+          retention-days: 30   # release archives are packed from artifacts downloaded soon after the push
