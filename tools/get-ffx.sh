@@ -3,8 +3,7 @@
 # github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, Kits/FidelityFX/signedbin) and AMD's license into <package>/ffx.
 # Games with FSR 3.1.0 to 3.1.3 ship everything in one amd_fidelityfx_dx12.dll: with FSR=xess or FSR_FG=xess the loader
 # takes that name and an upscaler and a frame generation DLL go next to it (the package's ones where asked for, AMD's
-# otherwise); FSR=amd (debug) puts AMD's FSR 3.1 upscaler into any FSR 3.1+ game.
-# About 87 MB download. Needs curl. AMD's license allows redistribution in binary form only, with its notice
+# otherwise). About 87 MB download. Needs curl. AMD's license allows redistribution in binary form only, with its notice
 # (ffx/license.md); the files are not part of the repository or the release archive.
 set -eu
 PKG="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
