@@ -10,6 +10,9 @@
 #   4. a user path unit re-installs the shim whenever a Proton update replaces its bundled copy
 # Re-run after Steam installs a new Proton or after a game created a new prefix. uninstall.sh reverts everything.
 # Environment: XMX_NO_ENV=1 skips step 2 (keep using enable.sh / launch options per game).
+#   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply
+#   for that long (a new prefix gets its driver store folder a few seconds after it appears, Steam may still be
+#   writing a Proton update), nothing else touched.
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
@@ -22,12 +25,22 @@ ENVD="$HOME/.config/environment.d"
 ALT_EXT='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
 UNITD="$HOME/.config/systemd/user"
 SHIM="$PKG/igdext64.dll"
+case "${XMX_WAIT_PREFIX:-0}" in 0|"") MANUAL=1 ;; *) MANUAL=0 ;; esac
 for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/tools/cm-compile.sh"; do
   [ -f "$f" ] || { echo "missing $f - run this from the unpacked package"; exit 1; }
 done
 mkdir -p "$PKG/run"
 grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" 2>/dev/null || \
-  printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s/lib/libvulkan_intel.so" }, "file_format_version": "1.0.1" }\n' "$PKG" > "$PKG/run/intel_icd.json"
+  xmx_icd_json "$PKG/lib/libvulkan_intel.so" > "$PKG/run/intel_icd.json"
+# every igdext64.dll this package installed gets this file's modification time (an even whole second, so that any file
+# system keeps it exactly): the watcher's poll then tells a file Steam wrote apart from ours without reading it
+STAMP="$PKG/run/shim-stamp"
+[ -f "$STAMP" ] || touch -d "@$(( $(date +%s) / 2 * 2 ))" "$STAMP"
+# a manual run must not start a background one through the watcher (every shim copy is an event for it): the path
+# unit is stopped while this runs and started again at the end (also when this run is interrupted)
+if [ "$MANUAL" = 1 ] && systemctl --user stop xess-xmx-shim.path 2>/dev/null; then
+  trap 'systemctl --user start xess-xmx-shim.path 2>/dev/null' EXIT
+fi
 
 # 1. compiler bundle (the watcher, which runs this script in the background, downloads nothing)
 if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
@@ -50,14 +63,7 @@ chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   # VK_DRIVER_FILES replaces the loader's driver list: every other GPU's driver stays in it (hybrid laptops, eGPUs),
   # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the patched one
-  drivers="$PKG/run/intel_icd.json"
-  for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
-    for j in "$d"/*.json; do
-      [ -f "$j" ] || continue
-      case "$(basename "$j")" in intel_icd.x86_64.json|intel_icd.json) continue ;; esac   # 32-bit Intel ICD stays (32-bit games)
-      drivers="$drivers:$j"
-    done
-  done
+  drivers=$(xmx_driver_files "$PKG/run/intel_icd.json")
   mkdir -p "$ENVD"
   {
     echo "# XeSS XMX (xess-xmx-linux): patched ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
@@ -80,8 +86,9 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
 fi
 mkdir -p "$PKG/kernels" "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/kernels"
-# a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, try again
-if [ -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+# a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, a manual run
+# tries again (not the watcher: it would retry a compile that keeps failing at every Proton update)
+if [ "$MANUAL" = 1 ] && [ -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
   while IFS= read -r lib; do rm -f "$lib"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels/compile_failed.txt; done <<< "$LIBS"
 fi
 if [ -d "$HOME/.var/app/com.valvesoftware.Steam" ]; then
@@ -92,10 +99,23 @@ fi
 # 3. shim
 n=0
 READONLY=""   # Protons this user cannot write to (a distribution package): reported at the end
+changed() { # <igdext64.dll>: a file of the user's whose modification time is not the stamp's, i.e. one this package did
+  # not write (Steam's copy, new or updated). Bash builtins only: the watcher's poll asks this every few seconds
+  [ -f "$1" ] && [ -O "$1" ] && { [ "$1" -nt "$STAMP" ] || [ "$1" -ot "$STAMP" ]; }
+}
+put_shim() { # <igdext64.dll path>: the shim, stamped
+  cp "$SHIM" "$1" || return
+  touch -r "$STAMP" "$1" 2>/dev/null
+  n=$((n + 1))
+  echo "   shim -> $1"
+}
 install_shim() { # <igdext64.dll path>
   local f=$1
   [ -f "$f" ] || return
-  cmp -s "$f" "$SHIM" && return
+  if cmp -s "$f" "$SHIM"; then
+    changed "$f" && touch -r "$STAMP" "$f" 2>/dev/null   # installed before the stamp existed
+    return
+  fi
   if [ ! -w "$f" ] && ! chmod u+w "$f" 2>/dev/null; then
     case "$READONLY" in *"$f"*) ;; *) READONLY="$READONLY
 $f";; esac
@@ -110,7 +130,7 @@ $f";; esac
     fi
   fi
   chmod u+w "$f" 2>/dev/null
-  cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
+  put_shim "$f"
 }
 install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR=xess, FSR_FG=xess)
   local p=$1 u="$1/user_settings.py"
@@ -144,30 +164,43 @@ install_controllib() { # <prefix system32>: ControlLib.dll, the stand-in for Int
   cmp -s "$PKG/ControlLib.dll" "$s" && return
   cp "$PKG/ControlLib.dll" "$s" && n=$((n + 1)) && echo "   ControlLib.dll -> $s"
 }
-shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder
-  local f d lib s
+shim_pass() { # every Proton that bundles the library, and every prefix that has the driver store folder.
+  # With "poll": the same places, but each file is read (cmp) or written only when a bash test says it must be - the
+  # watcher's loop below asks this every few seconds, and a full pass forks several times per Proton and prefix
+  local poll=${1:-} f d lib s
   # Protons: Valve's in every library, the user's own (compatibilitytools.d), a distribution's (SYSTOOLS). The hook goes
   # into every Proton, also one without its own igdext (Proton 11.0): the launch options work the same there
   while IFS= read -r lib; do
-    for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
-    for d in "$lib"/steamapps/common/Proton*/; do install_hook "${d%/}"; done
+    for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
+      [ -z "$poll" ] || changed "$f" && install_shim "$f"
+    done
+    for d in "$lib"/steamapps/common/Proton*/; do
+      [ -z "$poll" ] || [ ! -f "$d/user_settings.py" ] && install_hook "${d%/}"   # a new Proton (hook not yet there)
+    done
   done <<< "$LIBS"
   for s in "$STEAM/compatibilitytools.d" $SYSTOOLS; do
-    for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do install_shim "$f"; done
-    for d in "$s"/*/; do install_hook "${d%/}"; done
+    for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
+      [ -z "$poll" ] || changed "$f" && install_shim "$f"
+    done
+    for d in "$s"/*/; do
+      [ -z "$poll" ] || [ ! -f "$d/user_settings.py" ] && install_hook "${d%/}"
+    done
   done
-  # prefixes in every library
+  # prefixes in every library (a new one has the folder a few seconds after compatdata/<id> appears, without the
+  # file; Proton Experimental copies its own igdext64.dll over ours at each launch)
   while IFS= read -r lib; do
     for d in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
       [ -d "$d" ] || continue
-      if [ -f "$d/igdext64.dll" ]; then install_shim "$d/igdext64.dll"; else cp "$SHIM" "$d/igdext64.dll" && n=$((n + 1)) && echo "   shim -> $d/igdext64.dll"; fi
-      install_controllib "${d%/driverstore/filerepository/igd_faux.inf_1}"
+      if [ ! -f "$d/igdext64.dll" ]; then put_shim "$d/igdext64.dll"
+      elif [ -z "$poll" ] || changed "$d/igdext64.dll"; then install_shim "$d/igdext64.dll"; fi
+      s=${d%/driverstore/filerepository/igd_faux.inf_1}
+      [ -z "$poll" ] || { [ -f "$PKG/ControlLib.dll" ] && [ ! -f "$s/ControlLib.dll" ]; } && install_controllib "$s"
     done
   done <<< "$LIBS"
 }
 shim_pass
 echo "== shim: $n file(s) updated"
-if [ -n "$READONLY" ] && [ "${XMX_WAIT_PREFIX:-0}" = 0 ]; then
+if [ -n "$READONLY" ] && [ "$MANUAL" = 1 ]; then
   echo "!! These Protons belong to a distribution package and only root can change them; games that run on them get"
   echo "   no XMX (Proton copies its own igdext64.dll into the prefix). Either use a Proton in"
   echo "   ~/.local/share/Steam/compatibilitytools.d (CachyOS offers its builds there too), or put the shim in as root"
@@ -176,18 +209,23 @@ if [ -n "$READONLY" ] && [ "${XMX_WAIT_PREFIX:-0}" = 0 ]; then
 fi
 # started by the watcher: keep looking for a while. A new prefix gets its driver store folder a few seconds after
 # compatdata/<id> appears, and Steam may write a Proton update's files after the event that started this run - the path
-# unit does not report changes while its service is running, so they have to be picked up here.
-if [ "${XMX_WAIT_PREFIX:-0}" -gt 0 ]; then
-  end=$(( $(date +%s) + XMX_WAIT_PREFIX ))
-  while [ "$(date +%s)" -lt "$end" ]; do
+# unit does not report changes while its service is running, so they have to be picked up here. The poll costs no
+# forks; there is no telling when Steam is done, so the whole time is waited
+if [ "$MANUAL" = 0 ]; then
+  end=$(( SECONDS + XMX_WAIT_PREFIX ))
+  while [ "$SECONDS" -lt "$end" ]; do
     sleep 3
-    shim_pass
+    shim_pass poll
   done
 fi
 
 # 4. watcher: re-install after a Proton update (bundled igdext64.dll replaced), a newly installed Proton, or a new prefix
 #    (a game started for the first time)
 mkdir -p "$UNITD"
+unit_changed=0
+put_unit() { # <unit file>: <unit file>.new becomes the file, unless the file already has that content (then systemd need not reload)
+  if cmp -s "$1.new" "$1"; then rm -f "$1.new"; else mv -f "$1.new" "$1" && unit_changed=1; fi
+}
 watch=""
 while IFS= read -r lib; do
   for p in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do [ -f "$p" ] && watch="$watch
@@ -200,17 +238,23 @@ PathModified=$STEAM/compatibilitytools.d"
 if [ -n "$watch" ]; then
   { echo "[Unit]"; echo "Description=Re-install the XeSS XMX shim after a Proton update or for a new prefix"; echo "[Path]";
     printf '%s\n' "${watch#
-}"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path"
+}"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path.new"
+  put_unit "$UNITD/xess-xmx-shim.path"
   { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
-    echo "ExecStart=/bin/bash \"$PKG/install.sh\""; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service"
-  systemctl --user daemon-reload 2>/dev/null
-  systemctl --user enable xess-xmx-shim.path >/dev/null 2>&1
-  systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
+    echo "ExecStart=/bin/bash \"$PKG/install.sh\""; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service.new"
+  put_unit "$UNITD/xess-xmx-shim.service"
+  # the watcher itself leaves systemd alone unless a unit changed (a new library or Proton to watch)
+  if [ "$unit_changed" = 1 ] || [ "$MANUAL" = 1 ]; then
+    [ "$unit_changed" = 1 ] && systemctl --user daemon-reload 2>/dev/null
+    systemctl --user enable xess-xmx-shim.path >/dev/null 2>&1
+    systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
+  fi
 fi
 # 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
 #    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   mkdir -p "$UNITD"
+  unit_changed=0
   {
     echo "[Unit]"
     echo "Description=Check that the XeSS XMX Vulkan driver loads (falls back to the stock driver if not)"
@@ -221,8 +265,9 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "ExecStart=/bin/bash \"$PKG/tools/session-check.sh\""
     echo "[Install]"
     echo "WantedBy=graphical-session-pre.target default.target"
-  } > "$UNITD/xess-xmx-check.service"
-  systemctl --user daemon-reload 2>/dev/null
+  } > "$UNITD/xess-xmx-check.service.new"
+  put_unit "$UNITD/xess-xmx-check.service"
+  [ "$unit_changed" = 1 ] && systemctl --user daemon-reload 2>/dev/null
   systemctl --user enable xess-xmx-check.service >/dev/null 2>&1
   bash "$PKG/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "== driver check: loads fine (xess-xmx-check.service enabled)" \
     || echo "!! the patched driver does not load on this system - see ~/.cache/xess-xmx/driver-status"

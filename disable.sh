@@ -1,8 +1,8 @@
 #!/bin/bash
 # disable.sh - go back to the stock XeSS DP4a path (same settings as enable.sh: XMX_APPID or XMX_PREFIX, XMX_CONF, XMX_GAME)
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APPID="${XMX_APPID:-${WUWA_APPID:-}}"
-PFXROOT="${XMX_PREFIX:-${WUWA_PREFIX:-}}"
+APPID="${XMX_APPID:-}"
+PFXROOT="${XMX_PREFIX:-}"
 . "$ROOT/tools/steam-libraries.sh"
 # the prefix in whichever Steam library holds the game (SD card, second disk)
 [ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$(steam_prefix_of "$APPID" || printf '%s' "${STEAM_DIR:-$HOME/.local/share/Steam}/steamapps/compatdata/$APPID/pfx")"

@@ -110,7 +110,6 @@ into every Proton; [launch-options.md](launch-options.md)):
 | `FSR=xess` | the game's FSR 3.1+ DLLs become the package's (`ffxfg/`), with the SDK's XeSS libraries next to them; originals back when it exits |
 | `FSR_FG=xess` | the same for the frame generation DLL only |
 | `FSR_FG=inject` | with `FSR=xess`: also `dxgi.dll` and `ffx_xefg_bridge.dll`, for a game without FSR frame generation |
-| `FSR=amd` | debug: AMD's FSR 3.1 upscaler (`ffx/`, `tools/get-ffx.sh`) in place of the game's |
 | `FSR_VENDOR=amd` | with `FSR` / `FSR_FG`: `dxgi.customVendorId = 1002` in `DXVK_CONFIG` |
 
 A variable the launch options set themselves wins over the one a shorthand stands for.
@@ -174,7 +173,7 @@ Scripts (shell environment when running them):
 | `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
 | `tools/session-check.sh [--dry-run]` | run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver |
 | `tools/get-xess.sh [package dir]` | Intel's XeSS SDK libraries for `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG`, `XESS_SHA256` select another release |
-| `tools/get-ffx.sh [package dir]` | AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3 and `FSR=amd` |
+| `tools/get-ffx.sh [package dir]` | AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3 |
 | `tools/fsr-fg.sh all\|on\|off\|status <app id \| game folder>` | FSR on XeSS for Protons without the hook ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (defaults: IGC 2.10.10, compute-runtime 25.18; others are untested) |
 | `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`) |

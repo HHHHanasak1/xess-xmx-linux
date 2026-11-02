@@ -10,6 +10,7 @@
 # build tree: ${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>.
 set -eu
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
+. "$PKG/tools/steam-libraries.sh"
 SRC="${XMX_MESA_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/mesa-src}"
 VER="${1:-}"
 if [ -z "$VER" ]; then
@@ -65,7 +66,7 @@ fi
 # test the new driver before installing it (same checks as the session check)
 TMPICD=$(mktemp --suffix=.json)
 trap 'rm -f "$TMPICD"' EXIT
-printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s" }, "file_format_version": "1.0.1" }\n' "$NEW" > "$TMPICD"
+xmx_icd_json "$NEW" > "$TMPICD"
 if ! XMX_CHECK_LIB="$NEW" XMX_CHECK_ICD="$TMPICD" bash "$PKG/tools/session-check.sh" --dry-run; then
   echo "!! the new driver failed its check; not installed"
   exit 3
