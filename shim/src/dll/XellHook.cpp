@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <winternl.h>   // UNICODE_STRING for the loader notification
 
 #pragma pack(push, 1)
 struct XellSleepParams { uint32_t minimumIntervalUs; uint32_t flags; }; // flags bit0 = bLowLatencyMode, bit1 = bLowLatencyBoost
@@ -139,10 +140,95 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
     return true;
 }
 
+// The threads below wait for a library the game loads later. The loader tells them when it is mapped
+// (LdrRegisterDllNotification, as XellDriver.cpp's probe uses it; not in the SDK headers, documented in the Windows SDK
+// and implemented by Wine): the callback runs under the loader lock and does nothing but signal the thread's event. The
+// install code (PatchThunk pins this module, XefgInstallHooks calls FreeLibrary) runs on the thread, never in the
+// callback. One registration serves both threads; the last one done removes it before its module reference goes, so the
+// callback is never called into an unmapped module. Without the notification (registration refused) the threads poll as
+// they used to.
+namespace
+{
+struct LdrDllNotificationData_ { ULONG Flags; const UNICODE_STRING* FullDllName; const UNICODE_STRING* BaseDllName; PVOID DllBase; ULONG SizeOfImage; };
+typedef VOID (CALLBACK* PFN_LdrDllNotification)(ULONG reason, const LdrDllNotificationData_* data, PVOID ctx);
+typedef NTSTATUS (NTAPI* PFN_LdrRegisterDllNotification)(ULONG flags, PFN_LdrDllNotification fn, PVOID ctx, PVOID* cookie);
+typedef NTSTATUS (NTAPI* PFN_LdrUnregisterDllNotification)(PVOID cookie);
+
+enum { WATCH_XELL = 0, WATCH_XEFG = 1, WATCH_COUNT = 2 };
+const wchar_t* const kWatchedDll[WATCH_COUNT] = { L"libxell.dll", L"libxess_fg.dll" };
+const DWORD kWatchTotalMs = 600000;   // 10 minutes, as the polling loops before (6000 x 100 ms, 60000 x 10 ms)
+SRWLOCK g_watchLock = SRWLOCK_INIT;
+HANDLE g_watchEvent[WATCH_COUNT];     // auto-reset, one per waiter: a load of the other library wakes nobody
+PVOID g_watchCookie = nullptr;
+int g_watchUsers = 0;
+PFN_LdrUnregisterDllNotification g_ldrUnregister = nullptr;
+
+bool DllNameIs(const UNICODE_STRING* s, const wchar_t* name)
+{
+    const size_t n = wcslen(name);
+    return s && s->Buffer && s->Length == n * sizeof(wchar_t) && _wcsnicmp(s->Buffer, name, n) == 0;
+}
+
+VOID CALLBACK OnWatchedDllLoaded(ULONG reason, const LdrDllNotificationData_* data, PVOID)
+{
+    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !data) return;
+    for (int i = 0; i < WATCH_COUNT; ++i)
+        if (DllNameIs(data->BaseDllName, kWatchedDll[i])) SetEvent(g_watchEvent[i]);
+}
+
+// the event the loader signals when the library is mapped; nullptr when there is no notification (the caller polls).
+// The caller checks for a library loaded before this call returns, and ends with WatchStop.
+HANDLE WatchStart(int which)
+{
+    AcquireSRWLockExclusive(&g_watchLock);
+    if (g_watchUsers == 0)
+    {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        auto reg = ntdll ? (PFN_LdrRegisterDllNotification) GetProcAddress(ntdll, "LdrRegisterDllNotification") : nullptr;
+        g_ldrUnregister = ntdll ? (PFN_LdrUnregisterDllNotification) GetProcAddress(ntdll, "LdrUnregisterDllNotification") : nullptr;
+        bool ok = reg && g_ldrUnregister;
+        for (HANDLE& e : g_watchEvent) ok = (e = CreateEventW(nullptr, FALSE, FALSE, nullptr)) != nullptr && ok;
+        if (ok && reg(0, OnWatchedDllLoaded, nullptr, &g_watchCookie) != 0) { g_watchCookie = nullptr; ok = false; }
+        if (!ok) for (HANDLE& e : g_watchEvent) { if (e) CloseHandle(e); e = nullptr; }
+    }
+    HANDLE ev = g_watchCookie ? g_watchEvent[which] : nullptr;
+    if (ev) ++g_watchUsers;
+    ReleaseSRWLockExclusive(&g_watchLock);
+    return ev;
+}
+
+void WatchStop()
+{
+    AcquireSRWLockExclusive(&g_watchLock);
+    if (--g_watchUsers == 0)
+    {
+        g_ldrUnregister(g_watchCookie);   // takes the loader lock: no callback runs after it
+        g_watchCookie = nullptr;
+        for (HANDLE& e : g_watchEvent) { CloseHandle(e); e = nullptr; }
+    }
+    ReleaseSRWLockExclusive(&g_watchLock);
+}
+
+// one wait of the remaining time: the event, or a poll interval without one; false once the total is used up
+bool WatchWait(HANDLE ev, ULONGLONG deadline, DWORD pollMs)
+{
+    const ULONGLONG now = GetTickCount64();
+    if (now >= deadline) return false;
+    const ULONGLONG left = deadline - now;
+    if (ev) WaitForSingleObject(ev, left > 0xFFFFFFFEull ? 0xFFFFFFFE : (DWORD) left); else Sleep(pollMs);
+    return true;
+}
+}
+
 static DWORD WINAPI XellThread(LPVOID)
 {
+    HANDLE ev = WatchStart(WATCH_XELL);
+    const ULONGLONG deadline = GetTickCount64() + kWatchTotalMs;
     HMODULE m = nullptr;
-    for (int i = 0; i < 6000 && !(m = GetModuleHandleW(L"libxell.dll")); ++i) Sleep(100);
+    // the check first: the library may have been loaded before the notification was in place; after the last wait it
+    // is the final check
+    while (!(m = GetModuleHandleW(L"libxell.dll")) && WatchWait(ev, deadline, 100)) {}
+    if (ev) WatchStop();
     if (!m) { XLog("libxell.dll never loaded"); return 0; }
     XLog("libxell.dll found at %p", m);
     Sleep(200);
@@ -182,14 +268,11 @@ void StartXellHook()
 {
     char b[32];
     if (GetEnvironmentVariableA("IGDEXT_XELL_LOG", b, sizeof(b)) > 0) g_log = true;
-    {
-        char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
-        g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
-    }
+    char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
     if (GetEnvironmentVariableA("IGDEXT_XELL_FIXCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = true;
     if (GetEnvironmentVariableA("IGDEXT_XELL_KEEPCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = false;
     if (!g_fixCap && !g_log) return;
-    char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
     XLog("XellHook start in %s", exe);
     if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
@@ -526,7 +609,12 @@ void XefgNoteDevice(const void* dev)
 
 static DWORD WINAPI XefgThread(LPVOID)
 {
-    for (int i = 0; i < 60000 && !XefgInstallHooks(); ++i) Sleep(10);
+    HANDLE ev = WatchStart(WATCH_XEFG);
+    const ULONGLONG deadline = GetTickCount64() + kWatchTotalMs;
+    // the install first (the library may have loaded before the notification was in place), and once more after the
+    // last wait; a wake that finds it not ready (being unloaded) goes back to waiting for the next load
+    while (!XefgInstallHooks() && WatchWait(ev, deadline, 10)) {}
+    if (ev) WatchStop();
     if (!g_fgHooked) FLog("libxess_fg.dll never loaded");
     return 0;
 }
