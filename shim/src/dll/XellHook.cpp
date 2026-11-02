@@ -99,26 +99,29 @@ static void AutoCapTick(void* ctx)
         return;
     }
     if (frames == 0) t0 = now;
-    if (++frames <= kAutoWindow) return;
-    const double frameMs = (now.QuadPart - t0.QuadPart) * 1000.0 / qf.QuadPart / kAutoWindow;
+    ++frames;
+    const double elapsedMs = (now.QuadPart - t0.QuadPart) * 1000.0 / qf.QuadPart;
+    // a window of 15 frames, or 400 ms and at least 4 frames: slow frames must not slow the reaction down
+    if (frames <= kAutoWindow && (frames <= 4 || elapsedMs < 400)) return;
+    const double frameMs = elapsedMs / (frames - 1);
     frames = 0;
     if (!g_reports) return;
     memset(r, 0, sizeof(r));
     if (g_reports(ctx, r) != 0) return;
-    double sub = 0; int k = 0; uint32_t top = lastId;
+    double sub = 0, work = 0; int k = 0; uint32_t top = lastId;
     for (int i = 0; i < 64; ++i)
     {
-        if (!r[i].id || !r[i].simS || r[i].rsS <= r[i].simS || r[i].rsS - r[i].simS > 1000000000ull) continue;
+        if (!r[i].id || !r[i].simS || r[i].rsS <= r[i].simS || r[i].rsS - r[i].simS > 1000000000ull || r[i].prE <= r[i].rsS) continue;
         if (r[i].id < lastId && lastId - r[i].id > 1000) lastId = 0;   // the game restarted its frame ids
         if (r[i].id <= lastId) continue;
-        sub += (r[i].rsS - r[i].simS) / 1e6; ++k;
+        sub += (r[i].rsS - r[i].simS) / 1e6; work += (r[i].prE - r[i].rsS) / 1e6; ++k;
         if (r[i].id > top) top = r[i].id;
     }
     lastId = top;
     if (!k) return;
-    const double capMs = g_auto.Update(frameMs, sub / k);
+    const double capMs = g_auto.Update(frameMs, sub / k, work / k);
     const uint32_t us = (uint32_t) (capMs * 1000.0 / (g_mfg + 1) + 0.5);
-    if (++windows % 40 == 1) XLog("auto cap: frame %.1f ms, submit %.1f ms over %d frames, cap %.1f ms = %u us, %u generated", frameMs, sub / k, k, capMs, us, g_mfg);
+    if (++windows % 40 == 1) XLog("auto cap: frame %.1f ms, submit %.1f ms, work %.1f ms over %d frames, cap %.1f ms = %u us, %u generated", frameMs, sub / k, work / k, k, capMs, us, g_mfg);
     if (us == g_autoUs) return;
     g_autoUs = us;
     XellSleepParams q = {us > g_effInterval ? us : g_effInterval, g_gameFlags};

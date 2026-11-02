@@ -11,9 +11,9 @@
 class XellAutoCap
 {
 public:
-    // one window of frames: its average frame time and simulation -> render submit time, in ms.
-    // Returns the interval per rendered frame in ms; 0 = no cap.
-    double Update(double frameMs, double submitMs)
+    // one window of frames: its average frame time, simulation -> render submit time and render submit -> present end
+    // time, in ms. Returns the interval per rendered frame in ms; 0 = no cap.
+    double Update(double frameMs, double submitMs, double workMs = 0)
     {
         if (frameMs <= 0 || submitMs < 0)
             return m_capMs;
@@ -56,7 +56,7 @@ public:
             }
             break;
         case State::Track:
-            Track(frameMs, submitMs);
+            Track(frameMs, submitMs, workMs);
             break;
         }
         return m_capMs;
@@ -102,7 +102,7 @@ private:
         m_left = kProbeWindows;
     }
 
-    void Track(double frameMs, double submitMs)
+    void Track(double frameMs, double submitMs, double workMs)
     {
         // the empty-queue value: the lowest submit time, which follows a heavier scene slowly
         m_floorMs = submitMs < m_floorMs ? submitMs : m_floorMs + (submitMs - m_floorMs) * kFloorRise;
@@ -129,6 +129,14 @@ private:
             ++m_backOffs;
             m_hold = m_holdNext;
             m_drain = kDrainWindows;
+        } else if (workMs > 0 && m_capMs > workMs * kWorkMargin && m_capMs > m_limitMs) {
+            // no queue, and a frame's work is well below the cap: the game is waiting for nothing (a stutter pushed the
+            // cap up). A frame's work is the best estimate of the limit there is
+            m_capMs = Clamp(workMs * kWorkMargin);
+            m_hold = 0;
+            m_backOffs = 0;
+            m_drain = 0;
+            m_clean = 0;
         } else if (m_hold > 0) {
             --m_hold;
             m_backOffs = 0;
@@ -154,6 +162,7 @@ private:
     static constexpr double kBackOff = 1.03;
     static constexpr double kBackOffFar = 1.06;    // the frame time is well above the cap
     static constexpr double kCeiling = 1.25;
+    static constexpr double kWorkMargin = 1.3;
     static constexpr double kHitch = 1.5;
     static constexpr double kHitchOverCap = 1.15;
     static constexpr double kTypicalRise = 0.1;
