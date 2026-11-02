@@ -192,7 +192,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
             slash[1] = 0;
         char path[MAX_PATH];
         snprintf(path, MAX_PATH, "%sdxgi_xefg.log", g_dir);
-        g_log = fopen(path, "a");
+        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
     }
     return TRUE;
 }

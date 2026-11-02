@@ -274,7 +274,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     } else {
         char path[MAX_PATH];
         snprintf(path, MAX_PATH, "%sffx_xefg.log", dir);
-        g_log = fopen(path, "a");
+        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
     }
 
     g_mult = EnvInt("FFX_XEFG_MULT", EnvInt("XESS_FG", 2));
@@ -811,6 +811,20 @@ struct FgSwapChain final : IDXGISwapChain4 {
     HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d) override { return sc->SetHDRMetaData(t, n, d); }
 };
 
+// the current swap chain with a reference, so that a context destroyed on another thread stays valid while in use
+static ScState* ScAcquire()
+{
+    std::lock_guard<std::mutex> lk(g_globalLock);
+    if (g_currentSc)
+        g_currentSc->refs++;
+    return g_currentSc;
+}
+
+struct ScRef {
+    ScState* st;
+    ~ScRef() { if (st) ScRelease(st); }
+};
+
 static ScState* ScFromSwapChain(void* p)
 {
     std::lock_guard<std::mutex> lk(g_globalLock);
@@ -1171,9 +1185,10 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
                        const struct FfxApiResource& mv, const float* camPos, const float* camUp, const float* camRight,
                        const float* camFwd)
 {
-    ScState* st = ScFromSwapChain(nullptr);
+    ScState* st = ScAcquire();
     if (!st)
         return;
+    ScRef ref{st};   // released after the lock below
     std::lock_guard<std::mutex> lk(st->lock);
     uint32_t id = (uint32_t)frameID;
     if (st->bridge) {
@@ -1286,9 +1301,10 @@ static ffxReturnCode_t FgConfigure(FgCtx* fg, const ffxApiHeader* desc)
         switch (h->type) {
         case FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION: {
             auto* d = (const ffxConfigureDescFrameGeneration*)h;
-            ScState* st = ScFromSwapChain(d->swapChain);
+            ScState* st = ScAcquire();
             if (!st)
                 break;
+            ScRef ref{st};   // released after the lock below
             std::lock_guard<std::mutex> lk(st->lock);
             if (st->gameEnabled != d->frameGenerationEnabled)
                 Log("game frame generation %s (frame %llu, callbacks present %p fg %p)",
@@ -1573,7 +1589,7 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxQuery(ffxContext* context, f
         }
         if (d->outputCount) {
             uint64_t cap = *d->outputCount;
-            if (cap > 0 || d->versionIds || d->versionNames) {
+            if (cap > 0) {
                 if (d->versionIds)
                     d->versionIds[0] = kProviderVersionId;
                 if (d->versionNames)

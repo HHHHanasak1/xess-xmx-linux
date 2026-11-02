@@ -137,7 +137,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     } else {
         char path[MAX_PATH];
         snprintf(path, MAX_PATH, "%sffx_xess.log", dir);
-        g_log = fopen(path, "a");
+        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
     }
     g_xessLogLevel = EnvInt("FFX_XESS_XESSLOG", 2);
     g_quality = EnvInt("FFX_XESS_QUALITY", 0);
