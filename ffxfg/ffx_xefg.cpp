@@ -16,7 +16,7 @@
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
 //   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
 //   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
-//   FFX_XEFG_PACE=0        release our waitable object when Present returns instead of when the GPU finished the frame
+//   FFX_XEFG_PACE=1        release our waitable object when the GPU finished the frame, not when Present returns
 //   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
@@ -120,7 +120,7 @@ static int g_mult = 2;
 static int g_xefgLogLevel = 2;
 static bool g_sleep = true;
 static bool g_ownWait = true;
-static bool g_pace = true;      // FFX_XEFG_PACE=0: the waitable object is released when Present returns, not when the frame is done
+static bool g_pace = false;     // FFX_XEFG_PACE=1: the waitable object is released when the GPU finished the frame, not when Present returns
 static bool g_noExclusive = true;
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
@@ -297,7 +297,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
     g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
     g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
-    g_pace = EnvInt("FFX_XEFG_PACE", 1) != 0;
+    g_pace = EnvInt("FFX_XEFG_PACE", 0) != 0;
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
     g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
@@ -488,10 +488,10 @@ struct ScState {
     struct FfxApiResource ui = {};
     uint32_t uiFlags = 0;
     // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
-    // presentation thread. FFX_XEFG_PACE=1 (default): released when the GPU has finished the presented frame, like
+    // presentation thread. FFX_XEFG_PACE=1 (default 0, no gain measured in CONTROL Resonant): released when the GPU has finished the presented frame, like
     // DXGI's own object: after each Present the game's queue signals `fence`, and `paceThread` releases the semaphore
     // when the value is reached, or after 200 ms regardless (a stuck wait is the worst case: CONTROL Resonant
-    // deadlocked on the proxy's object). FFX_XEFG_PACE=0: released as soon as Present returns.
+    // deadlocked on the proxy's object). FFX_XEFG_PACE=0, the default: released as soon as Present returns.
     HANDLE latencySem = nullptr;
     UINT maxLatency = 1;
     ID3D12CommandQueue* queue = nullptr;   // the game's, given at creation (XeSS-FG presents on it)

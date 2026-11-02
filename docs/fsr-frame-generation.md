@@ -152,10 +152,10 @@ assumes inverted depth; the log says when the game's flags differ (`wrong until 
 Three things the game would otherwise trip over are handled in the DLL:
 
 * **frame latency waitable object.** The game waits on it before each frame. The proxy's object deadlocked CONTROL
-  Resonant within seconds, so the game gets an object of the DLL's own. As with DXGI's, it is released when the GPU
-  has finished the presented frame: after each present the game's queue signals a fence, and a thread of the DLL
-  releases the object when the fence is reached, or after 200 ms regardless, so that the game never waits for a frame
-  that does not finish. `FFX_XEFG_PACE=0` releases it as soon as the present returns instead (the behaviour before);
+  Resonant within seconds, so the game gets an object of the DLL's own, released when the present returns.
+  `FFX_XEFG_PACE=1` releases it when the GPU has finished the presented frame instead, as DXGI's does: after each
+  present the game's queue signals a fence, and a thread of the DLL releases the object when the fence is reached, or
+  after 200 ms regardless. It is off by default: CONTROL Resonant at 6x showed no gain (one run each);
 * **swap chain lifetime.** FFX's swap chain context holds a reference to the swap chain until it is destroyed, and a
   game may rely on it: Wuthering Waves releases its own reference and goes on presenting. The DLL's context does the
   same;
@@ -187,7 +187,7 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XEFG_HUDLESS=0` | no HUD-less image and no UI composition (Known limits) |
 | `FFX_XEFG_SLEEP=0` | no `xellSleep` (XeLL stays on, XeSS-FG requires it) |
 | `FFX_XEFG_OWNWAIT=0` | the game gets the proxy's frame latency waitable object |
-| `FFX_XEFG_PACE=0` | the DLL's waitable object is released when the present returns, not when the GPU has finished the frame (How it works) |
+| `FFX_XEFG_PACE=1` | the DLL's waitable object is released when the GPU has finished the frame, not when the present returns (How it works) |
 | `FFX_XEFG_VALIDITY=0` | measuring aid: depth and motion vectors are tagged as valid until the next present instead of copied at the prepare, to see what the copy costs; the game may write them again before the present, so the image can flicker |
 | `FFX_XEFG_EXCLUSIVE=1` | exclusive fullscreen is let through (then no interpolation) |
 | `FFX_XEFG_VENDOR=0` | XeSS-FG and XeLL see the vendor DXVK reports, also when it is not Intel's (see above) |
