@@ -129,10 +129,10 @@ private:
             ++m_backOffs;
             m_hold = m_holdNext;
             m_drain = kDrainWindows;
-        } else if (workMs > 0 && m_capMs > workMs * kWorkMargin && m_capMs > m_limitMs) {
-            // no queue, and a frame's work is well below the cap: the game is waiting for nothing (a stutter pushed the
-            // cap up). A frame's work is the best estimate of the limit there is
-            m_capMs = Clamp(workMs * kWorkMargin);
+        } else if (workMs > 0 && m_capMs > kWorkFar * (m_limitMs > workMs * kWorkMargin ? m_limitMs : workMs * kWorkMargin)) {
+            // no queue, and the cap is far above both a frame's work and the known limit: the game is waiting for nothing
+            // (a stutter pushed the cap up). Down to the better of the two, the best estimates there are
+            m_capMs = Clamp(m_limitMs > workMs * kWorkMargin ? m_limitMs : workMs * kWorkMargin);
             m_hold = 0;
             m_backOffs = 0;
             m_drain = 0;
@@ -163,6 +163,7 @@ private:
     static constexpr double kBackOffFar = 1.06;    // the frame time is well above the cap
     static constexpr double kCeiling = 1.25;
     static constexpr double kWorkMargin = 1.3;
+    static constexpr double kWorkFar = 1.25;
     static constexpr double kHitch = 1.5;
     static constexpr double kHitchOverCap = 1.15;
     static constexpr double kTypicalRise = 0.1;
