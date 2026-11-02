@@ -17,6 +17,7 @@
 //   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
 //   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
 //   FFX_XEFG_PACE=0        release our waitable object when Present returns instead of when the GPU finished the frame
+//   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
@@ -129,6 +130,7 @@ static int g_dumpEvery = 0;     // FFX_XEFG_DUMP=<n>: depth and motion vectors o
 static float g_renderTime = -1;  // FFX_XEFG_RENDERTIME=<value>: XeSS-FG's frame render time instead of the game's frame time (ms)
 static float g_renderScale = 1; // FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
 static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+static bool g_validityNow = true;  // FFX_XEFG_VALIDITY=0: depth and motion vectors tagged UNTIL_NEXT_PRESENT (no copy; can flicker)
 static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
 
 static HMODULE g_xefgModule, g_xellModule;
@@ -296,12 +298,14 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     if (GetEnvironmentVariableA("FFX_XEFG_RENDERSCALE", env, MAX_PATH))
         g_renderScale = (float)atof(env);
     g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
+    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
     snprintf(g_dir, MAX_PATH, "%s", dir);
     Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
         GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
-    if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait)
-        Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d", g_hudless, g_camera, g_jitter,
-            g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc);
+    if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait ||
+        !g_validityNow)
+        Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d, validity only now %d",
+            g_hudless, g_camera, g_jitter, g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc, g_validityNow);
 
     HMODULE fg = LoadBeside(dir, "libxess_fg.dll");
     HMODULE xell = LoadBeside(dir, "libxell.dll");
@@ -702,7 +706,7 @@ static uint32_t BeforePresent(ScState* st)
 }
 
 // `id` is what BeforePresent returned: a prepare for the next frame may have changed st->frameId during the present.
-static void AfterPresent(ScState* st, uint32_t id, HRESULT hr)
+static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags)
 {
     uint32_t next;
     {
@@ -712,8 +716,9 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr)
         if (st->presents <= 10 || st->presents % 600 == 0) {
             xefg_swapchain_present_status_t ps = {};
             p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
-            Log("present #%llu frame %u hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting", (unsigned long long)st->presents,
-                id, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult, ps.isFrameGenEnabled, st->pending.size());
+            Log("present #%llu frame %u sync %u flags 0x%x hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting",
+                (unsigned long long)st->presents, id, sync, flags, (unsigned long)hr, ps.framesPresented, (int)ps.frameGenResult,
+                ps.isFrameGenEnabled, st->pending.size());
         }
         if (st->frameId == id)   // else a newer prepare arrived during the present and is kept for the next one
             st->havePrepare = false;
@@ -911,7 +916,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
         uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present(sync, flags);
         FrameDone(st, hr);
-        AfterPresent(st, id, hr);
+        AfterPresent(st, id, hr, sync, flags);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override { return sc->GetBuffer(i, riid, p); }
@@ -978,7 +983,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
         uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present1(sync, flags, pp);
         FrameDone(st, hr);
-        AfterPresent(st, id, hr);
+        AfterPresent(st, id, hr, sync, flags);
         return hr;
     }
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc->IsTemporaryMonoSupported(); }
@@ -1425,7 +1430,9 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
     XellMarker(st, id, XELL_RENDERSUBMIT_START);
 
     xefg_swapchain_d3d12_resource_data_t rd = {};
-    rd.validity = XEFG_SWAPCHAIN_RV_ONLY_NOW;
+    // ONLY_NOW: XeSS-FG records a copy on the game's command list; UNTIL_NEXT_PRESENT (FFX_XEFG_VALIDITY=0, for
+    // measuring the copy's cost) reads the game's texture at present time, which the game may have written since
+    rd.validity = g_validityNow ? XEFG_SWAPCHAIN_RV_ONLY_NOW : XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
     rd.resourceSize = {renderSize.width, renderSize.height};
     rd.type = XEFG_SWAPCHAIN_RES_DEPTH;
     rd.pResource = (ID3D12Resource*)depth.resource;

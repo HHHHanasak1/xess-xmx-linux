@@ -169,7 +169,8 @@ The logs hold the last run and stay in the game's folder (`FFX_XESS_LOG=0`, `FFX
 file check ignores them. `ffx_xess.log` next to the upscaler DLL: the XeSS version, the context, the quality setting and flags XeSS was set up
 with, the first dispatches and every 600th. `ffx_xefg.log` next to the frame generation DLL: the upscalers the game's
 FidelityFX loader offers on this GPU (the first is the default), the swap chain, the maximum XeSS-FG reports and the
-number set, the first frames and every 600th present (`presented 4` = 4x), XeSS-FG's warnings. With `FSR_FG=inject`,
+number set, the first frames and every 600th present (`presented 4` = 4x, with the sync interval and flags the game
+passed), XeSS-FG's warnings. With `FSR_FG=inject`,
 `dxgi_xefg.log` next to `dxgi.dll` says what became of each swap chain. The same `KEY=VALUE`
 lines can go into `ffx_xess.env` / `ffx_xefg.env` next to the DLL (the environment wins; `XESS_FG` belongs in the
 launch options, the shim reads it before the DLLs load).
@@ -186,6 +187,8 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XEFG_HUDLESS=0` | no HUD-less image and no UI composition (Known limits) |
 | `FFX_XEFG_SLEEP=0` | no `xellSleep` (XeLL stays on, XeSS-FG requires it) |
 | `FFX_XEFG_OWNWAIT=0` | the game gets the proxy's frame latency waitable object |
+| `FFX_XEFG_PACE=0` | the DLL's waitable object is released when the present returns, not when the GPU has finished the frame (How it works) |
+| `FFX_XEFG_VALIDITY=0` | measuring aid: depth and motion vectors are tagged as valid until the next present instead of copied at the prepare, to see what the copy costs; the game may write them again before the present, so the image can flicker |
 | `FFX_XEFG_EXCLUSIVE=1` | exclusive fullscreen is let through (then no interpolation) |
 | `FFX_XEFG_VENDOR=0` | XeSS-FG and XeLL see the vendor DXVK reports, also when it is not Intel's (see above) |
 | `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_MVNDC`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER` | debug: change or log one input at a time; the comments at their variables in `ffxfg/ffx_xefg.cpp` say how |
