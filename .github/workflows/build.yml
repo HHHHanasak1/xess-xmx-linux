@@ -147,15 +147,21 @@ jobs:
       - name: toolchain (Arch Linux Archive snapshot, so every build uses the same package versions)
         run: |
           echo "Server=https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
-          pacman -Syyuu --noconfirm --needed base-devel git meson ninja python-mako python-yaml python-packaging \
-            python-ply glslang spirv-tools spirv-headers spirv-llvm-translator llvm clang libclc libdrm \
-            wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf
+          # the archive drops downloads now and then; finished packages stay in pacman's cache for the next try
+          for try in 1 2 3 4; do
+            pacman -Syyuu --noconfirm --needed base-devel git meson ninja python-mako python-yaml python-packaging \
+              python-ply glslang spirv-tools spirv-headers spirv-llvm-translator llvm clang libclc libdrm \
+              wayland wayland-protocols libx11 libxext libxrandr libxcb libxshmfence expat zlib zstd libelf && break
+            [ "$try" != 4 ] || exit 1
+            echo "toolchain download failed (try $try), waiting"
+            sleep $((try * 60))
+          done
       - uses: actions/checkout@v4
       # the release tarball, not the git tag: upstream deleted the mesa-26.3.0-rc1 tag and its commit when staging/26.3
       # was branched again, and a tag can move; the tarball is checked against a fixed sha256
       - name: mesa source (release tarball from archive.mesa3d.org)
         run: |
-          curl -sfLO "https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz"
+          curl -sfLO --retry 4 --retry-delay 30 --retry-all-errors "https://archive.mesa3d.org/mesa-${MESA_VERSION}.tar.xz"
           echo "${MESA_SHA256}  mesa-${MESA_VERSION}.tar.xz" | sha256sum -c -
           mkdir mesa
           tar -xf "mesa-${MESA_VERSION}.tar.xz" -C mesa --strip-components=1
