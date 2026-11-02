@@ -114,7 +114,7 @@ gamescope to compose it, the rest not attributed. The Steam performance overlay 
   turns; with HDR off, or at 2x, they do not. The other games did not show it with HDR on.
 * **HUD:** a game that gives FSR a HUD-less image gets XeSS-FG's UI composition from it, as AMD's frame generation
   separates the UI that way. `FFX_XEFG_HUDLESS=0` leaves it off, so XeSS-FG interpolates the whole image, UI
-  included: in Cyberpunk 2077 that leaves less ghosting on dialog text, in Wuthering Waves the HUD flickers more.
+  included: in Cyberpunk 2077 that leaves less ghosting on dialog text.
 
 ## How it works
 
