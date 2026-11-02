@@ -152,7 +152,10 @@ assumes inverted depth; the log says when the game's flags differ (`wrong until 
 Three things the game would otherwise trip over are handled in the DLL:
 
 * **frame latency waitable object.** The game waits on it before each frame. The proxy's object deadlocked CONTROL
-  Resonant within seconds, so the game gets an object of the DLL's own that is signalled once per present;
+  Resonant within seconds, so the game gets an object of the DLL's own. As with DXGI's, it is released when the GPU
+  has finished the presented frame: after each present the game's queue signals a fence, and a thread of the DLL
+  releases the object when the fence is reached, or after 200 ms regardless, so that the game never waits for a frame
+  that does not finish. `FFX_XEFG_PACE=0` releases it as soon as the present returns instead (the behaviour before);
 * **swap chain lifetime.** FFX's swap chain context holds a reference to the swap chain until it is destroyed, and a
   game may rely on it: Wuthering Waves releases its own reference and goes on presenting. The DLL's context does the
   same;

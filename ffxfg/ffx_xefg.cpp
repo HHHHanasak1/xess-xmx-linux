@@ -16,6 +16,7 @@
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
 //   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
 //   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
+//   FFX_XEFG_PACE=0        release our waitable object when Present returns instead of when the GPU finished the frame
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
@@ -118,6 +119,7 @@ static int g_mult = 2;
 static int g_xefgLogLevel = 2;
 static bool g_sleep = true;
 static bool g_ownWait = true;
+static bool g_pace = true;      // FFX_XEFG_PACE=0: the waitable object is released when Present returns, not when the frame is done
 static bool g_noExclusive = true;
 // debug: leave out one of the game's inputs at a time, to find the one behind an artifact
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
@@ -283,6 +285,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
     g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
     g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
+    g_pace = EnvInt("FFX_XEFG_PACE", 1) != 0;
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
     g_camera = EnvInt("FFX_XEFG_CAMERA", 1);
@@ -294,8 +297,8 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         g_renderScale = (float)atof(env);
     g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
     snprintf(g_dir, MAX_PATH, "%s", dir);
-    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d, exclusive fullscreen %s", GetCurrentProcessId(), g_mult,
-        g_sleep, g_ownWait, g_noExclusive ? "blocked" : "allowed");
+    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
+        GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
     if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait)
         Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d", g_hudless, g_camera, g_jitter,
             g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc);
@@ -468,10 +471,22 @@ struct ScState {
     unsigned xellNext = 0;   // the slot taken next
     struct FfxApiResource ui = {};
     uint32_t uiFlags = 0;
-    // Frame latency waitable object of our own: released once per Present that returned, so the game's
-    // wait follows our Present calls instead of XeSS-FG's presentation thread.
+    // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
+    // presentation thread. FFX_XEFG_PACE=1 (default): released when the GPU has finished the presented frame, like
+    // DXGI's own object: after each Present the game's queue signals `fence`, and `paceThread` releases the semaphore
+    // when the value is reached, or after 200 ms regardless (a stuck wait is the worst case: CONTROL Resonant
+    // deadlocked on the proxy's object). FFX_XEFG_PACE=0: released as soon as Present returns.
     HANDLE latencySem = nullptr;
     UINT maxLatency = 1;
+    ID3D12CommandQueue* queue = nullptr;   // the game's, given at creation (XeSS-FG presents on it)
+    ID3D12Fence* fence = nullptr;          // made with the thread on the first GetFrameLatencyWaitableObject
+    HANDLE paceEvent = nullptr;            // a new signal, a fence completion, or stop
+    HANDLE paceThread = nullptr;
+    std::atomic<bool> paceStop{false};
+    std::mutex paceLock;                   // around signal + publish of fenceValue (presents should not overlap, but)
+    std::atomic<uint64_t> fenceValue{0};   // last value signalled on the queue
+    uint64_t paceReleased = 0;             // values the thread has released the semaphore for (thread only)
+    uint64_t watchdogs = 0;                // releases by the 200 ms watchdog (thread only)
     BOOL fakeFullscreen = FALSE;   // what the game asked for while exclusive fullscreen is blocked
 
     // FSR_FG=inject (xefg_bridge.h): the game knows nothing of frame generation, so the ids are ours. A frame's upscale
@@ -495,9 +510,15 @@ static ScState* g_currentSc;     // the last created live swap chain context
 static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
 static bool g_haveFgFlags;
 
+static bool PaceStop(ScState* st);
+
 static void TearDown(ScState* st)
 {
     Log("teardown sc %p (xefg %p, presents %llu)", (void*)st, (void*)st->xefg, (unsigned long long)st->presents);
+    if (!PaceStop(st)) {
+        Log("!! the pacing thread did not stop: the state stays allocated");
+        return;
+    }
     if (st->proxy) {
         ULONG r = st->proxy->Release();
         Log("  proxy released, refs left %lu", r);
@@ -521,6 +542,8 @@ static void TearDown(ScState* st)
         CloseHandle(st->latencySem);
     if (st->ui.resource)
         ((ID3D12Resource*)st->ui.resource)->Release();
+    if (st->queue)
+        st->queue->Release();
     if (st->device)
         st->device->Release();
     delete st;
@@ -702,6 +725,131 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Frame latency waitable object, paced by the GPU (FFX_XEFG_PACE=1)
+
+static const DWORD kPaceWatchdogMs = 200;
+
+// Releases the semaphore once per signalled value when the fence reaches it. The thread touches only the fence, the
+// events, the semaphore and the three counters; never st->lock, so stopping it from TearDown cannot deadlock, and
+// TearDown frees nothing before it has stopped.
+static DWORD WINAPI PaceThread(void* p)
+{
+    auto* st = (ScState*)p;
+    while (!st->paceStop.load()) {
+        uint64_t target = st->fenceValue.load();
+        if (st->paceReleased >= target) {
+            WaitForSingleObject(st->paceEvent, INFINITE);   // a new signal or stop
+            continue;
+        }
+        uint64_t want = st->paceReleased + 1;
+        if (st->fence->GetCompletedValue() < want) {
+            st->fence->SetEventOnCompletion(want, st->paceEvent);
+            DWORD r = WaitForSingleObject(st->paceEvent, kPaceWatchdogMs);
+            if (st->paceStop.load())
+                break;
+            if (r == WAIT_TIMEOUT && st->fence->GetCompletedValue() < want) {
+                // watchdog: the frame is not done after 200 ms; the game must not wait on us for that
+                LONG n = (LONG)(st->fenceValue.load() - st->paceReleased);
+                ReleaseSemaphore(st->latencySem, n, nullptr);
+                st->paceReleased += n;
+                st->watchdogs++;
+                if (st->watchdogs <= 5 || st->watchdogs % 100 == 0)
+                    Log("pace watchdog #%llu: frame %llu not done after %lu ms, %ld released", (unsigned long long)st->watchdogs,
+                        (unsigned long long)want, kPaceWatchdogMs, n);
+            }
+            continue;   // done, or woken by a newer signal: look again
+        }
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+        st->paceReleased++;
+    }
+    return 0;
+}
+
+// With the lock held, after the semaphore exists. Without fence or thread the semaphore is released at Present.
+static void PaceStart(ScState* st)
+{
+    if (!g_pace || st->fence || !st->queue)
+        return;
+    ID3D12Fence* fence = nullptr;
+    if (FAILED(st->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
+        Log("pace: no fence, the waitable object is released at Present");
+        return;
+    }
+    st->paceEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    st->paceThread = st->paceEvent ? CreateThread(nullptr, 0, PaceThread, st, CREATE_SUSPENDED, nullptr) : nullptr;
+    if (!st->paceThread) {
+        Log("pace: no thread (%lu), the waitable object is released at Present", GetLastError());
+        if (st->paceEvent)
+            CloseHandle(st->paceEvent);
+        st->paceEvent = nullptr;
+        fence->Release();
+        return;
+    }
+    st->fence = fence;   // last: FrameDone on the present thread reads it without the lock
+    SetThreadPriority(st->paceThread, THREAD_PRIORITY_HIGHEST);
+    ResumeThread(st->paceThread);
+    Log("pace: the waitable object follows the GPU (fence %p, watchdog %lu ms)", (void*)fence, kPaceWatchdogMs);
+}
+
+// After a Present that returned: the frame's work, including what XeSS-FG queued on the game's queue inside Present,
+// precedes the signal on that queue (a command queue is free-threaded, so the present thread may signal it).
+static void FrameDone(ScState* st, HRESULT hr)
+{
+    if (!st->latencySem || FAILED(hr))
+        return;
+    ID3D12Fence* fence = st->fence;
+    if (!fence) {
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+        return;
+    }
+    // one value per present, each released once by the thread; the signal is queued before the value is published,
+    // so the thread never waits for a value that will not come
+    std::lock_guard<std::mutex> lk(st->paceLock);
+    uint64_t v = st->fenceValue.load() + 1;
+    if (SUCCEEDED(st->queue->Signal(fence, v))) {
+        st->fenceValue.store(v);
+        SetEvent(st->paceEvent);
+    } else {
+        ReleaseSemaphore(st->latencySem, 1, nullptr);
+    }
+}
+
+// Stops the thread and frees the fence; false if the thread did not stop (then nothing of st may be freed). Called
+// from TearDown only, with no lock held and no present in flight (a present holds a reference to st).
+static bool PaceStop(ScState* st)
+{
+    if (!st->paceThread) {
+        if (st->fence)
+            st->fence->Release();
+        st->fence = nullptr;
+        if (st->paceEvent)
+            CloseHandle(st->paceEvent);
+        st->paceEvent = nullptr;
+        return true;
+    }
+    st->paceStop.store(true);
+    SetEvent(st->paceEvent);
+    DWORD r = WaitForSingleObject(st->paceThread, 2000);   // its waits are at most the watchdog long
+    if (r != WAIT_OBJECT_0)
+        return false;
+    CloseHandle(st->paceThread);
+    st->paceThread = nullptr;
+    // a completion the thread armed may still be pending on the event: let the last value land before closing it
+    uint64_t last = st->fenceValue.load();
+    if (st->fence->GetCompletedValue() < last) {
+        st->fence->SetEventOnCompletion(last, st->paceEvent);
+        WaitForSingleObject(st->paceEvent, 500);
+    }
+    Log("pace: thread stopped, %llu frames released, %llu by the watchdog", (unsigned long long)st->paceReleased,
+        (unsigned long long)st->watchdogs);
+    st->fence->Release();
+    st->fence = nullptr;
+    CloseHandle(st->paceEvent);
+    st->paceEvent = nullptr;
+    return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // FgSwapChain: forwards everything to the XeSS-FG proxy, adds the XeLL markers and the present id.
 
 struct FgSwapChain final : IDXGISwapChain4 {
@@ -762,8 +910,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
             return sc->Present(sync, flags);
         uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present(sync, flags);
-        if (st->latencySem && SUCCEEDED(hr))
-            ReleaseSemaphore(st->latencySem, 1, nullptr);
+        FrameDone(st, hr);
         AfterPresent(st, id, hr);
         return hr;
     }
@@ -830,8 +977,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
             return sc->Present1(sync, flags, pp);
         uint32_t id = BeforePresent(st);
         HRESULT hr = sc->Present1(sync, flags, pp);
-        if (st->latencySem && SUCCEEDED(hr))
-            ReleaseSemaphore(st->latencySem, 1, nullptr);
+        FrameDone(st, hr);
         AfterPresent(st, id, hr);
         return hr;
     }
@@ -873,6 +1019,8 @@ struct FgSwapChain final : IDXGISwapChain4 {
             std::lock_guard<std::mutex> lk(st->lock);
             if (!st->latencySem)
                 st->latencySem = CreateSemaphoreA(nullptr, (LONG)st->maxLatency, 64, nullptr);
+            if (st->latencySem)
+                PaceStart(st);
             // the caller closes the handle it gets, as with DXGI
             DuplicateHandle(GetCurrentProcess(), st->latencySem, GetCurrentProcess(), &h, 0, FALSE,
                             DUPLICATE_SAME_ACCESS);
@@ -1074,6 +1222,8 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         delete st;
         return FFX_API_RETURN_ERROR_RUNTIME_ERROR;
     }
+    queue->AddRef();
+    st->queue = queue;
 
     auto fail = [&](const char* what, int code) {
         Log("swap chain context: %s failed (%d)", what, code);
