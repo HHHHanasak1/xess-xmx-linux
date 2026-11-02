@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdarg>
+bool TraceOn();   // IGDEXT_TRACE set: work done only for the trace (call stacks, string copies) can be skipped otherwise
 void TraceF(const char* fmt, ...);
 // trace mode only: logs the modules on the current call stack (outermost last), e.g. to tell XeSS SR from XeSS-FG callers
 void TraceCallers(const char* tag);

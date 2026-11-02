@@ -252,7 +252,7 @@ HRESULT _INTC_D3D12_RenderSubmitStart(INTCExtensionContext*, uint32_t frameId)
     const double sincePrevMs = prev.QuadPart ? (now.QuadPart - prev.QuadPart) * 1000.0 / freq.QuadPart : 0.0;
     prev = now;
     const LONG k = InterlockedIncrement(&n);
-    if (k <= 40 || (k % 600) == 0)
+    if ((k <= 40 || (k % 600) == 0) && TraceOn())
     {
         char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
         TraceF("XELLPROBE RenderSubmitStart(frame %u) #%ld +%.2f ms from %s", frameId, (long)k, sincePrevMs, where);
@@ -285,7 +285,7 @@ HRESULT _INTC_D3D12_GetDisplayTelemetry(INTCExtensionContext*, void* pTelemetryD
     static int telemetry = -1;
     if (telemetry < 0) { char b[8]; telemetry = GetEnvironmentVariableA("IGDEXT_XELL_TELEMETRY", b, sizeof(b)) > 0 ? atoi(b) : 0; }
     const LONG k = InterlockedIncrement(&n);
-    if (k <= 8 || (k % 600) == 0)
+    if ((k <= 8 || (k % 600) == 0) && TraceOn())
     {
         char where[160]; ModuleOffset(_ReturnAddress(), where, sizeof(where));
         TraceF("XELLPROBE GetDisplayTelemetry(size %u) #%ld from %s -> %s", size, (long)k, where, telemetry ? "zeroed S_OK" : "E_NOTIMPL");

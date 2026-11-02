@@ -6,7 +6,7 @@
 
 static std::mutex g_lock;
 
-static bool TraceOn()
+bool TraceOn()
 {
     static int on = -1;
     if (on < 0) { char b[8]; on = GetEnvironmentVariableA("IGDEXT_TRACE", b, sizeof(b)) > 0 ? 1 : 0; }

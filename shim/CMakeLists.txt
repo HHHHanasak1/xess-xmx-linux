@@ -34,12 +34,6 @@ set(SOURCES
 
 add_library(igdext SHARED ${SOURCES})
 
-# the prebuilt static kernel table (IGDEXT_STATIC=1, needs a kernels/ folder) is a developer option
-option(XMX_STATIC_TABLE "compile in the static XeSS kernel table" OFF)
-if(XMX_STATIC_TABLE)
-    target_compile_definitions(igdext PRIVATE XMX_STATIC_TABLE)
-endif()
-
 target_include_directories(igdext PRIVATE
     ${SRC_DIR}
     ${LEGACY_DIR}
@@ -57,7 +51,7 @@ target_compile_definitions(igdext PRIVATE
     INTC_IGDEXT_D3D12
 )
 
-target_link_libraries(igdext PRIVATE dxgi psapi)
+target_link_libraries(igdext PRIVATE dxgi)
 
 set_target_properties(igdext PROPERTIES
     OUTPUT_NAME "igdext64"
