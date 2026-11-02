@@ -50,6 +50,10 @@ zi = named[".ze_info"]
 info = d[zi[2]:zi[2] + zi[3]].decode("latin1")
 blocks = re.split(r"\n  - name:\s+", "\n" + info[info.index("kernels:"):])
 blk = next(b for b in blocks if b.startswith(kname))
+# the driver gives kernels no scratch or private memory: such a kernel has to fail here, where the compile falls back
+# to XeSS' generic paths, not on the GPU. None of the 150 kernels of five games has one.
+if "per_thread_memory_buffers" in blk:
+    sys.exit("kernel %s needs scratch or private memory, which the driver does not provide" % kname)
 def geti(key, default=0):
     m = re.search(r"\n\s+" + key + r":\s+(\d+)", blk)
     return int(m.group(1)) if m else default
@@ -70,6 +74,7 @@ for m in re.finditer(r"- arg_type:\s+(\w+)\s+offset:\s+(\d+)\s+size:\s+(\d+)", p
     if typ in ("local_size", "enqueued_local_size"):
         struct.pack_into("<III", cross, off, lx, ly, lz)
     elif typ == "group_count":
+        # the driver writes this once per shader, not per dispatch. Only average_sum has it, dispatched 1,1,1
         struct.pack_into("<III", cross, off, *[int(v) for v in os.environ.get("CMK_GC", "1,1,1").split(",")])
     elif typ == "work_dimensions":
         struct.pack_into("<I", cross, off, 3 if lz > 1 else (2 if ly > 1 else 1))

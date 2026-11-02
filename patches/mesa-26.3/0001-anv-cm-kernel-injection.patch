@@ -186,7 +186,7 @@ diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader
 index 50731c78..d44525d5 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1069,6 +1069,639 @@ wa_18019110168_load_per_primitive_remap_table(nir_builder *b, void *data)
+@@ -1069,6 +1069,646 @@ wa_18019110168_load_per_primitive_remap_table(nir_builder *b, void *data)
     return nir_iand_imm(b, val, ANV_WA_18019110168_PER_PRIMITIVE_REMAP_TABLE_OFFSET_MASK);
  }
  
@@ -711,11 +711,18 @@ index 50731c78..d44525d5 100644
 +   struct cmk_header h;
 +   if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "CMK2", 4) != 0 ||
 +       h.code_size == 0 || h.code_size > (16u << 20) ||
-+       h.lws[0] == 0 || h.lws[1] == 0 || h.lws[2] == 0 || h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
++       h.lws[0] == 0 || h.lws[0] > 32 || h.lws[1] == 0 || h.lws[2] == 0 ||
++       h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
 +       h.cross_size > sizeof(h.cross_data) || (h.per_thread_size != 0 && h.per_thread_size < 6) ||
 +       h.nsurf > 24) {
 +      fprintf(stderr, "ANV CM: bad header in %s (lws %u,%u,%u cross %u per-thread %u surfaces %u)\n", path,
 +              h.lws[0], h.lws[1], h.lws[2], h.cross_size, h.per_thread_size, h.nsurf);
++      fclose(f);
++      return ANV_CM_FAILED;
++   }
++   /* the binding table is built from the direct descriptor layout */
++   if (device->physical->indirect_descriptors) {
++      fprintf(stderr, "ANV CM: %s needs direct descriptors (force_indirect_descriptors is set)\n", path);
 +      fclose(f);
 +      return ANV_CM_FAILED;
 +   }
@@ -826,7 +833,7 @@ index 50731c78..d44525d5 100644
  static void
  populate_compile_params_mesh(struct brw_compile_params *params,
                               struct anv_shader_data *shader_data,
-@@ -2472,7 +3105,14 @@ anv_shader_compile(struct vk_device *vk_device,
+@@ -2472,7 +3112,14 @@ anv_shader_compile(struct vk_device *vk_device,
  
        shader_data->prog_data.base.source_hash = shader_data->source_hash;
  
@@ -842,7 +849,7 @@ index 50731c78..d44525d5 100644
           struct jay_shader_bin *bin =
              anv_shader_compile_jay(devinfo, mem_ctx, nir, &params, shader_data);
  
-@@ -2497,6 +3137,10 @@ anv_shader_compile(struct vk_device *vk_device,
+@@ -2497,6 +3144,10 @@ anv_shader_compile(struct vk_device *vk_device,
           shader_data->code = brw_compile(compiler, &params);
        }
  

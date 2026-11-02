@@ -96,6 +96,7 @@ check before a session (for example after a system update), the other one become
   Arch, openSUSE Tumbleweed, Void Linux, Fedora 43 and Ubuntu 25.10; Debian 13 and Ubuntu 24.04 have libwayland-client
   1.23 and need a driver built on the system (`tools/rebuild-driver.sh`).
 * vkd3d-proton as in Proton 11 / GE-Proton 11.
+* `install.sh` needs `curl`, `ar` (binutils), `tar` and `zstd` to unpack the compiler.
 
 ## Games
 

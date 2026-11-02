@@ -141,7 +141,7 @@ diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader
 index 7f2c77b..4ea58f7 100644
 --- a/src/intel/vulkan/anv_shader_compile.c
 +++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1204,6 +1204,639 @@ anv_shader_compile_fs(struct anv_device *device,
+@@ -1204,6 +1204,646 @@ anv_shader_compile_fs(struct anv_device *device,
     }
  }
  
@@ -666,11 +666,18 @@ index 7f2c77b..4ea58f7 100644
 +   struct cmk_header h;
 +   if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "CMK2", 4) != 0 ||
 +       h.code_size == 0 || h.code_size > (16u << 20) ||
-+       h.lws[0] == 0 || h.lws[1] == 0 || h.lws[2] == 0 || h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
++       h.lws[0] == 0 || h.lws[0] > 32 || h.lws[1] == 0 || h.lws[2] == 0 ||
++       h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
 +       h.cross_size > sizeof(h.cross_data) || (h.per_thread_size != 0 && h.per_thread_size < 6) ||
 +       h.nsurf > 24) {
 +      fprintf(stderr, "ANV CM: bad header in %s (lws %u,%u,%u cross %u per-thread %u surfaces %u)\n", path,
 +              h.lws[0], h.lws[1], h.lws[2], h.cross_size, h.per_thread_size, h.nsurf);
++      fclose(f);
++      return ANV_CM_FAILED;
++   }
++   /* the binding table is built from the direct descriptor layout */
++   if (device->physical->indirect_descriptors) {
++      fprintf(stderr, "ANV CM: %s needs direct descriptors (force_indirect_descriptors is set)\n", path);
 +      fclose(f);
 +      return ANV_CM_FAILED;
 +   }
@@ -781,7 +788,7 @@ index 7f2c77b..4ea58f7 100644
  static void
  anv_shader_compile_cs(struct anv_device *device,
                        void *mem_ctx,
-@@ -1214,6 +1847,12 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1214,6 +1854,12 @@ anv_shader_compile_cs(struct anv_device *device,
     const struct intel_device_info *devinfo = compiler->devinfo;
     nir_shader *nir = shader_data->info->nir;
  
@@ -794,7 +801,7 @@ index 7f2c77b..4ea58f7 100644
     shader_data->num_stats = 1;
  
     struct brw_compile_cs_params params = {
-@@ -1245,6 +1884,9 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1245,6 +1891,9 @@ anv_shader_compile_cs(struct anv_device *device,
     }
  
     *error_str = params.base.error_str;
