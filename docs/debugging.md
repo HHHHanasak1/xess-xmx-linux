@@ -146,7 +146,7 @@ Driver (patch 0001):
 
 | Variable | Effect |
 |---|---|
-| `ANV_CM_KERNEL_DIR` | folder of static kernels (set by install.sh; may be empty) |
+| `ANV_CM_KERNEL_DIR` | sets the default helper path below (set by install.sh; the folder may be empty) |
 | `ANV_CM_HELPER` | compiler helper (default `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`) |
 | `ANV_CM_SPV_DIR` | where the shim's SPIR-V is (default `$WINEPREFIX/drive_c/igdext_kernels`) |
 | `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | logs (above) |

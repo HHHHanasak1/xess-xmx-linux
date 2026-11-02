@@ -44,7 +44,7 @@ fi
 
 # 1. compiler bundle (the watcher, which runs this script in the background, downloads nothing)
 if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
-  echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~230 MB)"
+  echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~95 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
 fi
 # Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=latest, tools/proton-hook.py)

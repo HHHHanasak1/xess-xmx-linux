@@ -1,9 +1,9 @@
 #!/bin/bash
 # get-igc.sh [package dir]  - fetch the compiler the run-time kernel path needs into <package>/igc:
-#   igc/igc  Intel Graphics Compiler 2.10.10 (igc-core + igc-opencl debs, unpacked; the version every shipped kernel
+#   igc/igc  Intel Graphics Compiler 2.10.10 (the igc-core deb, unpacked; the version every shipped kernel
 #            was built with - newer IGC releases fail on some XeSS kernels)
 #   igc/neo  ocloc from intel-compute-runtime 25.18.1
-# Only the files are unpacked (no installation); about 230 MB. Needs curl, ar (binutils) and tar.
+# Only the files are unpacked (no installation); about 95 MB. The igc-opencl package is not needed: SPIR-V input never uses it. Needs curl, ar (binutils) and tar.
 set -eu
 PKG="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 IGC_TAG="${IGC_TAG:-v2.10.10}"
@@ -20,7 +20,6 @@ fetch() { # <repo> <tag> <name regex> <exclude regex> <dest>
     want=""
     case "$(basename "$u")" in
       intel-igc-core-2_2.10.10*) want=ec3b8e6bb3d6371d3b9963c32ddb1d5315e6b0c3f4ae1d91a7515b5a8907ffe6 ;;
-      intel-igc-opencl-2_2.10.10*) want=0c631f25cd8394a2f7640f9e35b593cc98ca3fbe922419c5cb20b2281477ef4c ;;
       intel-ocloc_25.18.33578.6*) want=c772db8891539890237d50c357af1480b22cbd859c0b8afb5355f605a818d758 ;;
     esac
     if [ -n "$want" ] && [ "$(sha256sum "$W/pkg.deb" | cut -d' ' -f1)" != "$want" ]; then
@@ -29,7 +28,7 @@ fetch() { # <repo> <tag> <name regex> <exclude regex> <dest>
     (cd "$W" && ar x pkg.deb && tar -xf data.tar.* -C "$dest" && rm -f pkg.deb data.tar.* control.tar.* debian-binary)
   done
 }
-fetch intel/intel-graphics-compiler "$IGC_TAG" "igc-core-2_|igc-opencl-2_" "devel" "$W/igc"
+fetch intel/intel-graphics-compiler "$IGC_TAG" "igc-core-2_" "devel" "$W/igc"
 fetch intel/compute-runtime "$NEO_TAG" "ocloc" "dbgsym|devel|sha|ddeb" "$W/neo"
 # verify the download before touching the installed compiler (an empty GitHub API answer - offline, rate limited -
 # makes fetch() do nothing without an error)

@@ -27,7 +27,7 @@ menu offers: up to 4x as Intel's override does, and experimentally up to **8x**
 
 Download the release archive, unpack it somewhere it can stay (to move it: `uninstall.sh` first), and run:
 
-    ./install.sh     # once; fetches the compiler bundle (about 230 MB), Intel's XeSS SDK libraries (77 MB) and
+    ./install.sh     # once; fetches the compiler bundle (about 95 MB), Intel's XeSS SDK libraries (77 MB) and
                      # AMD's FidelityFX loader and providers (87 MB), then reboot or log out and in
     ./uninstall.sh   # reverts everything
 
