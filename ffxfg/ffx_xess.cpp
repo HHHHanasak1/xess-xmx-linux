@@ -11,8 +11,8 @@
 //   FFX_XESS_XESSLOG=0..3  XeSS log level forwarded to the log (default 2 = warnings)
 //   FFX_XESS_QUALITY=100..106  the XeSS quality setting (default: the one whose input range holds the game's maximum
 //                        render size)
-//   FFX_XESS_JITTER=<f>  jitter times this (debug: -1 negates it)
 //   FFX_XESS_AUTOEXPOSURE=0  no XeSS auto exposure for a game that asks for it (debug)
+//   FFX_XESS_JITTER=<f>  jitter times this (-1 negates it); only in a build with FFXFG_DEBUG (build.bat)
 // The same KEY=VALUE lines can go into ffx_xess.env next to the DLL (the environment wins).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -96,8 +96,12 @@ static bool g_libOk;
 static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static int g_xessLogLevel = 2;
 static int g_quality = 0;
-static float g_jitterScale = 1.0f;
 static bool g_autoExposure = true;
+#ifdef FFXFG_DEBUG
+static float g_jitterScale = 1.0f;   // FFX_XESS_JITTER=<f>: jitter times this (-1 negates it)
+#else
+static const float g_jitterScale = 1.0f;
+#endif
 
 static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
 {
@@ -141,8 +145,10 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     }
     g_xessLogLevel = EnvInt("FFX_XESS_XESSLOG", 2);
     g_quality = EnvInt("FFX_XESS_QUALITY", 0);
+#ifdef FFXFG_DEBUG
     if (GetEnvironmentVariableA("FFX_XESS_JITTER", env, MAX_PATH))
         g_jitterScale = (float)atof(env);
+#endif
     g_autoExposure = EnvInt("FFX_XESS_AUTOEXPOSURE", 1) != 0;
     Log("=== ffx_xess start pid %lu", GetCurrentProcessId());
     if (g_quality || g_jitterScale != 1.0f || !g_autoExposure)

@@ -122,14 +122,24 @@ static bool g_sleep = true;
 static bool g_ownWait = true;
 static bool g_pace = true;      // FFX_XEFG_PACE=0: the waitable object is released when Present returns, not when the frame is done
 static bool g_noExclusive = true;
-// debug: leave out one of the game's inputs at a time, to find the one behind an artifact
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
-static int g_camera = 1;        // FFX_XEFG_CAMERA=0: identity view and projection matrices, 6: the game's camera ignored
-static float g_jitter = 1.0f;   // FFX_XEFG_JITTER=0: no jitter, -1: jitter negated
-static int g_dumpEvery = 0;     // FFX_XEFG_DUMP=<n>: depth and motion vectors of every n-th frame into files (8 at most)
-static float g_renderTime = -1;  // FFX_XEFG_RENDERTIME=<value>: XeSS-FG's frame render time instead of the game's frame time (ms)
-static float g_renderScale = 1; // FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
+static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+#ifdef FFXFG_DEBUG
+// debug build (build.bat with FFXFG_DEBUG=1): change or leave out one of the game's inputs at a time, to find the one
+// behind an artifact
+//   FFX_XEFG_CAMERA=0: identity view and projection matrices, 2: transposed, 3: projection not inverted, 4: both,
+//                      5: all zero, 6: the game's camera ignored (a fixed view, the real projection)
+//   FFX_XEFG_JITTER=0: no jitter, -1: jitter negated
+//   FFX_XEFG_DUMP=<n>: depth and motion vectors of every n-th frame into files (8 at most)
+//   FFX_XEFG_RENDERTIME=<ms>: XeSS-FG's frame render time instead of the game's frame time
+//   FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
+//   FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
+static float g_jitter = 1.0f;
+static int g_dumpEvery = 0;
+static float g_renderTime = -1;
+static float g_renderScale = 1;
+#endif
 static bool g_validityNow = true;  // FFX_XEFG_VALIDITY=0: depth and motion vectors tagged UNTIL_NEXT_PRESENT (no copy; can flicker)
 static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
 
@@ -290,6 +300,14 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     g_pace = EnvInt("FFX_XEFG_PACE", 1) != 0;
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
+    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
+    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
+    snprintf(g_dir, MAX_PATH, "%s", dir);
+    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
+        GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
+    if (!g_hudless || g_mvNdc || !g_sleep || !g_ownWait || !g_validityNow)
+        Log("inputs: HUD-less %d, NDC mv %d, validity only now %d", g_hudless, g_mvNdc, g_validityNow);
+#ifdef FFXFG_DEBUG
     g_camera = EnvInt("FFX_XEFG_CAMERA", 1);
     g_jitter = (float)EnvInt("FFX_XEFG_JITTER", 1);
     g_dumpEvery = EnvInt("FFX_XEFG_DUMP", 0);
@@ -297,15 +315,9 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         g_renderTime = (float)atof(env);
     if (GetEnvironmentVariableA("FFX_XEFG_RENDERSCALE", env, MAX_PATH))
         g_renderScale = (float)atof(env);
-    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
-    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
-    snprintf(g_dir, MAX_PATH, "%s", dir);
-    Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
-        GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
-    if (!g_hudless || g_camera != 1 || g_jitter != 1.0f || g_dumpEvery || g_renderTime >= 0 || g_renderScale != 1 || g_mvNdc || !g_sleep || !g_ownWait ||
-        !g_validityNow)
-        Log("debug inputs: HUD-less %d, camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g, NDC mv %d, validity only now %d",
-            g_hudless, g_camera, g_jitter, g_dumpEvery, g_renderTime, g_renderScale, g_mvNdc, g_validityNow);
+    Log("debug build: camera matrices %d, jitter x%.0f, dump every %d, render time %g, x%g", g_camera, g_jitter, g_dumpEvery,
+        g_renderTime, g_renderScale);
+#endif
 
     HMODULE fg = LoadBeside(dir, "libxess_fg.dll");
     HMODULE xell = LoadBeside(dir, "libxell.dll");
@@ -562,6 +574,7 @@ static void ScRelease(ScState* st)
 // ---------------------------------------------------------------------------------------------------------------
 // Present handling (called by FgSwapChain around the proxy's Present)
 
+#ifdef FFXFG_DEBUG
 // FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
 static std::atomic<int> g_orderLeft{-1};
 static void Order(const char* what, uint64_t id)
@@ -569,13 +582,18 @@ static void Order(const char* what, uint64_t id)
     if (g_orderLeft.load() > 0 && g_orderLeft.fetch_sub(1) > 0)
         Log("order %s %llu", what, (unsigned long long)id);
 }
+#else
+static inline void Order(const char*, uint64_t) {}
+#endif
 
 static void SetXefgEnabled(ScState* st, bool want)
 {
     if (want == st->xefgEnabled)
         return;
+#ifdef FFXFG_DEBUG
     if (want && g_orderLeft.load() == -1 && EnvInt("FFX_XEFG_ORDER", 0))
         g_orderLeft = 300;
+#endif
     if (want) {
         BOOL fs = FALSE;
         st->proxy->GetFullscreenState(&fs, nullptr);
@@ -1322,6 +1340,7 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
 // ---------------------------------------------------------------------------------------------------------------
 // Frame generation context
 
+#ifdef FFXFG_DEBUG
 // FFX_XEFG_DUMP: copies of the game's depth and motion vectors, written some frames later (when the game's command
 // list has run) as ffx_xefg_<frame>_<what>.bin: header width, height, row pitch, DXGI format (4 x uint32), rows
 struct Dump {
@@ -1404,6 +1423,7 @@ static void DumpWrite(uint32_t now)
         d.buf = nullptr;
     }
 }
+#endif
 
 static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensions2D renderSize,
                        FfxApiFloatCoords2D jitter, FfxApiFloatCoords2D mvScale, float frameTimeDelta, bool reset,
@@ -1449,35 +1469,45 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
 
     xefg_swapchain_frame_constant_data_t c = {};
     static const float kPos[3] = {0, 0, 0}, kUp[3] = {0, 1, 0}, kRight[3] = {1, 0, 0}, kFwd[3] = {0, 0, 1};
+    bool projInverted = (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0;
+#ifdef FFXFG_DEBUG
+    if (g_camera == 6)   // as if the game gave no camera (a fixed view, the real projection)
+        camPos = camRight = camUp = camFwd = nullptr;
+    if (g_camera == 3 || g_camera == 4)   // projection not inverted (only the init flag says so)
+        projInverted = false;
+#endif
     if (g_camera == 5) {
         // debug: all zero, no camera at all
     } else if (g_camera) {
-        if (g_camera == 6)   // debug: as if the game gave no camera (a fixed view, the real projection)
-            camPos = camRight = camUp = camFwd = nullptr;
         BuildView(camPos ? camPos : kPos, camRight ? camRight : kRight, camUp ? camUp : kUp, camFwd ? camFwd : kFwd,
                   c.viewMatrix);
         float aspect = renderSize.height ? (float)renderSize.width / (float)renderSize.height : 1.0f;
-        // debug: FFX_XEFG_CAMERA=2 transposed, 3 projection not inverted (only the init flag says so), 4 both
-        BuildProjection(fovY, aspect, cameraNear, cameraFar,
-                        (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED) != 0 && g_camera != 3 && g_camera != 4,
+        BuildProjection(fovY, aspect, cameraNear, cameraFar, projInverted,
                         (fg->flags & FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE) != 0, c.projectionMatrix);
-        if (g_camera == 2 || g_camera == 4)
+#ifdef FFXFG_DEBUG
+        if (g_camera == 2 || g_camera == 4)   // transposed
             for (int r = 0; r < 4; ++r)
                 for (int k = r + 1; k < 4; ++k) {
                     std::swap(c.viewMatrix[r * 4 + k], c.viewMatrix[k * 4 + r]);
                     std::swap(c.projectionMatrix[r * 4 + k], c.projectionMatrix[k * 4 + r]);
                 }
+#endif
     } else {
         for (int i = 0; i < 4; ++i)
             c.viewMatrix[i * 5] = c.projectionMatrix[i * 5] = 1.0f;
     }
-    c.jitterOffsetX = jitter.x * g_jitter;
-    c.jitterOffsetY = jitter.y * g_jitter;
+    c.jitterOffsetX = jitter.x;
+    c.jitterOffsetY = jitter.y;
     // FFX: motion vectors times the scale are pixels of the render size; in NDC that is 2 / size, y up
     c.motionVectorScaleX = g_mvNdc && renderSize.width ? mvScale.x * 2.0f / renderSize.width : mvScale.x;
     c.motionVectorScaleY = g_mvNdc && renderSize.height ? -mvScale.y * 2.0f / renderSize.height : mvScale.y;
     c.resetHistory = reset ? 1 : 0;
+    c.frameRenderTime = frameTimeDelta;
+#ifdef FFXFG_DEBUG
+    c.jitterOffsetX *= g_jitter;
+    c.jitterOffsetY *= g_jitter;
     c.frameRenderTime = g_renderTime >= 0 ? g_renderTime : frameTimeDelta * g_renderScale;
+#endif
     xefg_swapchain_result_t r3 = p_xefgSwapChainTagFrameConstants(st->xefg, id, &c);
 
     if (!st->bridge) {
@@ -1485,6 +1515,7 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
         st->havePrepare = true;
     }
     fg->prepares++;
+#ifdef FFXFG_DEBUG
     static uint32_t dumpFrames;   // frames with interpolation on (menus and loading screens have no depth)
     if (g_dumpEvery > 0) {
         if (st->xefgEnabled)
@@ -1505,6 +1536,7 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
             DumpCopy(st->device, cl, (ID3D12Resource*)mv.resource, mv.state, id, at, "mv", cam);
         }
     }
+#endif
     if (fg->prepares <= 5 || fg->prepares % 600 == 0 || r1 || r2 || r3)
         Log("prepare #%llu frame %u render %ux%u jitter %.3f,%.3f mvScale %.1f,%.1f dt %.2f reset %d fov %.3f "
             "near %.3f far %.1f -> tag depth %d mv %d const %d",

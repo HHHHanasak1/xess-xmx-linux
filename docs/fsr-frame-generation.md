@@ -180,7 +180,7 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XESS_LOG=<path>` | upscaler log file; `0` turns it off |
 | `FFX_XESS_XESSLOG=0..3` | XeSS's own messages: 0 debug, 1 info, 2 warnings (default), 3 errors |
 | `FFX_XESS_QUALITY=100..106` | the XeSS quality setting (100 Ultra Performance ... 105 Ultra Quality Plus, 106 Native AA) |
-| `FFX_XESS_JITTER=<f>`, `FFX_XESS_AUTOEXPOSURE=0` | debug: jitter times f; no XeSS auto exposure |
+| `FFX_XESS_AUTOEXPOSURE=0` | debug: no XeSS auto exposure |
 | `FFX_XEFG_MULT=<n>` | frames per rendered frame (default `XESS_FG`, else 2), capped at XeSS-FG's maximum |
 | `FFX_XEFG_LOG=<path>` | frame generation log file; `0` turns it off |
 | `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG's own messages: 0 debug, 1 info, 2 warnings (default), 3 errors |
@@ -191,7 +191,12 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XEFG_VALIDITY=0` | measuring aid: depth and motion vectors are tagged as valid until the next present instead of copied at the prepare, to see what the copy costs; the game may write them again before the present, so the image can flicker |
 | `FFX_XEFG_EXCLUSIVE=1` | exclusive fullscreen is let through (then no interpolation) |
 | `FFX_XEFG_VENDOR=0` | XeSS-FG and XeLL see the vendor DXVK reports, also when it is not Intel's (see above) |
-| `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_MVNDC`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER` | debug: change or log one input at a time; the comments at their variables in `ffxfg/ffx_xefg.cpp` say how |
+| `FFX_XEFG_MVNDC=1` | motion vectors in NDC (as Cyberpunk 2077 passes them) |
+
+The switches that change or log one input at a time to find the one behind an artifact (`FFX_XEFG_CAMERA`,
+`FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XESS_JITTER`)
+are only in a build with `FFXFG_DEBUG` (`FFXFG_DEBUG=1` in the environment of `build.bat`); the comments at their
+variables in `ffxfg/ffx_xefg.cpp` say how.
 
 Debug launch options of the hook: `FSR=amd` puts AMD's FSR 3.1 upscaler (`ffx/`) in place of the game's.
 
@@ -199,6 +204,7 @@ Debug launch options of the hook: `FSR=amd` puts AMD's FSR 3.1 upscaler (`ffx/`)
 
     bash ffxfg/get-headers.sh      AMD FSR SDK 2.4.0 and Intel XeSS SDK headers into ffxfg/inc (checked by SHA-256)
     ffxfg\build.bat                Visual Studio 2022 Build Tools -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll,
-                                   amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll
+                                   amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (FFXFG_DEBUG=1: with the
+                                   debug switches)
 
 The release archive has the DLLs in `ffxfg/`. CI builds them next to the shim.
