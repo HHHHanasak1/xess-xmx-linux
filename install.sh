@@ -2,6 +2,7 @@
 # install.sh - system-wide install of the XeSS XMX package for the current user (SteamOS / any systemd user session):
 #   1. compiler bundle (igc/) fetched if missing            -> run-time kernel compilation for any XeSS version;
 #      Intel's XeSS SDK libraries (xess/) fetched if missing -> for games with XESS=latest in their launch options
+#      AMD's FidelityFX loader + providers (ffx/) fetched if missing -> FSR=xess / FSR_FG=xess with FSR 3.1.0-3.1.3
 #   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
 #      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
 #   3. the shim igdext64.dll goes into every Proton that bundles its own igdext (Proton Experimental copies that file
@@ -36,6 +37,11 @@ if [ ! -f "$PKG/xess/libxess.dll" ]; then
   echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=latest)"
   bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=latest will use the games' own libraries"
 fi
+# AMD's FidelityFX loader and providers: FSR=xess / FSR_FG=xess in games with FSR 3.1.0-3.1.3 (one amd_fidelityfx_dx12.dll)
+if [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; then
+  echo "== fetching AMD's FidelityFX loader, upscaler and frame generation (~87 MB, for FSR_FG / FSR with FSR 3.1.0-3.1.3)"
+  bash "$PKG/tools/get-ffx.sh" "$PKG" || echo "FidelityFX download failed - FSR=xess / FSR_FG=xess work only with FSR 3.1.4 and newer"
+fi
 chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 
 # 2. session environment
@@ -54,7 +60,9 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   {
     echo "# XeSS XMX (xess-xmx-linux): patched ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
     echo "VK_DRIVER_FILES=$drivers"
-    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer"
+    echo "# vkd3d-proton: the classic descriptor heap (the kernel binding code needs it) and present wait 1 (with present wait 2,"
+    echo "# frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes)"
+    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
     echo "ANV_CM_KERNEL_DIR=$PKG/kernels"
     echo "ANV_CM_HELPER=$PKG/tools/cm-compile.sh"
     echo "# Mesa hides the Intel vendor id from some games (force_vk_vendor=-1 profiles), which keeps XeSS on DP4a there;"
@@ -62,8 +70,8 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "force_vk_vendor=0"
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user import-environment 2>/dev/null
-  systemctl --user set-environment "VK_DRIVER_FILES=$drivers" "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer" \
-    "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" 2>/dev/null
+  systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
+    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" 2>/dev/null
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
 fi
@@ -100,14 +108,14 @@ $f";; esac
   chmod u+w "$f" 2>/dev/null
   cp "$SHIM" "$f" && n=$((n + 1)) && echo "   shim -> $f"
 }
-install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR_FG=xess)
+install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR=xess, FSR_FG=xess)
   local p=$1 u="$1/user_settings.py"
   [ -f "$p/proton" ] && [ -w "$p" ] || return
   # a user_settings.py of the user's own (Proton's debug settings) keeps working: it becomes user_settings.user.py
   if [ -f "$u" ] && ! grep -q 'xess-xmx proton hook' "$u"; then mv -f "$u" "$p/user_settings.user.py"; fi
   cat > "$u.new" <<EOF
 # xess-xmx proton hook - written by $PKG/install.sh, removed by uninstall.sh. Runs tools/proton-hook.py at every game
-# start (XESS=latest, FSR_FG=xess in a game's launch options). Your own Proton settings go into user_settings.user.py.
+# start (XESS=latest, FSR=xess, FSR_FG=xess in a game's launch options). Your own Proton settings go into user_settings.user.py.
 import os as _os
 user_settings = {}
 try:

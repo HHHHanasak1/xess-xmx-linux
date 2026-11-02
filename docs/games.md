@@ -3,7 +3,7 @@
 | Game | XeSS | XeSS SR on XMX | XeSS FG on XMX | How | Notes |
 |---|---|---|---|---|---|
 | Wuthering Waves | 2.0.2.68, XeFG 1.3.1.78 | yes | yes, 2x / 3x / 4x | `install.sh` | the XeLL frame-cap fix applies here |
-| Forza Horizon 6 | 2.0.2.68 | yes | only through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
+| Forza Horizon 6 | 2.0.2.68 | yes | yes, from FSR upscaling: `FSR=xess FSR_FG=inject %command%` ([fsr-frame-generation.md](fsr-frame-generation.md)); or through OptiScaler (below) | `install.sh` | the game's own FG option is DLSS-G |
 | Cyberpunk 2077 (2.31) | ships 2.0.1.41, XeFG 1.1.0.19 | yes, with newer XeSS libraries | yes, with newer XeSS libraries | `install.sh` + `XESS=latest %command%` (below); `XESS_FG=4` for 4x | with the shipped libraries: DP4a, no XeSS FG option. The game offers 2x; `XESS_FG=4` gives 4x, `XESS_FG=5`..`8` up to 8x (experimental) |
 | Resident Evil 4 (RE Engine) | none | yes, technically | no | REFramework (below) | worse than the game's FSR2; not recommended |
 | Satisfactory | XeSS + XeFG (Unreal plugin 2.0.10) | yes | not reported | `install.sh` | tested by a user on an Arc A310 (Xe-HPG, Mesa 26.3.0-rc1, #28) |
@@ -74,7 +74,8 @@ Caveat: in FH6 with HDR on and a high car level of detail, OptiScaler's swapchai
 ## FSR 4 on XMX (upscaler builds from the OptiScaler Discord)
 
 **Experimental.** One build has been tested, on one GPU (Arc B390) and in two games; expect problems with other
-builds, GPUs and games, and please report them.
+builds, GPUs and games, and please report them. Support for these builds stays at this level (a manual setup, nothing
+automated); FSR 3.1+ games run on XMX through `FSR=xess` instead.
 
 Builds of an FSR 4 upscaler that runs as C-for-Metal kernels through Intel's extension are shared on the OptiScaler
 project's Discord server, several of them and under different file names. Such a build goes through this project's

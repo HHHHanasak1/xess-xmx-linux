@@ -92,7 +92,7 @@ Game environment, set by `install.sh` (`~/.config/environment.d/50-xess-xmx.conf
 | Variable | Effect |
 |---|---|
 | `VK_DRIVER_FILES` | the patched driver (`run/intel_icd.json`) as the 64-bit Intel driver; every other driver of the system stays in the list |
-| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer` | vkd3d-proton keeps its classic descriptor heap, which the kernel binding code needs |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` | vkd3d-proton keeps its classic descriptor heap, which the kernel binding code needs, and waits for presents with present wait 1: with present wait 2, Cyberpunk 2077 with frame generation (several presents per frame) crashed within minutes in `vkWaitForPresent2KHR` |
 | `force_vk_vendor=0` | overrides Mesa's `force_vk_vendor=-1` game profiles (Symptoms above); `force_vk_vendor=-1` in one game's launch options restores it |
 | `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | the driver's kernel folder and compiler helper (Driver table below) |
 

@@ -44,7 +44,7 @@ while IFS= read -r lib; do
   # each in one rename over the link; links to files the game never had go
   while IFS= read -r -d '' f; do
     if [ -f "$f.xmx-orig" ]; then mv -f "$f.xmx-orig" "$f" && echo "   restored $f"; else rm -f "$f" && echo "   removed $f"; fi
-  done < <(find "$lib"/steamapps/common -maxdepth 11 -type l \( -lname "$PKG/xess/*" -o -lname "$PKG/ffxfg/*" \) -print0 2>/dev/null)
+  done < <(find "$lib"/steamapps/common -maxdepth 11 -type l \( -lname "$PKG/xess/*" -o -lname "$PKG/ffxfg/*" -o -lname "$PKG/ffx/*" \) -print0 2>/dev/null)
   # games switched with tools/fsr-fg.sh on
   for d in "$lib"/steamapps/common/*/; do
     find "$d" -maxdepth 11 \( -name '*.ffxfg-orig' -o -name .ffxfg-added \) 2>/dev/null | grep -q . && bash "$PKG/tools/fsr-fg.sh" off "$d"

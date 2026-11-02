@@ -1,7 +1,8 @@
 name: build
 
 # Builds the binaries from source on every push / pull request and keeps them as workflow artifacts:
-#   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_framegeneration_dx12.dll (ffxfg/)
+#   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
+#                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
 #   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain)
 # plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
 # these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
@@ -90,8 +91,9 @@ jobs:
         with:
           name: ControlLib
           path: controllib/build/ControlLib.dll
-      # FSR_FG=xess: FSR 3.1+ frame generation on XeSS-FG, against the AMD and Intel headers fetched at build time
-      - name: FSR frame generation headers
+      # FSR=xess: FSR 3.1+ upscaling on XeSS SR and frame generation on XeSS-FG, against the AMD and Intel headers
+      # fetched at build time
+      - name: FSR headers
         run: bash ffxfg/get-headers.sh
         shell: bash
       - name: amd_fidelityfx_framegeneration_dx12.dll
@@ -99,11 +101,26 @@ jobs:
           mkdir ffxfg\build
           cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll /link dxguid.lib
           dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"ffxConfigure" /c:"ffxCreateContext" /c:"ffxDestroyContext" /c:"ffxDispatch" /c:"ffxQuery"
+          dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"XefgBridgeCreateSwapChain" /c:"XefgBridgeFrame"
+        shell: cmd
+      - name: amd_fidelityfx_upscaler_dx12.dll
+        run: |
+          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xess.cpp /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_upscaler_dx12.dll
+          dumpbin /exports ffxfg\build\amd_fidelityfx_upscaler_dx12.dll | findstr /c:"ffxConfigure" /c:"ffxCreateContext" /c:"ffxDestroyContext" /c:"ffxDispatch" /c:"ffxQuery"
+        shell: cmd
+      # FSR_FG=inject: an XeSS-FG swap chain for a game without FSR frame generation
+      - name: dxgi.dll
+        run: |
+          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\dxgi_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\dxgi.dll
+          dumpbin /exports ffxfg\build\dxgi.dll | findstr /c:"CreateDXGIFactory2" /c:"DXGIGetDebugInterface1"
         shell: cmd
       - uses: actions/upload-artifact@v4
         with:
-          name: ffx-xefg
-          path: ffxfg/build/amd_fidelityfx_framegeneration_dx12.dll
+          name: ffx-xess
+          path: |
+            ffxfg/build/amd_fidelityfx_framegeneration_dx12.dll
+            ffxfg/build/amd_fidelityfx_upscaler_dx12.dll
+            ffxfg/build/dxgi.dll
 
   mesa:
     name: mesa ${{ matrix.name }}

@@ -30,15 +30,15 @@ The two placeholder tables are generated, not written by hand (both need `fxc.ex
 
 The static table (`xess_dummies.inc`) is compiled in only with `-DXMX_STATIC_TABLE=ON`.
 
-## The FSR frame generation DLL (`ffxfg/amd_fidelityfx_framegeneration_dx12.dll`)
+## The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
 
-The headers it is built against (AMD FSR SDK 2.4.0, Intel XeSS SDK) are not in the repository; `get-headers.sh`
+The headers they are built against (AMD FSR SDK 2.4.0, Intel XeSS SDK) are not in the repository; `get-headers.sh`
 fetches them into `ffxfg/inc/` and checks each one by SHA-256. Then, on Windows with the same Build Tools:
 
     bash ffxfg/get-headers.sh
-    ffxfg\build.bat           -> ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll
+    ffxfg\build.bat           -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll, amd_fidelityfx_framegeneration_dx12.dll, dxgi.dll
 
-The package keeps it as `ffxfg/amd_fidelityfx_framegeneration_dx12.dll` ([fsr-frame-generation.md](fsr-frame-generation.md)).
+The package keeps them in `ffxfg/` ([fsr-frame-generation.md](fsr-frame-generation.md)).
 
 ## The driver (`libvulkan_intel.so`)
 
