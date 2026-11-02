@@ -7,9 +7,11 @@
 // is left alone.
 //   IGDEXT_XELL_FIXCAP=1    apply the fix in any game;  IGDEXT_XELL_KEEPCAP=1   turn it off everywhere
 //   IGDEXT_XELL_CAP=<us>    experimental: at least this interval per displayed frame (XeLL's frame cap, in both of its modes)
+//   IGDEXT_XELL_CAP=auto    experimental: that interval follows the GPU's limit while frame generation is on (XellAutoCap.h)
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
 #include "Stdafx.h"
 #include "Trace.h"
+#include "XellAutoCap.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -26,6 +28,8 @@ typedef uint32_t (*PFN_XellFg)(void*, uint32_t, uint32_t);
 static PFN_XellSet g_origSet; static PFN_XellSleep g_origSleep; static PFN_XellFg g_origFg;
 static bool g_log = false;
 static uint32_t g_capUs = 0;
+static bool g_capAuto = false; static XellAutoCap g_auto;
+static uint32_t g_gameFlags = 1, g_autoUs = 0, g_mfg = 0;   // the game's sleep mode flags, the cap in force, generated frames
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
 static volatile LONG g_sleepCalls = 0;
 typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
@@ -59,6 +63,7 @@ static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
     static int n = 0;
     if (n++ < 12 || (n % 600) == 0) XLog("xellSetFgEnabled ctx=%p a=%u b=%u", ctx, a, b);
     if (a == 1) { g_savedInterval = g_effInterval; g_fgOnTick = GetTickCount64(); }
+    g_mfg = a == 1 ? b : 0;
     return g_origFg(ctx, a, b);
 }
 
@@ -70,14 +75,60 @@ static uint32_t Hook_SetSleepMode(void* ctx, const XellSleepParams* p)
     if (g_fixCap && q.minimumIntervalUs != 0 && g_fgOnTick && GetTickCount64() - g_fgOnTick < 1500)
     { XLog("   -> frame cap %u us set right after frame generation was enabled: keeping %u us", q.minimumIntervalUs, g_savedInterval); q.minimumIntervalUs = g_savedInterval; }
     g_effInterval = q.minimumIntervalUs;
+    g_gameFlags = p->flags;
+    if (q.minimumIntervalUs < g_autoUs) q.minimumIntervalUs = g_autoUs;
     if (q.minimumIntervalUs < g_capUs)
     { XLog("   -> IGDEXT_XELL_CAP: %u us instead of %u us", g_capUs, q.minimumIntervalUs); q.minimumIntervalUs = g_capUs; }
     return g_origSet(ctx, &q);
 }
 
+// IGDEXT_XELL_CAP=auto, every kAutoWindow frames: the frame time and the time from simulation start to render submit of
+// the frames XeLL reported since the last time. Only with frame generation on: XeLL multiplies the interval by the
+// frames shown, so the number has to be known.
+static void AutoCapTick(void* ctx)
+{
+    static const int kAutoWindow = 15;
+    static int frames = 0; static LARGE_INTEGER t0; static uint32_t lastId = 0; static int windows = 0;
+    static XellFrameReport r[64];
+    LARGE_INTEGER now, qf;
+    QueryPerformanceCounter(&now); QueryPerformanceFrequency(&qf);
+    if (g_mfg == 0)
+    {
+        if (g_autoUs) { g_autoUs = 0; g_auto.Reset(); XellSleepParams q = {g_effInterval, g_gameFlags}; g_origSet(ctx, &q); XLog("auto cap: off"); }
+        frames = 0;
+        return;
+    }
+    if (frames == 0) t0 = now;
+    if (++frames <= kAutoWindow) return;
+    const double frameMs = (now.QuadPart - t0.QuadPart) * 1000.0 / qf.QuadPart / kAutoWindow;
+    frames = 0;
+    if (!g_reports) return;
+    memset(r, 0, sizeof(r));
+    if (g_reports(ctx, r) != 0) return;
+    double sub = 0; int k = 0; uint32_t top = lastId;
+    for (int i = 0; i < 64; ++i)
+    {
+        if (!r[i].id || !r[i].simS || r[i].rsS <= r[i].simS || r[i].rsS - r[i].simS > 1000000000ull) continue;
+        if (r[i].id < lastId && lastId - r[i].id > 1000) lastId = 0;   // the game restarted its frame ids
+        if (r[i].id <= lastId) continue;
+        sub += (r[i].rsS - r[i].simS) / 1e6; ++k;
+        if (r[i].id > top) top = r[i].id;
+    }
+    lastId = top;
+    if (!k) return;
+    const double capMs = g_auto.Update(frameMs, sub / k);
+    const uint32_t us = (uint32_t) (capMs * 1000.0 / (g_mfg + 1) + 0.5);
+    if (++windows % 40 == 1) XLog("auto cap: frame %.1f ms, submit %.1f ms over %d frames, cap %.1f ms = %u us, %u generated", frameMs, sub / k, k, capMs, us, g_mfg);
+    if (us == g_autoUs) return;
+    g_autoUs = us;
+    XellSleepParams q = {us > g_effInterval ? us : g_effInterval, g_gameFlags};
+    g_origSet(ctx, &q);
+}
+
 static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
+    if (g_capAuto) AutoCapTick(ctx);
     if (!g_log) return g_origSleep(ctx, frame);
     if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
@@ -276,8 +327,12 @@ void StartXellHook()
     g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
     if (GetEnvironmentVariableA("IGDEXT_XELL_FIXCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = true;
     if (GetEnvironmentVariableA("IGDEXT_XELL_KEEPCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = false;
-    if (GetEnvironmentVariableA("IGDEXT_XELL_CAP", b, sizeof(b)) > 0) g_capUs = (uint32_t) strtoul(b, nullptr, 10);
-    if (!g_fixCap && !g_log && !g_capUs) return;
+    if (GetEnvironmentVariableA("IGDEXT_XELL_CAP", b, sizeof(b)) > 0)
+    {
+        if (!strcmp(b, "auto")) g_capAuto = true;
+        else g_capUs = (uint32_t) strtoul(b, nullptr, 10);
+    }
+    if (!g_fixCap && !g_log && !g_capUs && !g_capAuto) return;
     XLog("XellHook start in %s", exe);
     if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
