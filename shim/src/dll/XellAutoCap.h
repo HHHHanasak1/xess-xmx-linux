@@ -67,6 +67,7 @@ public:
         m_typicalMs = 0;
         m_hitches = 0;
         m_hold = 0;
+        m_holdNext = kHoldWindows;
         m_clean = 0;
         m_backOffs = 0;
         m_drain = 0;
@@ -106,12 +107,15 @@ private:
                 Probe(frameMs, submitMs);
                 return;
             }
+            // a queue where the last one formed: the limit is known, so try less often
+            const bool again = m_capMs < m_queueCapMs * kNearAbove && m_capMs > m_queueCapMs * kNearBelow;
+            m_holdNext = again ? (m_holdNext * 2 < kHoldMax ? m_holdNext * 2 : kHoldMax) : kHoldWindows;
             m_queueCapMs = m_capMs;
             m_capMs = Clamp(m_capMs * (frameMs > m_capMs * kNotBinding ? kBackOffFar : kBackOff));
             if (m_ceilMs > 0 && m_capMs > m_ceilMs)
                 m_capMs = m_ceilMs;
             ++m_backOffs;
-            m_hold = kHoldWindows;
+            m_hold = m_holdNext;
             m_drain = kDrainWindows;
         } else if (m_hold > 0) {
             --m_hold;
@@ -151,6 +155,7 @@ private:
     static constexpr int kProbeWindows = 8;
     static constexpr int kHitchWindows = 6;
     static constexpr int kHoldWindows = 12;
+    static constexpr int kHoldMax = 96;
     static constexpr int kCleanFast = 4;
     static constexpr int kDrainWindows = 4;
     static constexpr int kMaxBackOffs = 8;
@@ -168,6 +173,7 @@ private:
     double m_typicalMs = 0;
     int m_hitches = 0;
     int m_hold = 0;
+    int m_holdNext = kHoldWindows;
     int m_clean = 0;
     int m_backOffs = 0;
     int m_drain = 0;
