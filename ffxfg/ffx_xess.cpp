@@ -367,9 +367,11 @@ static ffxReturnCode_t Upscale(UpCtx* c, const ffxDispatchDescUpscale* d)
         c->velScaleY = d->motionVectorScale.y;
     }
 
-    // FSR_FG=inject: this frame's depth and motion vectors for XeSS-FG, in the states the game gave them
+    // FSR_FG=inject: this frame's depth and motion vectors for XeSS-FG, in the states the game gave them. With the
+    // hook, dxgi.dll has loaded the bridge when the game's swap chain is created, before the first dispatch; without
+    // it the lookup (GetModuleHandle takes the loader lock) is repeated only every 256th dispatch.
     static PFN_XefgBridgeFrame bridge;
-    if (!bridge) {
+    if (!bridge && (c->dispatches & 255) == 0) {
         if (HMODULE m = GetModuleHandleA(XEFG_BRIDGE_DLL))
             bridge = (PFN_XefgBridgeFrame)GetProcAddress(m, "XefgBridgeFrame");
     }
