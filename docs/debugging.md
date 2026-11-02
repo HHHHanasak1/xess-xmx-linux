@@ -16,6 +16,7 @@
 | Games find no Intel GPU (or `driver-status` says FAILED) with `cannot open shared object file` for `libSPIRV-Tools.so` or `libdisplay-info.so.3`; the Proton log has `xess-xmx: cannot load the Mesa ... driver` | The driver needs both libraries, and the Steam Linux Runtime container that runs Proton games has neither: they reach it only as dependencies of the host's other Vulkan drivers. Some distributions name SPIRV-Tools differently (`libSPIRV-Tools-shared.so` on Void Linux, `libSPIRV-Tools-<version>.so` on openSUSE) | The session check copies both into `lib/deps/` (the driver's run path); re-run `install.sh` (`enable.sh` for one game) or log in again. `ls lib/deps/` must list both; a system without them gets the copies the archive bundles in `lib/bundled/` |
 | `undefined symbol: wl_fixes_interface` in `driver-status` or the Proton log | The system's libwayland-client is older than 1.24 (Debian 13, Ubuntu 24.04); the drivers in the archive are built against 1.24 | build the driver on the system: `tools/rebuild-driver.sh` ([building.md](building.md)) |
 | Generated frames are black or flicker between black and image | XeFG got the Xe-HPG kernel variant (only with `IGDEXT_OPTIONS2_FG=0,...`) | remove the override |
+| `FSR=xess FSR_FG=inject`, but no frame generation | FSR is not the upscaler chosen in the game, or the game's stderr says why it was skipped: no game exe next to the upscaler DLL, or the game folder has a `dxgi.dll` of its own | choose FSR upscaling in the game; `dxgi_xefg.log` next to `dxgi.dll` and `ffx_xefg.log` show the swap chain ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | 30 fps with frame generation until the pause menu is opened and closed (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
 | The first launch hangs for a minute or two at XeSS initialisation | Every kernel is compiled once | `ANV CM: compiling kernel` lines in the game's stderr |
 | After updating from an older release: no image or a GPU hang with ray tracing; another GPU or 32-bit games without Vulkan; XMX gone in the games of one Proton after it updated | Bugs of older releases, fixed since | install the current release, run `install.sh`, re-login |
@@ -84,7 +85,7 @@ How to read the result:
 
 The switches a user puts into one game's Steam launch options (driver choice, Jay off, XMX off, logs) are explained
 in [launch-options.md](launch-options.md). This section lists every switch: game environment first, then the
-scripts.
+scripts. Those of the FSR DLLs are in [fsr-frame-generation.md](fsr-frame-generation.md).
 
 Game environment, set by `install.sh` (`~/.config/environment.d/50-xess-xmx.conf`) or `enable.sh`
 (`~/.config/xess-xmx.conf`, read by `xmx-launch.sh`):
@@ -104,6 +105,11 @@ into every Proton; [launch-options.md](launch-options.md)):
 | `XESS=latest` | the game runs with Intel's XeSS SDK libraries (`xess/`, `tools/get-xess.sh`) in place of its older ones; originals back when it exits |
 | `XESS=dp4a` | `IGDEXT_FORCE_FALLBACK=1` |
 | `XESS_LOG=1` | `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1` |
+| `FSR=xess` | the game's FSR 3.1+ DLLs become the package's (`ffxfg/`), with the SDK's XeSS libraries next to them; originals back when it exits |
+| `FSR_FG=xess` | the same for the frame generation DLL only |
+| `FSR_FG=inject` | with `FSR=xess`: also `dxgi.dll` and `ffx_xefg_bridge.dll`, for a game without FSR frame generation |
+| `FSR=amd` | debug: AMD's FSR 3.1 upscaler (`ffx/`, `tools/get-ffx.sh`) in place of the game's |
+| `FSR_VENDOR=amd` | with `FSR` / `FSR_FG`: `dxgi.customVendorId = 1002` in `DXVK_CONFIG` |
 
 A variable the launch options set themselves wins over the one a shorthand stands for.
 
@@ -167,5 +173,7 @@ Scripts (shell environment when running them):
 | `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
 | `tools/session-check.sh [--dry-run]` | run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver |
 | `tools/get-xess.sh [package dir]` | Intel's XeSS SDK libraries for `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG`, `XESS_SHA256` select another release |
+| `tools/get-ffx.sh [package dir]` | AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3 and `FSR=amd` |
+| `tools/fsr-fg.sh all\|on\|off\|status <app id \| game folder>` | FSR on XeSS for Protons without the hook ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (defaults: IGC 2.10.10, compute-runtime 25.18; others are untested) |
 | `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`) |

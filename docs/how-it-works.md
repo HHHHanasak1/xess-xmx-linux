@@ -120,6 +120,9 @@ and keeps the one value that followed it, sets the wanted number there, and chec
 when `libxess_fg` loaded the shim itself during that creation). A game that sets the number while it runs (Wuthering
 Waves, from its 2x/3x/4x menu) gets `XESS_FG`'s number through `xefgSwapChainSetNumInterpolatedFrames` instead.
 
+A game with FSR 3.1+ reaches the same XeSS and XeSS frame generation through the package's FSR DLLs:
+[fsr-frame-generation.md](fsr-frame-generation.md).
+
 ## 4. XeLL (latency reduction)
 
 Games with XeSS frame generation also use Intel XeLL (`libxell.dll`). Under Wine it runs in its built-in context

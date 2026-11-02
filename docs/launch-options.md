@@ -9,11 +9,12 @@ A launch option applies to that game only and takes effect at its next start. No
 `install.sh` sets the system-wide defaults (`~/.config/environment.d/50-xess-xmx.conf`). A launch option overrides
 them for one game.
 
-`XESS` and `XESS_LOG` need the system-wide install: `install.sh` puts a small `user_settings.py` into every Proton,
+`XESS`, `XESS_LOG`, `FSR` and `FSR_FG` need the system-wide install: `install.sh` puts a small `user_settings.py` into every Proton,
 which Proton runs before it starts a game (`tools/proton-hook.py`). A `user_settings.py` of your own is kept as
 `user_settings.user.py` next to it and still applies. With the per-game install (`enable.sh`) the wrapper comes last,
-after the variables (`MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%`), and `XESS` / `XESS_LOG` are not
-available: `XESS=dp4a` and `XESS_LOG=1` have their long variables (debugging.md), `XESS=latest` has none.
+after the variables (`MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%`), and these four are not available:
+`XESS=dp4a` and `XESS_LOG=1` have their long variables (debugging.md), `FSR` and `FSR_FG=xess` have
+`tools/fsr-fg.sh` ([fsr-frame-generation.md](fsr-frame-generation.md)), `XESS=latest` and `FSR_FG=inject` have nothing.
 
 ## Driver
 

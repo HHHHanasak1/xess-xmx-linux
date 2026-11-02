@@ -1,7 +1,8 @@
 # Building from source
 
-The release archive contains binaries built from this repository: the shim `igdext64.dll`, the patched Mesa ANV
-drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD `lib/libvulkan_intel.so` that loads one of them.
+The release archive contains binaries built from this repository: the shim `igdext64.dll`, `ControlLib.dll`, the FSR
+DLLs in `ffxfg/`, the patched Mesa ANV drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD
+`lib/libvulkan_intel.so` that loads one of them.
 The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI
 (`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; a release
 archive is made with `tools/make-release.py` from the artifacts of the release commit.
@@ -96,7 +97,7 @@ Two of the options are easy to get wrong:
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
-`0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32) switches Large GRF Mode around CM kernels on
+`0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32, and in #39) switches Large GRF Mode around CM kernels on
 Xe-HPG and Xe2, including off before Mesa's own BLORP compute work, trace rays, internal shaders and generated commands
 (see how-it-works.md), and drops CM dispatches with
 a zero group count, which the Vulkan specification makes a no-op, on every generation.

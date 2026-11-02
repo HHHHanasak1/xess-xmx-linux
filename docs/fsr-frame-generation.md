@@ -185,6 +185,7 @@ launch options, the shim reads it before the DLLs load).
 | `FFX_XEFG_OWNWAIT=0` | the game gets the proxy's frame latency waitable object |
 | `FFX_XEFG_EXCLUSIVE=1` | exclusive fullscreen is let through (then no interpolation) |
 | `FFX_XEFG_VENDOR=0` | XeSS-FG and XeLL see the vendor DXVK reports, also when it is not Intel's (see above) |
+| `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_MVNDC`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER` | debug: change or log one input at a time; the comments at their variables in `ffxfg/ffx_xefg.cpp` say how |
 
 Debug launch options of the hook: `FSR=amd` puts AMD's FSR 3.1 upscaler (`ffx/`) in place of the game's.
 

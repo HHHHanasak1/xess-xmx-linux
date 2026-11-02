@@ -13,7 +13,8 @@ vkd3d-proton:
 * `amd_fidelityfx_upscaler_dx12.dll` and `amd_fidelityfx_framegeneration_dx12.dll` run a game's FSR 3.1+ upscaling
   and frame generation on XeSS, so a game without XeSS gets XeSS on XMX and multi-frame generation as well: `FSR=xess`
   in its launch options ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)). A game that has XeSS itself
-  should use that: this route can flicker more.
+  should use that: this route can flicker more. With `dxgi.dll`, a game with FSR upscaling and no FSR frame generation
+  gets XeSS frame generation as well: `FSR=xess FSR_FG=inject`.
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
 Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super resolution renders correctly and is
@@ -26,8 +27,8 @@ menu offers: up to 4x as Intel's override does, and experimentally up to **8x**
 
 Download the release archive, unpack it somewhere it can stay, and run:
 
-    ./install.sh     # once; fetches the compiler bundle (about 230 MB) and Intel's XeSS SDK libraries (77 MB),
-                     # then reboot or log out and in
+    ./install.sh     # once; fetches the compiler bundle (about 230 MB), Intel's XeSS SDK libraries (77 MB) and
+                     # AMD's FidelityFX loader and providers (87 MB), then reboot or log out and in
     ./uninstall.sh   # reverts everything
 
 Every game started from Steam afterwards uses the patched driver, no launch options needed. In the game, select XeSS
@@ -49,8 +50,9 @@ What `install.sh` does:
   commands that put the shim in, and games on it run on DP4a until then;
 * puts `ControlLib.dll` into every prefix, for `XESS_FG`;
 * puts a small `user_settings.py` into every Proton (yours, if any, is kept as `user_settings.user.py`), which gives
-  each game the `XESS=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries while the game
-  runs, for a game whose XeSS is too old to see the Intel GPU ([docs/launch-options.md](docs/launch-options.md));
+  each game the `XESS=...` and `FSR=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries
+  while the game runs, for a game whose XeSS is too old to see the Intel GPU
+  ([docs/launch-options.md](docs/launch-options.md));
 * enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
   the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
@@ -97,10 +99,11 @@ check before a session (for example after a system update), the other one become
 
 ## Games
 
-See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG through OptiScaler), Cyberpunk
+See [docs/games.md](docs/games.md): Wuthering Waves (SR + FG), Forza Horizon 6 (SR; FG with `FSR_FG=inject`), Cyberpunk
 2077 (SR + FG with `XESS=latest`, which replaces its older XeSS libraries while it runs; 4x and more with `XESS_FG`),
-FSR 4 on XMX through upscaler builds from the OptiScaler Discord (abandoned as a direction, the notes stay), notes on OptiScaler and on a game without XeSS.
-FSR frame generation on XeSS-FG: CONTROL Resonant, Resident Evil Requiem; Forza Horizon 6 from its FSR upscaling ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)).
+FSR 4 on XMX through upscaler builds from the OptiScaler Discord (no longer developed, the notes stay), notes on
+OptiScaler and on a game without XeSS. FSR frame generation on XeSS-FG: CONTROL Resonant, Resident Evil Requiem;
+Forza Horizon 6 from its FSR upscaling ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)).
 
 ## Troubleshooting
 
@@ -186,9 +189,9 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
                                   drivers, checks the scripts
 
-The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the two DLLs in `ffxfg/`, the drivers in
-`lib/mesa-<version>/`, the ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from
-the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, the drivers in
+`lib/mesa-<version>/`, the ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are
+compiled on your machine from the SPIR-V inside the game's XeSS libraries.
 
 ## License
 
