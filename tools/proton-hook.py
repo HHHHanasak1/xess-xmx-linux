@@ -41,6 +41,8 @@ SINGLE_DLL = "amd_fidelityfx_dx12.dll"   # FSR 3.1.0-3.1.3: upscaler and frame g
 LOADER_DLL = "amd_fidelityfx_loader_dx12.dll"
 UPSCALER_DLL = "amd_fidelityfx_upscaler_dx12.dll"
 LIBS = ("libxess.dll", "libxess_dx11.dll", "libxess_fg.dll", "libxell.dll")
+# the prefix folder that holds the shim, as XeSS sees it (install.sh: ALT_EXT)
+ALT_EXT = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
 FFX_DLLS = (FG_DLL, UPSCALER_DLL, SINGLE_DLL)
 # one lock file per run that swapped: its links, one path per line; the run holds an exclusive lock on it until it ends
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
@@ -346,6 +348,11 @@ def main():
     s = proton_session()
     if s and s.env.get("VKD3D_DISABLE_EXTENSIONS") == "VK_EXT_descriptor_buffer":
         s.env["VKD3D_DISABLE_EXTENSIONS"] = "VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
+    # SteamOS Game Mode hands the session's environment to Steam through a systemd EnvironmentFile
+    # ($XDG_RUNTIME_DIR/gamescope-environment, written with `env`), which drops the backslashes of an unquoted value:
+    # install.sh's path then arrives as C:windowssystem32... and XeSS never finds the shim under Proton 11.0
+    if s and s.env.get("INTC_ALT_DRIVER_EXTENSIONS_PATH") == ALT_EXT.replace("\\", ""):
+        s.env["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
     if os.environ.get("XESS_LOG", "") not in ("", "0"):
         SETTINGS.update({"IGDEXT_TRACE": "1", "IGDEXT_XELL_LOG": "1", "IGDEXT_XEFG_LOG": "1", "XESS_FG_LOG": "1"})
         say("XESS_LOG: C:\\igdext_trace.log, igdext_xell.log, igdext_xefg.log, igcl_stub.log in the prefix")
@@ -416,7 +423,7 @@ def main():
         s = proton_session()
         env = s.env if s else os.environ
         if os.path.isfile(os.path.join(store, "igdext64.dll")) and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
-            SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
+            SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
     if not swaps.paths:
         for sig, h in old:
             signal.signal(sig, h)   # nothing to put back: this run does not touch how Proton ends
