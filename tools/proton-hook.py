@@ -314,6 +314,21 @@ def xess_libs(top, swaps, names):
         swaps.link(lib, os.path.join(STORE, name))
 
 
+def prefix_has_shim():
+    """an igdext64.dll in the prefix's driver store, the folders in any case: Wine finds files case-insensitively, and
+    proton-cachyos makes "DriverStore" next to the "driverstore" other Protons and install.sh use"""
+    level = [os.path.join(os.environ.get("STEAM_COMPAT_DATA_PATH", ""), "pfx", "drive_c", "windows", "system32")]
+    for part in ("driverstore", "filerepository", "igd_faux.inf_1"):
+        nxt = []
+        for d in level:
+            try:
+                nxt += [os.path.join(d, e) for e in os.listdir(d) if e.lower() == part]
+            except OSError:
+                pass
+        level = nxt
+    return any(os.path.isfile(os.path.join(d, "igdext64.dll")) for d in level)
+
+
 def proton_session():
     """Proton's Session while it imports user_settings.py: its env is a copy of the environment made before that, and its
     dlloverrides go into WINEDLLOVERRIDES after it"""
@@ -418,11 +433,9 @@ def main():
     if swaps.paths:
         # XeSS finds the shim in the prefix's driver store only through this variable under Valve's Proton 11;
         # GE-Proton sets it itself
-        store = os.path.join(os.environ.get("STEAM_COMPAT_DATA_PATH", ""), "pfx", "drive_c", "windows", "system32",
-                             "driverstore", "filerepository", "igd_faux.inf_1")
         s = proton_session()
         env = s.env if s else os.environ
-        if os.path.isfile(os.path.join(store, "igdext64.dll")) and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
+        if prefix_has_shim() and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
             SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
     if not swaps.paths:
         for sig, h in old:

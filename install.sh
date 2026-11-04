@@ -15,8 +15,8 @@
 #   writing a Proton update), nothing else touched.
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
-STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
 . "$PKG/tools/steam-libraries.sh"
+STEAM="$(steam_root)"
 LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk): Protons and prefixes live under each steamapps/
 # Protons installed by a distribution package (CachyOS: proton-cachyos) - usually only root can write there
 SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
@@ -187,23 +187,28 @@ shim_pass() { # every Proton that bundles the library, and every prefix that has
     done
   done
   # prefixes in every library (a new one has the folder a few seconds after compatdata/<id> appears, without the
-  # file; Proton Experimental copies its own igdext64.dll over ours at each launch)
+  # file; Proton Experimental copies its own igdext64.dll over ours at each launch). Any case: Wine finds a file
+  # case-insensitively, and a prefix can hold both "driverstore" and "DriverStore" (proton-cachyos makes the latter,
+  # with its own igdext64.dll); the shim goes into each, whichever Wine picks. The brackets make bash glob those
+  # components, nocaseglob applies only to globbed ones
+  shopt -s nocaseglob
   while IFS= read -r lib; do
-    for d in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1; do
+    for d in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/[d]riverstore/[f]ilerepository/[i]gd_faux.inf_1; do
       [ -d "$d" ] || continue
       if [ ! -f "$d/igdext64.dll" ]; then put_shim "$d/igdext64.dll"
       elif [ -z "$poll" ] || changed "$d/igdext64.dll"; then install_shim "$d/igdext64.dll"; fi
-      s=${d%/driverstore/filerepository/igd_faux.inf_1}
+      s=${d%/*/*/*}
       [ -z "$poll" ] || { [ -f "$PKG/ControlLib.dll" ] && [ ! -f "$s/ControlLib.dll" ]; } && install_controllib "$s"
     done
   done <<< "$LIBS"
+  shopt -u nocaseglob
 }
 shim_pass
 echo "== shim: $n file(s) updated"
 if [ -n "$READONLY" ] && [ "$MANUAL" = 1 ]; then
   echo "!! These Protons belong to a distribution package and only root can change them; games that run on them get"
   echo "   no XMX (Proton copies its own igdext64.dll into the prefix). Either use a Proton in"
-  echo "   ~/.local/share/Steam/compatibilitytools.d (CachyOS offers its builds there too), or put the shim in as root"
+  echo "   $STEAM/compatibilitytools.d (CachyOS offers its builds there too), or put the shim in as root"
   echo "   (again after every update of that package):"
   printf '%s\n' "${READONLY#?}" | while IFS= read -r f; do echo "     sudo cp '$f' '$f.stock' && sudo cp '$SHIM' '$f'"; done
 fi

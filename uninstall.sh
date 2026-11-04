@@ -6,7 +6,6 @@
 # those).
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
-STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"
 rm -f "$HOME/.config/environment.d/50-xess-xmx.conf"
 systemctl --user unset-environment VK_DRIVER_FILES VKD3D_DISABLE_EXTENSIONS ANV_CM_KERNEL_DIR ANV_CM_HELPER force_vk_vendor \
   INTC_ALT_DRIVER_EXTENSIONS_PATH 2>/dev/null
@@ -15,6 +14,7 @@ systemctl --user disable xess-xmx-check.service >/dev/null 2>&1
 rm -f "$HOME/.config/systemd/user/xess-xmx-shim.path" "$HOME/.config/systemd/user/xess-xmx-shim.service" "$HOME/.config/systemd/user/xess-xmx-check.service"
 systemctl --user daemon-reload 2>/dev/null
 . "$PKG/tools/steam-libraries.sh"
+STEAM="$(steam_root)"
 LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk)
 SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
 n=0
@@ -34,10 +34,13 @@ for s in "$STEAM/compatibilitytools.d" $SYSTOOLS; do
   for d in "$s"/*/; do remove_hook "${d%/}"; done
 done
 while IFS= read -r lib; do
-  for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll \
-           "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1/igdext64.dll; do
+  for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do restore_shim "$f"; done
+  # the driver store in any case (install.sh: a prefix can hold both driverstore and DriverStore)
+  shopt -s nocaseglob
+  for f in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/[d]riverstore/[f]ilerepository/[i]gd_faux.inf_1/igdext64.dll; do
     restore_shim "$f"
   done
+  shopt -u nocaseglob
   for d in "$lib"/steamapps/common/Proton*/; do remove_hook "${d%/}"; done
   rm -rf "$lib"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels
   for c in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/ControlLib.dll; do
