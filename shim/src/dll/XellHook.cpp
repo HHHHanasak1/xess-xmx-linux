@@ -9,7 +9,8 @@
 // Low latency, on by default in every game with XeSS frame generation: each frame starts its CPU time before the GPU is free,
 // so no frame waits in a queue (AutoPaceWait). It does nothing while frame generation is off.
 //   IGDEXT_XELL_CAP=off     no low latency;  IGDEXT_XELL_CAP=auto:<ms>  start each frame <ms> earlier (later if negative)
-//   IGDEXT_XELL_CAP=<us>    instead: at least this interval per displayed frame (XeLL's frame cap, in both of its modes)
+//   IGDEXT_XELL_CAP=<us>    instead: at least this interval per displayed frame (XeLL's frame cap, in both of its modes),
+//                           up to 1000000; any other value turns both off
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
 #include "Stdafx.h"
 #include "Trace.h"
@@ -30,12 +31,16 @@ typedef uint32_t (*PFN_XellFg)(void*, uint32_t, uint32_t);
 static PFN_XellSet g_origSet; static PFN_XellSleep g_origSleep; static PFN_XellFg g_origFg;
 static bool g_log = false;
 static uint32_t g_capUs = 0;
-static bool g_capAuto = true; static double g_autoMarginMs = 0;
+static bool g_capAuto = true, g_capBad = false; static double g_autoMarginMs = 0;
 static uint32_t g_mfg = 0;   // generated frames per rendered frame, 0 = frame generation off
-// g_mfg is only known once the hooked xellSetFgEnabled ran; a game that enables frame generation before the hooks are in
-// place (XellThread waits 200 ms after the library maps) never tells us; auto then paces only when XeSS frame
-// generation (libxess_fg.dll) is loaded, so a game that uses XeLL alone is left alone
+// Whether frame generation is on, from two places: XeLL's xellSetFgEnabled (g_mfg; missed when a game enables frame
+// generation before XellThread's hooks are in, 200 ms after the library maps) and XeSS-FG's own switch
+// xefgSwapChainSetEnabled (Hook_XefgSetEnabled). The newer call of the two decides (Wuthering Waves switches frame
+// generation off in its menu through XeLL only, CONTROL's FSR route through XeSS-FG only). Neither seen = off: a game
+// that loads libxess_fg.dll but keeps frame generation off never calls either.
 static volatile bool g_fgSeen = false;
+static volatile LONG g_fgState = -1;   // -1 not seen, 0 off, 1 on: the newer of the two calls
+static volatile const char* g_fgSource = "not seen";
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
 static volatile LONG g_sleepCalls = 0;
 typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
@@ -71,6 +76,7 @@ static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
     if (n++ < 12 || (n % 600) == 0) XLog("xellSetFgEnabled ctx=%p a=%u b=%u", ctx, a, b);
     if (a == 1) { g_savedInterval = g_effInterval; g_fgOnTick = GetTickCount64(); }
     g_mfg = a == 1 ? b : 0; g_fgSeen = true;
+    g_fgSource = "xellSetFgEnabled"; InterlockedExchange(&g_fgState, g_mfg != 0);
     return g_origFg(ctx, a, b);
 }
 
@@ -102,16 +108,15 @@ static void AutoPaceWait(void* ctx, uint32_t frame)
     static double sumSleep = 0, sumSpin = 0; static int nCalls = 0, slept = 0;
     static double lastLeft = 0, lastG = 0, lastCpu = 0; static uint32_t lastQ = 0;
     const double kStartCpuMs = 10, kQueueMs = 4, kCpuFloorMs = 0.5; const int kStartFrames = 90, kQueueFrames = 30;
-    static int fgLoaded = -1;   // unseen state: is XeSS frame generation loaded (checked once a second)
-    static ULONGLONG fgChecked = 0;
-    if (!g_fgSeen && GetTickCount64() - fgChecked > 1000)
+    // XeSS-FG's own switch first, XeLL's otherwise; neither seen = off
+    const int fgOn = g_fgState == 1;
+    static int fgSaid = -1;
+    if (fgOn != fgSaid)
     {
-        fgChecked = GetTickCount64();
-        const int now = GetModuleHandleW(L"libxess_fg.dll") != nullptr;
-        if (now != fgLoaded) XLog("auto: frame generation state not seen (enabled before the hooks?); libxess_fg.dll %s", now ? "loaded, pacing" : "not loaded, not pacing");
-        fgLoaded = now;
+        fgSaid = fgOn;
+        XLog("auto: frame generation %s (%s), %s", fgOn ? "on" : "off", (const char*) g_fgSource, fgOn ? "pacing" : "not pacing");
     }
-    if ((g_fgSeen ? g_mfg == 0 : fgLoaded != 1) || !g_reports) { uncappedMs = 0; gN = 0; since = 0; paced = 0; cpuBase = 1e9; queued = 0; return; }
+    if (!fgOn || !g_reports) { uncappedMs = 0; gN = 0; since = 0; paced = 0; cpuBase = 1e9; queued = 0; return; }
     memset(r, 0, sizeof(r));
     if (g_reports(ctx, r) != 0) return;
     uint32_t top = 0, low = 0xFFFFFFFFu; uint64_t topE = 0, lowE = 0; double cpuMin = 1e9;
@@ -164,7 +169,7 @@ static void AutoPaceWait(void* ctx, uint32_t frame)
     const uint64_t nowNs = (uint64_t) (now.QuadPart / qf.QuadPart) * 1000000000ull + (uint64_t) (now.QuadPart % qf.QuadPart) * 1000000000ull / (uint64_t) qf.QuadPart;
     // XeLL's stamps and QPC must be one clock, or the wait would be a constant at its limit
     if ((double) nowNs - (double) topE > 1e9 || (double) topE - (double) nowNs > 1e9)
-    { static bool said = false; if (!said) { said = true; XLog("auto: report clock is %.0f ms off QPC, not pacing", ((double) nowNs - (double) topE) / 1e6); } return; }
+    { static int said = 0; if (said++ < 3) XLog("auto: newest finished frame %.0f ms from now (a stall, or another clock), no wait", ((double) nowNs - (double) topE) / 1e6); return; }
     const uint32_t q = frame - top - 1;
     const double cpuMs = started ? cpuMin : kStartCpuMs;
     const double leftMs = ((double) topE - (double) nowNs) / 1e6 + q * g - cpuMs - g_autoMarginMs;
@@ -409,10 +414,19 @@ void StartXellHook()
     {
         if (!strncmp(b, "auto", 4) && (b[4] == 0 || b[4] == ':')) { if (b[4] == ':') g_autoMarginMs = atof(b + 5); }
         else if (!_stricmp(b, "off") || !strcmp(b, "0")) g_capAuto = false;
-        else { g_capUs = (uint32_t) strtoul(b, nullptr, 10); g_capAuto = false; }   // a fixed cap replaces the pacing
+        else
+        {
+            // a fixed cap replaces the pacing; only a plain number up to 1 s per displayed frame, anything else (a
+            // negative number, a typo, ms written as us) would hold the game at seconds per frame and turns it all off
+            char* end = nullptr;
+            const unsigned long us = b[0] >= '0' && b[0] <= '9' ? strtoul(b, &end, 10) : 0;
+            g_capAuto = false;
+            if (end && *end == 0 && us <= 1000000) g_capUs = (uint32_t) us;
+            else g_capUs = 0, g_capBad = true;
+        }
     }
     if (!g_fixCap && !g_log && !g_capUs && !g_capAuto) return;
-    XLog("low latency: %s", g_capAuto ? "on" : g_capUs ? "fixed cap" : "off");
+    XLog("low latency: %s", g_capAuto ? "on" : g_capUs ? "fixed cap" : g_capBad ? "off (IGDEXT_XELL_CAP not off, auto[:ms] or 0..1000000 us)" : "off");
     XLog("XellHook start in %s", exe);
     if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
@@ -685,6 +699,17 @@ static int32_t Hook_XefgUiState(void* ctx, uint32_t state)
     return r;
 }
 
+// xefgSwapChainSetEnabled(ctx, enable): XeSS-FG's on/off switch, the low latency's source for "frame generation on"
+typedef int32_t (*PFN_XefgSetEnabled)(void* ctx, uint32_t enable);
+static PFN_XefgSetEnabled g_fgSetEnabled;
+static int32_t Hook_XefgSetEnabled(void* ctx, uint32_t enable)
+{
+    const int32_t r = g_fgSetEnabled(ctx, enable);
+    if (r == 0) { g_fgSource = "xefgSwapChainSetEnabled"; InterlockedExchange(&g_fgState, enable != 0); }
+    FLog("xefgSwapChainSetEnabled(%u) -> %d", enable, r);
+    return r;
+}
+
 static bool g_fgWanted = false;
 static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
 static volatile LONG g_fgHooked = 0;
@@ -729,6 +754,10 @@ static bool XefgInstallHooks()
             bool ok = PatchThunk(h.entry, h.hook, h.orig, h.name);
             FLog("%s %s", h.name, ok ? "hooked" : "NOT hooked");
         }
+        // apart from the set above: a library without it keeps the other hooks, and low latency then stays off unless
+        // XeLL reports frame generation
+        if (void* e = (void*) GetProcAddress(m, "xefgSwapChainSetEnabled"))
+            FLog("xefgSwapChainSetEnabled %s", PatchThunk(e, (void*) Hook_XefgSetEnabled, (void**) &g_fgSetEnabled, "xefgSwapChainSetEnabled") ? "hooked" : "NOT hooked");
         g_fgHookedModule = m;
         g_fgHooked = 1;
         done = true;
@@ -761,11 +790,12 @@ static DWORD WINAPI XefgThread(LPVOID)
 
 void StartXefgHook()
 {
-    // the log (IGDEXT_XEFG_LOG=1) or the frame generation override (XESS_FG) needs the hooks
+    // the log (IGDEXT_XEFG_LOG=1), the frame generation override (XESS_FG) or the low latency (its on/off source, after
+    // StartXellHook set g_capAuto) needs the hooks
     char b[8];
     g_fgLog = GetEnvironmentVariableA("IGDEXT_XEFG_LOG", b, sizeof(b)) > 0 && atoi(b);
     bool raise = GetEnvironmentVariableA("XESS_FG", b, sizeof(b)) > 0 && atoi(b) >= 2;   // also 2..4: the game's own number
-    if (!g_fgLog && !raise) return;
+    if (!g_fgLog && !raise && !g_capAuto) return;
     g_fgWanted = true;
     if (XefgInstallHooks()) return;   // already loaded (it loaded the shim): hook now, not later
     if (!StartModuleRefThread(XefgThread)) FLog("XeFG hook thread not started (%lu)", GetLastError());
