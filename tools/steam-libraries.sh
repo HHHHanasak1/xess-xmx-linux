@@ -1,11 +1,22 @@
 #!/bin/bash
 # steam-libraries.sh - print every Steam library root (the folder that holds steamapps/), one per line: the main
 # install plus the libraries listed in steamapps/libraryfolders.vdf (SD card, second disk). Sourced or executed.
-#   steam_libraries [steam dir]      default: $STEAM_DIR, else ~/.local/share/Steam
-# Sourced, it also provides the helpers every script of the package shares (steam_prefix_of, xmx_icd_json,
-# xmx_driver_files).
+#   steam_libraries [steam dir]      default: steam_root
+# Sourced, it also provides the helpers every script of the package shares (steam_root, steam_prefix_of,
+# xmx_icd_json, xmx_driver_files).
+# The Steam install folder: $STEAM_DIR, else the first that exists of ~/.local/share/Steam (Valve's installer,
+# SteamOS, Arch), ~/.steam/steam and ~/.steam/root (links every Steam client keeps; Debian's and Ubuntu's steam package
+# installs to ~/.steam/debian-installation), with links resolved, so it matches the paths in libraryfolders.vdf
+steam_root() {
+  [ -n "${STEAM_DIR:-}" ] && { printf '%s\n' "$STEAM_DIR"; return 0; }
+  local d
+  for d in "$HOME/.local/share/Steam" "$HOME/.steam/steam" "$HOME/.steam/root" "$HOME/.steam/debian-installation"; do
+    if [ -d "$d/steamapps" ] || [ -f "$d/steam.sh" ]; then readlink -f "$d"; return 0; fi
+  done
+  printf '%s\n' "$HOME/.local/share/Steam"
+}
 steam_libraries() {
-  local steam="${1:-${STEAM_DIR:-$HOME/.local/share/Steam}}" vdf p
+  local steam="${1:-$(steam_root)}" vdf p
   printf '%s\n' "$steam"
   vdf="$steam/steamapps/libraryfolders.vdf"
   [ -f "$vdf" ] || vdf="$steam/config/libraryfolders.vdf"
@@ -14,6 +25,15 @@ steam_libraries() {
   grep -a '"path"' "$vdf" | sed 's/.*"path"[[:space:]]*"\(.*\)".*/\1/; s/\\\\/\//g' | while IFS= read -r p; do
     [ -n "$p" ] && [ -d "$p/steamapps" ] && [ "$p" != "$steam" ] && printf '%s\n' "$p"
   done
+}
+# every igd_faux.inf_1 folder of a prefix's driver store, in any case (Wine finds files case-insensitively, and
+# proton-cachyos makes "DriverStore" next to the "driverstore" of other Protons), one per line; none: nothing
+#   prefix_shim_dirs <pfx folder>
+prefix_shim_dirs() {
+  ( shopt -s nocaseglob nullglob
+    for d in "$1"/drive_c/windows/system32/[d]riverstore/[f]ilerepository/[i]gd_faux.inf_1; do
+      [ -d "$d" ] && printf '%s\n' "$d"
+    done )
 }
 # find the compatdata prefix of an app id across all libraries
 steam_prefix_of() {

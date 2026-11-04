@@ -17,9 +17,8 @@ APPID="${XMX_APPID:-}"
 PFXROOT="${XMX_PREFIX:-}"
 . "$ROOT/tools/steam-libraries.sh"
 # the prefix in whichever Steam library holds the game (SD card, second disk)
-[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$(steam_prefix_of "$APPID" || printf '%s' "${STEAM_DIR:-$HOME/.local/share/Steam}/steamapps/compatdata/$APPID/pfx")"
+[ -z "$PFXROOT" ] && [ -n "$APPID" ] && PFXROOT="$(steam_prefix_of "$APPID" || printf '%s' "$(steam_root)/steamapps/compatdata/$APPID/pfx")"
 [ -n "$PFXROOT" ] || { echo "Set XMX_APPID=<Steam app id> or XMX_PREFIX=<prefix folder>."; exit 1; }
-PFX="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1"
 CONF="${XMX_CONF:-$HOME/.config/xess-xmx.conf}"
 GAME="${XMX_GAME:-}"
 [ -d "$PFXROOT/drive_c" ] || { echo "Proton prefix not found ($PFXROOT). Start the game once first."; exit 1; }
@@ -28,11 +27,15 @@ for f in "$ROOT/igdext64.dll" "$ROOT/lib/libvulkan_intel.so" "$ROOT/tools/cm-com
 done
 [ -x "$(ls "$ROOT"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ] || echo "note: no compiler bundle yet - run $ROOT/tools/get-igc.sh (kernels are compiled at run time)"
 if [ -n "$GAME" ] && pgrep -i "^${GAME:0:15}" >/dev/null; then echo "The game is running - close it first."; exit 1; fi
-mkdir -p "$PFX"
+# the driver store folder in every case it exists in (proton-cachyos: "DriverStore" next to "driverstore"), else new
+DIRS="$(prefix_shim_dirs "$PFXROOT")"
+[ -n "$DIRS" ] || { DIRS="$PFXROOT/drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1"; mkdir -p "$DIRS"; }
 
 # 1. shim DLL
-[ -f "$PFX/igdext64.dll.stock" ] || { [ -f "$PFX/igdext64.dll" ] && cp "$PFX/igdext64.dll" "$PFX/igdext64.dll.stock"; }
-cp "$ROOT/igdext64.dll" "$PFX/igdext64.dll"
+while IFS= read -r PFX; do
+  [ -f "$PFX/igdext64.dll.stock" ] || { [ -f "$PFX/igdext64.dll" ] && cp "$PFX/igdext64.dll" "$PFX/igdext64.dll.stock"; }
+  cp "$ROOT/igdext64.dll" "$PFX/igdext64.dll"
+done <<< "$DIRS"
 # ControlLib.dll: the stand-in for Intel's Control Library, for XESS_FG (frame generation override)
 S32="$PFXROOT/drive_c/windows/system32"
 if [ -f "$ROOT/ControlLib.dll" ] && { [ ! -f "$S32/ControlLib.dll" ] || grep -aq 'XESS_FG' "$S32/ControlLib.dll"; }; then

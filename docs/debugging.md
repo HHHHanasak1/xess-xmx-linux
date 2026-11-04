@@ -169,7 +169,7 @@ Scripts (shell environment when running them):
 
 | Script | Arguments / variables |
 |---|---|
-| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default `~/.local/share/Steam`); `install.sh` only: `XMX_NO_ENV=1`, no session environment and no session check (the shim, the hook and the watcher stay) |
+| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default: the first of `~/.local/share/Steam`, `~/.steam/steam`, `~/.steam/root` that holds a Steam install, so also the Debian/Ubuntu `steam` package); `install.sh` only: `XMX_NO_ENV=1`, no session environment and no session check (the shim, the hook and the watcher stay) |
 | `enable.sh`, `disable.sh` | `XMX_APPID` or `XMX_PREFIX` (one is required), `XMX_CONF` (default `~/.config/xess-xmx.conf`), `XMX_GAME` (refuse while that process runs) |
 | `tools/switch-driver.sh [version]` | no argument: list the package's drivers, `*` = default; with a version: make it the default (checked first) |
 | `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
