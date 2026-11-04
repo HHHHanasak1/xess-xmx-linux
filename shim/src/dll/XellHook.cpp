@@ -6,12 +6,14 @@
 // The fix is on for Wuthering Waves only (process path contains "Wuthering Waves"), a cap set at that moment in any other game
 // is left alone.
 //   IGDEXT_XELL_FIXCAP=1    apply the fix in any game;  IGDEXT_XELL_KEEPCAP=1   turn it off everywhere
-//   IGDEXT_XELL_CAP=<us>    experimental: at least this interval per displayed frame (XeLL's frame cap, in both of its modes)
-//   IGDEXT_XELL_CAP=auto    experimental: that interval follows the GPU's limit while frame generation is on (XellAutoCap.h)
+// Low latency, on by default in every game with XeSS frame generation: each frame starts its CPU time before the GPU is free,
+// so no frame waits in a queue (AutoPaceWait). It does nothing while frame generation is off.
+//   IGDEXT_XELL_CAP=off     no low latency;  IGDEXT_XELL_CAP=auto:<ms>  start each frame <ms> earlier (later if negative)
+//   IGDEXT_XELL_CAP=<us>    instead: at least this interval per displayed frame (XeLL's frame cap, in both of its modes)
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
 #include "Stdafx.h"
 #include "Trace.h"
-#include "XellAutoCap.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -28,8 +30,12 @@ typedef uint32_t (*PFN_XellFg)(void*, uint32_t, uint32_t);
 static PFN_XellSet g_origSet; static PFN_XellSleep g_origSleep; static PFN_XellFg g_origFg;
 static bool g_log = false;
 static uint32_t g_capUs = 0;
-static bool g_capAuto = false; static XellAutoCap g_auto;
-static uint32_t g_gameFlags = 1, g_autoUs = 0, g_mfg = 0;   // the game's sleep mode flags, the cap in force, generated frames
+static bool g_capAuto = true; static double g_autoMarginMs = 0;
+static uint32_t g_mfg = 0;   // generated frames per rendered frame, 0 = frame generation off
+// g_mfg is only known once the hooked xellSetFgEnabled ran; a game that enables frame generation before the hooks are in
+// place (XellThread waits 200 ms after the library maps) never tells us; auto then paces only when XeSS frame
+// generation (libxess_fg.dll) is loaded, so a game that uses XeLL alone is left alone
+static volatile bool g_fgSeen = false;
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
 static volatile LONG g_sleepCalls = 0;
 typedef uint32_t (*PFN_XellSetLog)(void*, uint32_t, void (*)(const char*, uint32_t));
@@ -40,6 +46,7 @@ static PFN_XellSetLog g_setLog;   // xellSetLoggingCallback: XeLL's own messages
 struct XellFrameReport { uint32_t id; uint64_t simS, simE, rsS, rsE, prS, prE, r1, r2, r3, r4, r5; };
 #pragma pack(pop)
 typedef uint32_t (*PFN_XellReports)(void*, XellFrameReport*);
+typedef LONG (NTAPI* PFN_NtDelayExecution)(BOOLEAN alertable, PLARGE_INTEGER interval);   // ntdll; negative = relative, 100 ns
 static PFN_XellReports g_reports;
 
 static void XLog(const char* fmt, ...)
@@ -63,7 +70,7 @@ static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
     static int n = 0;
     if (n++ < 12 || (n % 600) == 0) XLog("xellSetFgEnabled ctx=%p a=%u b=%u", ctx, a, b);
     if (a == 1) { g_savedInterval = g_effInterval; g_fgOnTick = GetTickCount64(); }
-    g_mfg = a == 1 ? b : 0;
+    g_mfg = a == 1 ? b : 0; g_fgSeen = true;
     return g_origFg(ctx, a, b);
 }
 
@@ -75,68 +82,135 @@ static uint32_t Hook_SetSleepMode(void* ctx, const XellSleepParams* p)
     if (g_fixCap && q.minimumIntervalUs != 0 && g_fgOnTick && GetTickCount64() - g_fgOnTick < 1500)
     { XLog("   -> frame cap %u us set right after frame generation was enabled: keeping %u us", q.minimumIntervalUs, g_savedInterval); q.minimumIntervalUs = g_savedInterval; }
     g_effInterval = q.minimumIntervalUs;
-    g_gameFlags = p->flags;
-    if (q.minimumIntervalUs < g_autoUs) q.minimumIntervalUs = g_autoUs;
     if (q.minimumIntervalUs < g_capUs)
     { XLog("   -> IGDEXT_XELL_CAP: %u us instead of %u us", g_capUs, q.minimumIntervalUs); q.minimumIntervalUs = g_capUs; }
     return g_origSet(ctx, &q);
 }
 
-// IGDEXT_XELL_CAP=auto, every kAutoWindow frames: the frame time and the time from simulation start to render submit of
-// the frames XeLL reported since the last time. Only with frame generation on: XeLL multiplies the interval by the
-// frames shown, so the number has to be known.
-static void AutoCapTick(void* ctx)
+// IGDEXT_XELL_CAP=auto: a frame should reach the GPU when the GPU gets free, not wait there. The GPU is free at the end of
+// the newest finished frame + the frames in flight x a frame's time; the frame's simulation starts its CPU time before
+// that. The CPU time is the time without a queue (a queue adds its wait to it): the lowest simulation -> render submit of
+// the 64 frames XeLL reports, after a start with kStartCpuMs that drains the queue. The frame time is the interval of
+// those reports, never above the one learned without a wait: under the wait the interval follows the wait, and following
+// it upwards would drift. It goes up only when a queue shows that the GPU got slower, and follows a lighter scene down.
+// The wait counts from the newest real completion, so a heavier scene moves every start with it.
+static void AutoPaceWait(void* ctx, uint32_t frame)
 {
-    static const int kAutoWindow = 15;
-    static int frames = 0; static LARGE_INTEGER t0; static uint32_t lastId = 0; static int windows = 0;
     static XellFrameReport r[64];
-    LARGE_INTEGER now, qf;
-    QueryPerformanceCounter(&now); QueryPerformanceFrequency(&qf);
-    if (g_mfg == 0)
+    static double gHist[3]; static int gN = 0, since = 0; static double uncappedMs = 0;
+    static double cpuBase = 1e9; static int queued = 0, paced = 0;
+    static double sumSleep = 0, sumSpin = 0; static int nCalls = 0, slept = 0;
+    static double lastLeft = 0, lastG = 0, lastCpu = 0; static uint32_t lastQ = 0;
+    const double kStartCpuMs = 10, kQueueMs = 4, kCpuFloorMs = 0.5; const int kStartFrames = 90, kQueueFrames = 30;
+    static int fgLoaded = -1;   // unseen state: is XeSS frame generation loaded (checked once a second)
+    static ULONGLONG fgChecked = 0;
+    if (!g_fgSeen && GetTickCount64() - fgChecked > 1000)
     {
-        if (g_autoUs) { g_autoUs = 0; g_auto.Reset(); XellSleepParams q = {g_effInterval, g_gameFlags}; g_origSet(ctx, &q); XLog("auto cap: off"); }
-        frames = 0;
-        return;
+        fgChecked = GetTickCount64();
+        const int now = GetModuleHandleW(L"libxess_fg.dll") != nullptr;
+        if (now != fgLoaded) XLog("auto: frame generation state not seen (enabled before the hooks?); libxess_fg.dll %s", now ? "loaded, pacing" : "not loaded, not pacing");
+        fgLoaded = now;
     }
-    if (frames == 0) t0 = now;
-    ++frames;
-    const double elapsedMs = (now.QuadPart - t0.QuadPart) * 1000.0 / qf.QuadPart;
-    // a window of 15 frames, or 400 ms and at least 4 frames: slow frames must not slow the reaction down
-    if (frames <= kAutoWindow && (frames <= 4 || elapsedMs < 400)) return;
-    const double frameMs = elapsedMs / (frames - 1);
-    frames = 0;
-    if (!g_reports) return;
+    if ((g_fgSeen ? g_mfg == 0 : fgLoaded != 1) || !g_reports) { uncappedMs = 0; gN = 0; since = 0; paced = 0; cpuBase = 1e9; queued = 0; return; }
     memset(r, 0, sizeof(r));
     if (g_reports(ctx, r) != 0) return;
-    double sub = 0, work = 0; int k = 0; uint32_t top = lastId;
+    uint32_t top = 0, low = 0xFFFFFFFFu; uint64_t topE = 0, lowE = 0; double cpuMin = 1e9;
     for (int i = 0; i < 64; ++i)
     {
-        if (!r[i].id || !r[i].simS || r[i].rsS <= r[i].simS || r[i].rsS - r[i].simS > 1000000000ull || r[i].prE <= r[i].rsS) continue;
-        if (r[i].id < lastId && lastId - r[i].id > 1000) lastId = 0;   // the game restarted its frame ids
-        if (r[i].id <= lastId) continue;
-        sub += (r[i].rsS - r[i].simS) / 1e6; work += (r[i].prE - r[i].rsS) / 1e6; ++k;
-        if (r[i].id > top) top = r[i].id;
+        if (!r[i].id || !r[i].prE) continue;   // not finished yet: frames in flight
+        // a report with the submit right after the simulation start (menus, resizes, skipped frames) would set the CPU
+        // time near 0 for 64 frames and make every start wait too long
+        if (r[i].simS && r[i].rsS > r[i].simS)
+        {
+            const double c = (r[i].rsS - r[i].simS) / 1e6;
+            if (c >= kCpuFloorMs && c < 1000 && c < cpuMin) cpuMin = c;
+        }
+        if (r[i].id > top) { top = r[i].id; topE = r[i].prE; }
+        if (r[i].id < low) { low = r[i].id; lowE = r[i].prE; }
     }
-    lastId = top;
-    if (!k) return;
-    const double capMs = g_auto.Update(frameMs, sub / k, work / k);
-    const uint32_t us = (uint32_t) (capMs * 1000.0 / (g_mfg + 1) + 0.5);
-    if (++windows % 40 == 1) XLog("auto cap: frame %.1f ms, submit %.1f ms, work %.1f ms over %d frames, cap %.1f ms = %u us, %u generated", frameMs, sub / k, work / k, k, capMs, us, g_mfg);
-    if (us == g_autoUs) return;
-    g_autoUs = us;
-    XellSleepParams q = {us > g_effInterval ? us : g_effInterval, g_gameFlags};
-    g_origSet(ctx, &q);
+    if (!top || top == low || topE <= lowE || frame <= top || frame - top > 16) return;
+    const double gMs = (topE - lowE) / 1e6 / (top - low);
+    if (gMs > 150) { uncappedMs = 0; gN = 0; since = 0; paced = 0; cpuBase = 1e9; queued = 0; return; }   // a loading screen
+    if (uncappedMs <= 0)
+    {
+        // learn the frame time before any wait: three intervals 30 frames apart within 3 %
+        if (++since < 30) return;
+        since = 0;
+        gHist[gN++ % 3] = gMs;
+        if (gN < 3) return;
+        const double hi = std::max({gHist[0], gHist[1], gHist[2]}), lo = std::min({gHist[0], gHist[1], gHist[2]});
+        if (hi < lo * 1.03) { uncappedMs = (gHist[0] + gHist[1] + gHist[2]) / 3; XLog("auto: frame time %.2f ms, frame %u", uncappedMs, frame); }
+        return;
+    }
+    const bool started = paced++ >= kStartFrames && cpuMin < 1e8;
+    if (started)
+    {
+        // The wait makes the interval longer but never simulation -> submit; a queue does. So the CPU time over its lowest
+        // recent value is the queue. That value rises by 0.2 % of the gap per frame, so a cheap moment (a menu, a cut
+        // scene) is forgotten while a queue, which builds within a second or two, still stands out; frames far over the
+        // frame time (hitches, menus) do not move it.
+        if (gMs < uncappedMs * 1.3) cpuBase = cpuMin < cpuBase ? cpuMin : cpuBase + (cpuMin - cpuBase) * 0.002;
+        // the minimum of all 64 for 30 frames: a short window (8 frames) took the game thread's own variation in
+        // CPU-limited scenes for a queue and cost frame rate
+        if (cpuMin > cpuBase + kQueueMs && gMs > uncappedMs)
+        {
+            if (++queued >= kQueueFrames) { XLog("auto: queue %.1f ms over %.1f, frame time %.2f -> %.2f ms", cpuMin - cpuBase, cpuBase, uncappedMs, gMs); uncappedMs = gMs; queued = 0; }
+        }
+        else queued = 0;
+        if (gMs < uncappedMs) uncappedMs = std::max(gMs, uncappedMs * 0.999);   // a lighter scene
+    }
+    const double g = gMs < uncappedMs ? gMs : uncappedMs;
+    LARGE_INTEGER now, qf; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&qf);
+    const uint64_t nowNs = (uint64_t) (now.QuadPart / qf.QuadPart) * 1000000000ull + (uint64_t) (now.QuadPart % qf.QuadPart) * 1000000000ull / (uint64_t) qf.QuadPart;
+    // XeLL's stamps and QPC must be one clock, or the wait would be a constant at its limit
+    if ((double) nowNs - (double) topE > 1e9 || (double) topE - (double) nowNs > 1e9)
+    { static bool said = false; if (!said) { said = true; XLog("auto: report clock is %.0f ms off QPC, not pacing", ((double) nowNs - (double) topE) / 1e6); } return; }
+    const uint32_t q = frame - top - 1;
+    const double cpuMs = started ? cpuMin : kStartCpuMs;
+    const double leftMs = ((double) topE - (double) nowNs) / 1e6 + q * g - cpuMs - g_autoMarginMs;
+    lastLeft = leftMs; lastG = g; lastQ = q; lastCpu = cpuMs;
+    const double sleepMs = leftMs < 0 ? 0 : leftMs > g * 2 ? g * 2 : leftMs;
+    if (sleepMs > 0)
+    {
+        // NtDelayExecution in 100 ns units (Sleep takes whole milliseconds, which left 1.5-2.5 ms to spin on a SoC whose
+        // CPU and GPU share one power limit); it stops short by the late wake-up seen recently, a maximum that decays,
+        // and only that is spun
+        static PFN_NtDelayExecution delay = (PFN_NtDelayExecution) GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtDelayExecution");
+        static double lateMs = 1.0;
+        const LONGLONG until = now.QuadPart + (LONGLONG) (sleepMs * qf.QuadPart / 1000.0);
+        const double slack = std::min(2.0, std::max(0.2, lateMs + 0.2));
+        LARGE_INTEGER t;
+        if (sleepMs > slack)
+        {
+            const double askMs = sleepMs - slack;
+            if (delay) { LARGE_INTEGER rel; rel.QuadPart = -(LONGLONG) (askMs * 10000.0); delay(FALSE, &rel); }
+            else Sleep((DWORD) askMs);
+            QueryPerformanceCounter(&t);
+            lateMs = std::max((t.QuadPart - now.QuadPart) * 1000.0 / qf.QuadPart - askMs, lateMs * 0.98);
+        }
+        QueryPerformanceCounter(&t);
+        const LONGLONG spinFrom = t.QuadPart;
+        while (t.QuadPart < until) { SwitchToThread(); QueryPerformanceCounter(&t); }
+        sumSpin += (t.QuadPart - spinFrom) * 1000.0 / qf.QuadPart;
+        sumSleep += sleepMs; ++slept;
+    }
+    if (++nCalls == 100)
+    {
+        XLog("auto: waited in %d of 100 frames, %.1f ms each (%.2f ms spun); last: %.1f ms left, %u in flight, frame %.2f ms (uncapped %.2f), cpu %.1f ms",
+             slept, slept ? sumSleep / slept : 0.0, slept ? sumSpin / slept : 0.0, lastLeft, lastQ, lastG, uncappedMs, lastCpu);
+        nCalls = slept = 0; sumSleep = sumSpin = 0;
+    }
 }
 
 static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
-    if (g_capAuto) AutoCapTick(ctx);
-    if (!g_log) return g_origSleep(ctx, frame);
+    if (!g_log) { const uint32_t rr = g_origSleep(ctx, frame); if (g_capAuto) AutoPaceWait(ctx, frame); return rr; }
     if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
     LARGE_INTEGER qa, qb, qf; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qa);
     uint32_t rr = g_origSleep(ctx, frame);
+    if (g_capAuto) AutoPaceWait(ctx, frame);
     QueryPerformanceCounter(&qb);
     static double sum = 0, mx = 0; static int cnt = 0; static LARGE_INTEGER t0;
     double d = (qb.QuadPart - qa.QuadPart) * 1000.0 / qf.QuadPart;
@@ -324,18 +398,21 @@ static bool StartModuleRefThread(LPTHREAD_START_ROUTINE body)
 
 void StartXellHook()
 {
-    char b[32];
+    char b[32] = {};
     if (GetEnvironmentVariableA("IGDEXT_XELL_LOG", b, sizeof(b)) > 0) g_log = true;
     char exe[MAX_PATH] = {}; GetModuleFileNameA(nullptr, exe, MAX_PATH);
     g_fixCap = strstr(exe, "Wuthering Waves") != nullptr;
     if (GetEnvironmentVariableA("IGDEXT_XELL_FIXCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = true;
     if (GetEnvironmentVariableA("IGDEXT_XELL_KEEPCAP", b, sizeof(b)) > 0 && atoi(b)) g_fixCap = false;
-    if (GetEnvironmentVariableA("IGDEXT_XELL_CAP", b, sizeof(b)) > 0)
+    const DWORD capLen = GetEnvironmentVariableA("IGDEXT_XELL_CAP", b, sizeof(b));
+    if (capLen > 0 && capLen < sizeof(b))
     {
-        if (!strcmp(b, "auto")) g_capAuto = true;
-        else g_capUs = (uint32_t) strtoul(b, nullptr, 10);
+        if (!strncmp(b, "auto", 4) && (b[4] == 0 || b[4] == ':')) { if (b[4] == ':') g_autoMarginMs = atof(b + 5); }
+        else if (!_stricmp(b, "off") || !strcmp(b, "0")) g_capAuto = false;
+        else { g_capUs = (uint32_t) strtoul(b, nullptr, 10); g_capAuto = false; }   // a fixed cap replaces the pacing
     }
     if (!g_fixCap && !g_log && !g_capUs && !g_capAuto) return;
+    XLog("low latency: %s", g_capAuto ? "on" : g_capUs ? "fixed cap" : "off");
     XLog("XellHook start in %s", exe);
     if (!StartModuleRefThread(XellThread)) XLog("XeLL hook thread not started (%lu)", GetLastError());
 }
