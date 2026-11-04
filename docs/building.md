@@ -28,6 +28,10 @@ The placeholder table is generated, not written by hand (needs `fxc.exe` from th
     python tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch          # layout matches the driver
     python tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
+`ControlLib.dll` (the stand-in for Intel's Control Library that `XESS_FG` above 4x needs) is built the same way:
+
+    controllib\build.bat      -> controllib\build\ControlLib.dll
+
 ## The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
 
 The headers they are built against (AMD FSR SDK 2.4.0, Intel XeSS SDK) are not in the repository; `get-headers.sh`
@@ -55,8 +59,8 @@ script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox wi
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc3  # or a given one
 
-There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` (contributed in #19 for rc1) for
-Mesa 26.3.0-rc3; other versions need a rebase. Both are built from the release tarballs, not the git tags: upstream
+There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0-rc3 (first
+contributed in #19, for rc1); other versions need a rebase. Both are built from the release tarballs, not the git tags: upstream
 deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branched again. By hand, for 26.1.2 (for
 26.3: that tarball and that folder, the same meson options):
 
@@ -68,10 +72,15 @@ deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branche
     git am ../patches/0005-anv-cm-sampler-descriptor-table.patch  # kernels whose sampler is a descriptor table (FSR 4 on XMX)
     meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
       -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
-      -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools=
+      -Dintel-rt=enabled -Dvideo-codecs= -Dvulkan-layers= -Dtools= '-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps'
     ninja -C build src/intel/vulkan/libvulkan_intel.so
 
-Two of the options are easy to get wrong:
+Three of the options are easy to get wrong:
+
+* `-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps` (single quotes, so the shell keeps `$ORIGIN`): the driver then finds
+  SPIRV-Tools and libdisplay-info in the package's `lib/deps/` inside the Steam Linux Runtime, where the session check
+  puts them on systems that lack them. Without it the driver loads on the host but can fail in the game's container.
+  `readelf -d libvulkan_intel.so | grep RUNPATH` shows `$ORIGIN/../deps`.
 
 * `-Dprefix=/usr -Dsysconfdir=/etc`, even though nothing is installed: the driver reads Mesa's per-game workarounds
   from `<prefix>/share/drirc.d`, and with meson's default `/usr/local` it runs without them (Wuthering Waves with ray

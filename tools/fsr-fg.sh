@@ -1,7 +1,8 @@
 #!/bin/bash
 # fsr-fg.sh all|on|off|status <Steam app id | game folder> - a game's FSR 3.1+ on XeSS, kept until "off". Meant for
-# Protons without the package's hook (GE-Proton, a Proton install.sh could not write to); with the hook, FSR=xess /
-# FSR_FG=xess %command% do the same for each run only (docs/fsr-frame-generation.md).
+# a Proton without the package's hook (one install.sh could not write to, such as a distribution package's); with the
+# hook (GE-Proton has it too), FSR=xess / FSR_FG=xess %command% do the same for each run only
+# (docs/fsr-frame-generation.md).
 #   all     upscaling on XeSS SR and frame generation on XeSS-FG: the game's amd_fidelityfx_upscaler_dx12.dll and
 #           amd_fidelityfx_framegeneration_dx12.dll are replaced by the package's (ffxfg/), and the XeSS SDK's
 #           libxess.dll / libxess_fg.dll / libxell.dll go next to them (a newer one of the game's own stays). FSR

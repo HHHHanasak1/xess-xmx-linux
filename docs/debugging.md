@@ -19,6 +19,7 @@
 | `FSR=xess FSR_FG=inject`, but no frame generation | FSR is not the upscaler chosen in the game, or the game's stderr says why it was skipped: no game exe next to the upscaler DLL, or the game folder has a `dxgi.dll` of its own | choose FSR upscaling in the game; `dxgi_xefg.log` next to `dxgi.dll` and `ffx_xefg.log` show the swap chain ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | A Vulkan driver installed after `install.sh` (an eGPU's, lavapipe) is not found | `VK_DRIVER_FILES` lists the drivers that existed when `install.sh` last ran | re-run `install.sh`, re-login |
 | 30 fps with frame generation until the pause menu is opened and closed (Wuthering Waves) | The game's XeLL frame cap; the shim fixes it | `IGDEXT_XELL_LOG=1`: `frame cap ... keeping` lines |
+| Lower frame rate with frame generation than before 20261104, or uneven pacing | The low latency (on by default with frame generation) waits too long in this game | `IGDEXT_XELL_CAP=off %command%` to compare; `auto:2` starts each frame 2 ms earlier; `IGDEXT_XELL_LOG=1`: `auto: waited ...` lines ([launch-options.md](launch-options.md)) |
 | The first launch hangs for a minute or two at XeSS initialisation | Every kernel is compiled once | `ANV CM: compiling kernel` lines in the game's stderr |
 | After updating from an older release: no image or a GPU hang with ray tracing; another GPU or 32-bit games without Vulkan; XMX gone in the games of one Proton after it updated | Bugs of older releases, fixed since | install the current release, run `install.sh`, re-login |
 
@@ -135,6 +136,7 @@ Shim (game environment):
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | override the reported device |
 | `IGDEXT_XELL_LOG=1` | XeLL log (above), including the average simulation-start -> present-end latency from XeLL's frame reports every 100 frames |
 | `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | apply the XeLL frame-cap fix in any game / nowhere (default: Wuthering Waves only) |
+| `IGDEXT_XELL_CAP=off` / `auto:<ms>` / `<us>` | the low latency with frame generation off / with each frame `<ms>` earlier / a fixed XeLL frame cap instead (launch-options.md). With `IGDEXT_XELL_LOG=1`: `low latency: ...` at start, `auto: frame generation on/off (source)`, `auto: frame time ...` once learned, `auto: queue ...` when a heavier scene raised it, every 100 frames `auto: waited in N of 100 frames` |
 | `XESS_FG=<n>` | frame generation override, n x: 2..4 through `ControlLib.dll`; 5..8 (8 is the maximum) raised by the shim, experimental: all work, 7 and 8 not recommended (latency). launch-options.md |
 | `IGDEXT_XEFG_LOG=1` | `C:\igdext_xefg.log`: XeSS frame generation's own log (public `xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, every change of the number |
 | `XESS_FG_LOG=1` | `C:\igcl_stub.log`: every call `ControlLib.dll` answers |
@@ -167,7 +169,7 @@ Scripts (shell environment when running them):
 
 | Script | Arguments / variables |
 |---|---|
-| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default `~/.local/share/Steam`); `XMX_NO_ENV=1`: no session environment and no session check (the shim, the hook and the watcher stay) |
+| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default `~/.local/share/Steam`); `install.sh` only: `XMX_NO_ENV=1`, no session environment and no session check (the shim, the hook and the watcher stay) |
 | `enable.sh`, `disable.sh` | `XMX_APPID` or `XMX_PREFIX` (one is required), `XMX_CONF` (default `~/.config/xess-xmx.conf`), `XMX_GAME` (refuse while that process runs) |
 | `tools/switch-driver.sh [version]` | no argument: list the package's drivers, `*` = default; with a version: make it the default (checked first) |
 | `tools/rebuild-driver.sh [version]` | version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees |
