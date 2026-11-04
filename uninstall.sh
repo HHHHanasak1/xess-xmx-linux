@@ -1,7 +1,9 @@
 #!/bin/bash
-# uninstall.sh - undo install.sh: remove the session environment file and the shim watcher, put every stock igdext64.dll
-# back (Proton bundles and prefixes), and delete the run-time kernel folders inside the prefixes. The package folder,
-# the compiler bundle and per-game enable.sh blocks are left alone (use disable.sh for those).
+# uninstall.sh - undo install.sh: remove the session environment file, the shim watcher and the session check, put every
+# stock igdext64.dll back (Proton bundles and prefixes), remove ControlLib.dll and the Proton launch hook, undo the
+# XESS / FSR file swaps and tools/fsr-fg.sh changes left in game folders, and delete the run-time kernel folders inside
+# the prefixes. The package folder, the compiler bundle and per-game enable.sh blocks are left alone (use disable.sh for
+# those).
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 STEAM="${STEAM_DIR:-$HOME/.local/share/Steam}"

@@ -21,7 +21,9 @@ Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super res
 temporally stable; frame generation runs at 2x/3x/4x on XMX as well (without the Intel extension, XeSS frame
 generation is limited to 2x). With `XESS_FG` a game runs frame generation at a fixed multiplier, also above what its
 menu offers: up to 4x as Intel's override does, and experimentally up to **8x**
-([docs/launch-options.md](docs/launch-options.md)).
+([docs/launch-options.md](docs/launch-options.md)). With frame generation on, the shim keeps frames from queueing
+before the GPU, which roughly halves the latency in a GPU-limited game at the same frame rate; on by default,
+`IGDEXT_XELL_CAP=off` turns it off.
 
 ## Install
 
@@ -96,7 +98,8 @@ check before a session (for example after a system update), the other one become
   Arch, openSUSE Tumbleweed, Void Linux, Fedora 43 and Ubuntu 25.10; Debian 13 and Ubuntu 24.04 have libwayland-client
   1.23 and need a driver built on the system (`tools/rebuild-driver.sh`).
 * vkd3d-proton as in Proton 11 / GE-Proton 11.
-* `install.sh` needs `curl`, `ar` (binutils), `tar` and `zstd` to unpack the compiler.
+* `install.sh` needs `curl`, `ar` (binutils), `tar` and `zstd` to unpack the compiler, `python3` (the compiler helper,
+  the session check, `tools/fsr-fg.sh`) and `unzip` or `python3` for the XeSS SDK download.
 
 ## Games
 
@@ -171,7 +174,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
-    tools/get-ffx.sh              fetches AMD's FidelityFX loader and upscaler into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
+    tools/get-ffx.sh              fetches AMD's FidelityFX loader and providers into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
     tools/proton-hook.py          XESS / XESS_LOG / FSR / FSR_FG launch options, run by Proton through user_settings.py
     tools/fsr-fg.sh               FSR on XeSS for one game, for Protons without the hook
     tools/steam-libraries.sh      every Steam library (libraryfolders.vdf), for the scripts
@@ -184,7 +187,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/gen_dyn_dummies.py      placeholder table for run-time kernels;  tools/check_dyn_ids.py consistency check
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
-    tools/make-release.py         builds the release archive (these four developer tools stay out of it)
+    tools/make-release.py         builds the release archive (the developer tools stay out of it)
     docs/                         how it works, building, debugging, games, Steam launch options
     .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
                                   drivers, checks the scripts

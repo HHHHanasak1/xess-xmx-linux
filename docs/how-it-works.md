@@ -137,6 +137,15 @@ entry points of the extension library (in a buffer layout that is not documented
 check, and the shim's experimental probe for the interface (`IGDEXT_XELL_PROBE`, `tools/xell-probe.sh`), are in
 [debugging.md](debugging.md). Even with the probe, Wuthering Waves stays in the built-in context.
 
-The shim hooks XeLL for one game-side problem: Wuthering Waves hands XeLL a 33.3 ms frame cap right after enabling
-frame generation (30 fps until the pause menu is opened and closed). A cap arriving within 1.5 s of the enable call
-is replaced by the previous value. This applies to Wuthering Waves only (`IGDEXT_XELL_FIXCAP=1` for other games).
+The shim hooks XeLL for two things. One is a game-side problem: Wuthering Waves hands XeLL a 33.3 ms frame cap right
+after enabling frame generation (30 fps until the pause menu is opened and closed). A cap arriving within 1.5 s of the
+enable call is replaced by the previous value. This applies to Wuthering Waves only (`IGDEXT_XELL_FIXCAP=1` for other
+games).
+
+The other is latency. XeLL's built-in context sleeps only for a frame cap; its own estimate of the CPU time holds the
+wait in the queue, so a queued game looks CPU-bound to it and never waits. While frame generation runs (the shim sees
+`xefgSwapChainSetEnabled` or `xellSetFgEnabled`), the shim waits after `xellSleep` until the frame's CPU time before the
+GPU gets free: the newest finished frame in XeLL's frame reports + the frames in flight x a frame's time - the lowest
+simulation -> render submit of the last 64 frames. The frame time is learned before any wait and only raised when that
+CPU time shows a queue again (a heavier scene), so the wait cannot drift down the frame rate; it follows a lighter
+scene down. The wait is bounded to two frame times. `IGDEXT_XELL_CAP=off` turns it off ([launch-options.md](launch-options.md)).

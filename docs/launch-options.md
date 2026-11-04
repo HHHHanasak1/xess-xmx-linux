@@ -42,6 +42,16 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 | `FSR_VENDOR=amd %command%` | with `FSR` / `FSR_FG`: DXVK reports the GPU as AMD's to the game; XeSS-FG and XeLL still see Intel's | a game that offers FSR only on AMD GPUs, such as Wuthering Waves (which should rather use its own XeSS) |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | applies the XeLL frame-cap fix (30 fps with frame generation until the pause menu is opened and closed) in this game | another game shows the Wuthering Waves symptom |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | turns that fix off (it is on for Wuthering Waves only) | the fix is suspected to cause a problem |
+| `IGDEXT_XELL_CAP=off %command%` | turns the low latency off (below; it is on by default while XeSS frame generation runs) | comparing, or it is suspected to cost frame rate in a game |
+| `IGDEXT_XELL_CAP=auto:<ms> %command%` | low latency with each frame started `<ms>` earlier (later if negative): more frame rate headroom, a little more latency | a game whose frame rate drops with the low latency on |
+| `IGDEXT_XELL_CAP=<us> %command%` | instead of the low latency, at least this interval per displayed frame through XeLL's frame cap (up to 1000000; any other value turns both off) | a steady fixed frame rate |
+
+**Low latency with XeSS frame generation** is on by default. A GPU-limited or CPU-limited game queues frames, and the
+wait in that queue is most of its latency. While frame generation runs, the shim starts each frame so that it reaches
+the GPU when the GPU gets free (after `xellSleep`, from XeLL's own frame reports). Wuthering Waves, Arc B390, 3x,
+simulation start to present end: 69 -> 35 ms GPU-limited, 76 -> 48 ms and 105 -> 67 ms CPU-limited, at the same frame
+rate. A game without a queue (CONTROL) does not wait, so nothing changes there. It is off while frame generation is
+off; `IGDEXT_XELL_LOG=1` shows its state (`low latency: on`, `auto: frame generation on ...`, `auto: waited in ...`).
 
 **XeSS older than 2.0.2.68:** DXVK reports an Intel GPU as an AMD one to such a game, so XeSS super resolution looks
 like DP4a and the game may offer no XeSS frame generation. `XESS=latest` is the way out; why, and why showing the Intel

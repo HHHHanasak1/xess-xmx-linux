@@ -25,8 +25,8 @@ than 1.2 (Intel only) does not offer it at all.
 
 `XESS=latest %command%` in the game's launch options lifts that: while the game runs, it uses the libraries of Intel's
 XeSS SDK (2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10), and its own come back when it exits
-([launch-options.md](launch-options.md)). Tested on Cyberpunk 2077 2.31: super resolution and frame generation (2x,
-the game offers no more) on XMX. Showing the Intel GPU to the game's own libraries instead (DXVK's
+([launch-options.md](launch-options.md)). Tested on Cyberpunk 2077 2.31: super resolution and frame generation (the
+game offers 2x, `XESS_FG=4` to `8` give more) on XMX. Showing the Intel GPU to the game's own libraries instead (DXVK's
 `dxgi.customVendorId = 8086`) is no way out: its XeSS-FG 1.1.0.19 crashes at start.
 
 By hand, replacing the game's XeSS libraries with newer ones does the same. In Cyberpunk 2077 these are `libxess.dll`,
@@ -94,7 +94,8 @@ Setup, in the folder of the game's `amd_fidelityfx_upscaler_dx12.dll` (keep the 
 
 * the plugin, renamed to `amd_fidelityfx_upscaler_dx12.dll`;
 * `fsr-original.dll`: `Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_dx12.dll` from AMD's FSR SDK 2.4.0 (FSR
-  4.1.2), renamed. The plugin reads the FSR 4 weights from it;
+  4.1.2), renamed. `install.sh` already fetched that file to the package's `ffx/amd_fidelityfx_upscaler_dx12.dll`
+  (`tools/get-ffx.sh`); a copy of it will do. The plugin reads the FSR 4 weights from it;
 * `cabinet.dll` from a Windows installation (`C:\Windows\System32\cabinet.dll`), and `WINEDLLOVERRIDES=cabinet=n,b`
   in the launch options. The plugin unpacks its kernels with the Windows compression API (`Cabinet.dll` ordinals 40,
   43, 45), which Wine does not implement; without it the game aborts with `unimplemented function Cabinet.dll.40`

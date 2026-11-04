@@ -9,7 +9,7 @@
 #      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store
 #   4. a user path unit re-installs the shim whenever a Proton update replaces its bundled copy
 # Re-run after Steam installs a new Proton or after a game created a new prefix. uninstall.sh reverts everything.
-# Environment: XMX_NO_ENV=1 skips step 2 (keep using enable.sh / launch options per game).
+# Environment: XMX_NO_ENV=1 skips step 2 and the session check (keep using enable.sh / launch options per game).
 #   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply
 #   for that long (a new prefix gets its driver store folder a few seconds after it appears, Steam may still be
 #   writing a Proton update), nothing else touched.
@@ -43,17 +43,17 @@ if [ "$MANUAL" = 1 ] && systemctl --user stop xess-xmx-shim.path 2>/dev/null; th
 fi
 
 # 1. compiler bundle (the watcher, which runs this script in the background, downloads nothing)
-if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+if [ "$MANUAL" = 1 ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
   echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~95 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
 fi
 # Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=latest, tools/proton-hook.py)
-if [ -z "${XMX_WAIT_PREFIX:-}" ] && [ ! -f "$PKG/xess/libxess.dll" ]; then
+if [ "$MANUAL" = 1 ] && [ ! -f "$PKG/xess/libxess.dll" ]; then
   echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=latest)"
   bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=latest will use the games' own libraries"
 fi
 # AMD's FidelityFX loader and providers: FSR=xess / FSR_FG=xess in games with FSR 3.1.0-3.1.3 (one amd_fidelityfx_dx12.dll)
-if [ -z "${XMX_WAIT_PREFIX:-}" ] && { [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; }; then
+if [ "$MANUAL" = 1 ] && { [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; }; then
   echo "== fetching AMD's FidelityFX loader, upscaler and frame generation (~87 MB, for FSR_FG / FSR with FSR 3.1.0-3.1.3)"
   bash "$PKG/tools/get-ffx.sh" "$PKG" || echo "FidelityFX download failed - FSR=xess / FSR_FG=xess work only with FSR 3.1.4 and newer"
 fi

@@ -33,6 +33,12 @@ if active not in drivers:
     sys.exit("lib/active names no driver in lib/")
 if b"xess-xmx: using the Mesa" not in open(os.path.join(libdir, "libvulkan_intel.so"), "rb").read():
     sys.exit("lib/libvulkan_intel.so must be the ICD built from icd/xmx-icd.c")
+# the DLLs in ffxfg/ carry AMD's file names; only this project's own builds (ffxfg/) may be packed, never AMD's files
+for dll, mark in (("ffxfg/amd_fidelityfx_framegeneration_dx12.dll", b"ffx_xefg start"),
+                  ("ffxfg/amd_fidelityfx_upscaler_dx12.dll", b"ffx_xess start"), ("ffxfg/dxgi.dll", b"dxgi_xefg.log")):
+    p = os.path.join(root, dll)
+    if os.path.isfile(p) and mark not in open(p, "rb").read():
+        sys.exit("%s is not this project's build (ffxfg/build.bat)" % dll)
 files += drivers + ["lib/active"]
 # lib/bundled/: SPIRV-Tools and libdisplay-info for systems that lack them, with licenses (tools/build-deps.sh)
 bundled = ["lib/bundled/" + f for f in ("libSPIRV-Tools.so", "libdisplay-info.so.3", "LICENSE.SPIRV-Tools",

@@ -2,8 +2,10 @@
 # enable.sh - per-game alternative to install.sh: switch one Proton game from XeSS DP4a to XeSS on XMX
 # What it does (all reversible with disable.sh):
 #   1. copies the shim igdext64.dll into the game's Proton prefix (the original is backed up as igdext64.dll.stock)
+#      and ControlLib.dll (the stand-in for Intel's Control Library, for XESS_FG) into its system32
 #   2. writes a marked block into a shell file that your launch wrapper sources before the game starts (the patched
 #      Mesa ANV as the Intel Vulkan driver, the run-time kernel compiler); xmx-launch.sh is such a wrapper
+#   3. runs the driver check, which also copies the host libraries the Steam Linux Runtime lacks into lib/deps
 # Settings (environment):
 #   XMX_APPID   Steam app id of the game (or a non-Steam shortcut id)        } one of the two is required
 #   XMX_PREFIX  Proton prefix (the folder that contains drive_c), any launcher }
