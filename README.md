@@ -127,15 +127,19 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
 ## Performance
 
-* Mesa 26.3 (Jay) against 26.1.2, Arc B390, same spot and settings, XeSS super resolution and frame generation on XMX
-  (measured with Mesa 26.3.0-rc1, before the archive moved to rc2 and rc3):
+* Arc B390, XeSS super resolution and frame generation 3x on XMX, the games' built-in benchmarks, one run each.
+  Mesa 26.1.2 and 26.3.0-rc3 are this project's patched drivers (release 20261104). The last column is Mesa
+  26.3.0-rc3 as Mesa ships it, unpatched, with a Vulkan layer of this project that runs the same kernels on it; the
+  layer is not in a release yet.
 
-  | Game | Mesa 26.1.2 | Mesa 26.3.0-rc1 |
-  |---|---|---|
-  | Wuthering Waves | 112-119 fps, low 94 | 120-126 fps, low 113 |
-  | Cyberpunk 2077 | 61-62 fps | 91-96 fps |
+  | Game | Settings | Mesa 26.1.2 | Mesa 26.3.0-rc3 | 26.3.0-rc3 unpatched + layer |
+  |---|---|---|---|---|
+  | Cyberpunk 2077 | 1920x1200, XeSS Ultra Quality, ray tracing off | 86.7 fps, low 75.9 | 117.0 fps, low 98.6 | 118.5 fps, low 103.7 |
+  | Forza Horizon 6 | 1920x1200, render 1280x800, FSR 4 Quality in the game (`FSR=xess FSR_FG=inject`), ray tracing off | 94 fps, GPU 47.9 | 98 fps, GPU 52.5 | 103 fps, GPU 51.6 |
 
-  #19 has a Final Fantasy VII Rebirth comparison (about +15%, half of it from Jay).
+  The step from 26.1.2 to 26.3 is mostly Jay, Mesa's new compiler backend. Forza Horizon 6 is held back by its
+  render thread on this device, so its frame rate gains less than its GPU. #19 has a Final Fantasy VII Rebirth
+  comparison (about +15%, half of it from Jay).
 * Not measured yet: XMX against DP4a super resolution alone, image quality, and the cost of disabling
   `VK_EXT_descriptor_buffer`.
 
