@@ -127,21 +127,26 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
 ## Performance
 
-* Arc B390, XeSS super resolution and frame generation 3x on XMX, the games' built-in benchmarks, one run each.
-  Mesa 26.1.2 and 26.3.0-rc3 are this project's patched drivers (release 20261104). The last column is Mesa
-  26.3.0-rc3 as Mesa ships it, unpatched, with a Vulkan layer of this project that runs the same kernels on it; the
-  layer is not in a release yet.
+Arc B390, built-in benchmarks, one run each. "Without this project" is Mesa 26.1.2 with XeSS on its generic DP4a
+path; 26.3 is this project's patched Mesa 26.3.0-rc3 (release 20261104):
 
-  | Game | Settings | Mesa 26.1.2 | Mesa 26.3.0-rc3 | 26.3.0-rc3 unpatched + layer |
-  |---|---|---|---|---|
-  | Cyberpunk 2077 | 1920x1200, Steam Deck preset with motion blur and vignette off, XeSS Ultra Quality, ray tracing off | 86.7 fps, low 75.9 | 117.0 fps, low 98.6 | 118.5 fps, low 103.7 |
-  | Forza Horizon 6 | 1920x1200, render 1280x800, FSR 4 Quality in the game (`FSR=xess FSR_FG=inject`), everything High but night shadows Ultra and motion blur Short, ray tracing off | 94 fps, GPU 47.9 | 98 fps, GPU 52.5 | 103 fps, GPU 51.6 |
+| | Cyberpunk 2077 | Forza Horizon 6 |
+|---|---|---|
+| Without this project (26.1.2 + DP4a) | 47.7 fps | 43 fps (GPU 47.3) |
+| 26.3 + XMX | 61.3 fps, +28% | 46 fps, +7% (GPU 55.0, +16%) |
+| 26.3 + XMX + frame generation 3x | 117.0 fps, about 2.5x | 98 fps, about 2.3x |
 
-  The step from 26.1.2 to 26.3 is mostly Jay, Mesa's new compiler backend. Forza Horizon 6 is held back by its
-  render thread on this device, so its frame rate gains less than its GPU. #19 has a Final Fantasy VII Rebirth
-  comparison (about +15%, half of it from Jay).
-* Not measured yet: XMX against DP4a super resolution alone, image quality, and the cost of disabling
-  `VK_EXT_descriptor_buffer`.
+* XMX itself is about 5% faster than DP4a in both games; most of the step from 26.1.2 to 26.3 is Jay, Mesa's new
+  compiler backend. Forza Horizon 6 is held back by its render thread on this device, so its frame rate gains less
+  than its GPU.
+* With frame generation on, the shim's low latency mode (built on the XeLL API) cuts the latency of the frame queue
+  by 36–50% at the same frame rate (Wuthering Waves).
+* Mesa 26.3.0-rc3 unpatched, with a Vulkan layer of this project that is not in a release yet, runs as fast as the
+  patched driver.
+
+Settings, every run and the latency tests: [docs/performance.md](docs/performance.md). #19 has a Final Fantasy VII
+Rebirth comparison (about +15%, half of it from Jay). Not measured yet: image quality and the cost of disabling
+`VK_EXT_descriptor_buffer`.
 
 ## Known limitations
 
@@ -192,7 +197,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
     tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
     tools/make-release.py         builds the release archive (the developer tools stay out of it)
-    docs/                         how it works, building, debugging, games, Steam launch options
+    docs/                         how it works, building, debugging, games, Steam launch options, performance
     .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
                                   drivers, checks the scripts
 
