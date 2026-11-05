@@ -134,7 +134,7 @@ The full table, the logs and every switch: [docs/debugging.md](docs/debugging.md
 
   | Game | Settings | Mesa 26.1.2 | Mesa 26.3.0-rc3 | 26.3.0-rc3 unpatched + layer |
   |---|---|---|---|---|
-  | Cyberpunk 2077 | 1920x1200, XeSS Ultra Quality, ray tracing off | 86.7 fps, low 75.9 | 117.0 fps, low 98.6 | 118.5 fps, low 103.7 |
+  | Cyberpunk 2077 | 1920x1200, Steam Deck preset with motion blur and vignette off, XeSS Ultra Quality, ray tracing off | 86.7 fps, low 75.9 | 117.0 fps, low 98.6 | 118.5 fps, low 103.7 |
   | Forza Horizon 6 | 1920x1200, render 1280x800, FSR 4 Quality in the game (`FSR=xess FSR_FG=inject`), ray tracing off | 94 fps, GPU 47.9 | 98 fps, GPU 52.5 | 103 fps, GPU 51.6 |
 
   The step from 26.1.2 to 26.3 is mostly Jay, Mesa's new compiler backend. Forza Horizon 6 is held back by its
