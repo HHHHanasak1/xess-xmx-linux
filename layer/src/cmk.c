@@ -499,6 +499,17 @@ xmx_cml_parse(const uint8_t *img, size_t n, struct xmx_cml *out)
    out->flags = xmx_rd32(img + XMX_CMK_HEADER + 4);
    if (out->gc_off != XMX_NO_GC && out->gc_off > 128 - 12)
       return 0;
+   /* the fields the layer indexes or multiplies with: a corrupt cache file must not reach the binding table, the
+    * prologue or the push constant copy (table k is a dword of the last nsurf ones) */
+   const uint32_t lx = xmx_rd32(img + XMX_H_LWS), ly = xmx_rd32(img + XMX_H_LWS + 4), lz = xmx_rd32(img + XMX_H_LWS + 8);
+   if (!lx || !ly || !lz || lx > 1024 || ly > 1024 || lz > 1024 || (uint64_t)lx * ly * lz > 1024 ||
+       xmx_rd32(img + XMX_H_PER_THREAD) > 4096)
+      return 0;
+   const uint32_t nsurf = xmx_rd32(img + XMX_H_NSURF);
+   for (uint32_t k = 0; k < nsurf; k++)
+      if (xmx_rd32(img + XMX_H_BTI + 4 * k) >= 240 || xmx_rd32(img + XMX_H_TABLE_IDX + 4 * k) >= nsurf ||
+          xmx_rd32(img + XMX_H_ELEM + 4 * k) >= 65536)
+         return 0;
    out->code = img + XMX_CML_HEADER;
    out->code_size = cs;
    return 1;

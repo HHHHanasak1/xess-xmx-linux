@@ -38,6 +38,7 @@
 #define NSURF_BINDINGS 32
 #define SAMPLER_BINDING 32
 #define SETS_PER_POOL 64
+#define XMX_PC_BYTES 256   /* the push constants a command buffer keeps for the dispatches */
 
 /* ---- log ---- */
 static FILE *log_file;
@@ -193,7 +194,7 @@ struct xcmd {
    struct xdevice *dev;
    struct xkernel *bound;
    VkDescriptorSet sets[8];
-   uint8_t pc[256];
+   uint8_t pc[XMX_PC_BYTES];
    /* the layer's descriptor pools of this command buffer, reset when it is begun again */
    VkDescriptorPool pools[64];
    unsigned npools, used_in_last;
@@ -742,9 +743,19 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
       return VK_NULL_HANDLE;
    }
    kr->nsurf = nsurf;
+   bool pc_ok = kr->sampler_mode != 1 || kr->sampler_pc_off <= XMX_PC_BYTES - 4;
    for (uint32_t i = 0; i < nsurf; i++) {
       kr->table_off[i] = base + 4 * xmx_rd32(k.hdr + XMX_H_TABLE_IDX + 4 * i);
       kr->elem[i] = xmx_rd32(k.hdr + XMX_H_ELEM + 4 * i);
+      pc_ok &= kr->table_off[i] <= XMX_PC_BYTES - 4;
+   }
+   if (!pc_ok) {
+      /* prepare_dispatch reads the tables from the first XMX_PC_BYTES of push constants it keeps */
+      xlog("kernel %s: descriptor tables beyond %u bytes of push constants (%u)", ph->hash, XMX_PC_BYTES,
+           pl->push_size);
+      free(kr);
+      free(img);
+      return VK_NULL_HANDLE;
    }
    static const VkDescriptorType deftypes[] = { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
                                                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER };
@@ -1202,7 +1213,7 @@ prepare_dispatch(struct xcmd *c)
    VkCopyDescriptorSet cp[NSURF_BINDINGS + 1];
    uint32_t ncp = 0;
    const VkDescriptorSet heap = k->heap_set < 8 ? c->sets[k->heap_set] : VK_NULL_HANDLE;
-   uint32_t pc[64];
+   uint32_t pc[XMX_PC_BYTES / 4];
    memcpy(pc, c->pc, sizeof(pc));
    if (k->nsurf && !heap) {
       static bool said;
