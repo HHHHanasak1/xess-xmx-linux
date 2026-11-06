@@ -19,6 +19,7 @@ enum {
    BUILTIN_WORKGROUP_SIZE = 25,
    OP_CONSTANT_COMPOSITE = 44,
    OP_SPEC_CONSTANT_COMPOSITE = 51,
+   OP_FUNCTION = 54,
 };
 
 static const uint32_t dyn_planes[] = { 7, 11, 13 };
@@ -65,6 +66,8 @@ xmx_spv_scan(const uint32_t *w, size_t n, struct xmx_spv_info *out)
       if (wc == 0 || i + wc > n)
          return false;
       const uint32_t *a = &w[i + 1];
+      if (op == OP_FUNCTION)
+         break;   /* modes, decorations, types and constants all come before the first function */
       switch (op) {
       case OP_EXECUTION_MODE:
          if (wc >= 6 && a[1] == MODE_LOCAL_SIZE) {

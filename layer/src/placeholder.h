@@ -13,6 +13,9 @@
 #define XMX_CANARY_HI 0x7fa15952u
 #define XMX_LEGACY_CANARY_WG_Z 17      /* self-test of an older shim: (1,1,17), magic alone */
 #define XMX_MAX_CONSTS 64
+/* Larger SPIR-V modules are not looked at: a placeholder is a single store (a DXBC container of 476 bytes), which
+ * vkd3d-proton turns into a module of a few KB with its descriptor heap declarations */
+#define XMX_PH_MAX_SPV_BYTES (64 * 1024)
 
 enum xmx_ph_kind {
    XMX_PH_NONE = 0,       /* an ordinary shader */

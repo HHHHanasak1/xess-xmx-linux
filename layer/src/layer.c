@@ -584,7 +584,7 @@ classify_code(struct xdevice *d, const uint32_t *code, size_t size, struct xmx_p
 {
    struct xmx_spv_info info;
    memset(ph, 0, sizeof(*ph));
-   if (!code || size < 20 || !xmx_spv_scan(code, size / 4, &info) || !info.has_magic)
+   if (!code || size < 20 || size > XMX_PH_MAX_SPV_BYTES || !xmx_spv_scan(code, size / 4, &info) || !info.has_magic)
       return;
    xmx_classify(&info, d->dir[0] ? d->dir : NULL, d->dir[0] ? hash_known : NULL, d, ph);
 }
