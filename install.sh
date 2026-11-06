@@ -132,6 +132,10 @@ $f";; esac
   chmod u+w "$f" 2>/dev/null
   put_shim "$f"
 }
+# the hook's path as a Python string literal (a package folder with quotes or backslashes in its name); without python3
+# only " and \ are escaped
+HOOK_LIT=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$PKG/tools/proton-hook.py" 2>/dev/null) || {
+  HOOK_LIT=${PKG//\\/\\\\}/tools/proton-hook.py; HOOK_LIT="\"${HOOK_LIT//\"/\\\"}\""; }
 install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR=xess, FSR_FG=xess)
   local p=$1 u="$1/user_settings.py"
   [ -f "$p/proton" ] && [ -w "$p" ] || return
@@ -143,7 +147,7 @@ install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook
 import os as _os
 user_settings = {}
 try:
-    _h = "$PKG/tools/proton-hook.py"
+    _h = $HOOK_LIT
     if _os.path.isfile(_h):
         exec(compile(open(_h).read(), _h, "exec"), {"__file__": _h, "__name__": "xess_xmx_hook", "SETTINGS": user_settings})
 except Exception as _e:
