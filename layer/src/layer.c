@@ -836,7 +836,10 @@ x_CreateComputePipelines(VkDevice device, VkPipelineCache cache, uint32_t n, con
 {
    struct xdevice *d = dev_of(device);
    bool any = false;
-   struct xmx_placeholder ph[n ? n : 1];
+   struct xmx_placeholder ph_buf[16];
+   struct xmx_placeholder *ph = n <= 16 ? ph_buf : malloc(n * sizeof(*ph));
+   if (!ph)
+      return d->CreateComputePipelines(device, cache, n, cis, alloc, out);
    for (uint32_t i = 0; i < n; i++) {
       const VkPipelineShaderStageCreateInfo *st = &cis[i].stage;
       memset(&ph[i], 0, sizeof(ph[i]));
@@ -853,8 +856,11 @@ x_CreateComputePipelines(VkDevice device, VkPipelineCache cache, uint32_t n, con
       }
       any |= ph[i].kind != XMX_PH_NONE;
    }
-   if (!any)
+   if (!any) {
+      if (ph != ph_buf)
+         free(ph);
       return d->CreateComputePipelines(device, cache, n, cis, alloc, out);
+   }
    VkResult res = VK_SUCCESS;
    for (uint32_t i = 0; i < n; i++) {
       out[i] = VK_NULL_HANDLE;
@@ -868,6 +874,8 @@ x_CreateComputePipelines(VkDevice device, VkPipelineCache cache, uint32_t n, con
             res = r;
       }
    }
+   if (ph != ph_buf)
+      free(ph);
    return res;
 }
 
