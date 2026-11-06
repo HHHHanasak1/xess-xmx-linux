@@ -161,7 +161,7 @@ of an older shim x,y is the workgroup size, as before):
 | Variable | Effect |
 |---|---|
 | `ANV_CM_PC=1` | print the push constants of each dispatch (with `ANV_CM_TRACE`) |
-| `ANV_CM_CAPTURE="x,y:N;..."` | CPU-side dump of every buffer kernel x,y reads at its N-th dispatch into `ANV_CM_CAP_DIR` (default `/tmp/anv_cm_cap`) |
+| `ANV_CM_CAPTURE="x,y:N;..."` | CPU-side dump of every buffer kernel x,y reads at its N-th dispatch into `ANV_CM_CAP_DIR` (default `~/.cache/xess-xmx/cap`, under `XDG_CACHE_HOME` when set; no capture without either) |
 | `ANV_CM_GCAP="x,y:N;..."` | GPU-side copy of every small (<= 4 KiB) buffer right before the dispatch, same folder |
 | `ANV_CM_VIEW="x,y:s=X,Y:S;..."` | let surface s of kernel x,y see surface S of kernel X,Y (probe kernels) |
 | `ANV_CM_ONLY="x,y ..."`, `ANV_CM_SKIP="x,y ..."` | inject only / never these kernels |
