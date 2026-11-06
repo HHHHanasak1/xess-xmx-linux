@@ -137,6 +137,69 @@ for n in $needed; do
   cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
 done
 
+# 0b. run-time compiled kernels of an older toolchain: the driver names them <hash>_<pci id>_<gen>.cmk, <gen> being
+#     anv_cm_toolchain_gen() of the patch (FNV-1a over the igc file names, both helper scripts and the .cmk packer
+#     version; CM_DEVICE also goes in). The same value is computed here for every packer version the package knows
+#     and kept in CACHE/kernel-gens; a value from the previous session that is not computed any more belongs to a
+#     toolchain no driver can use again, and only the files with that value go. Kernels compiled with CM_DEVICE set or
+#     before this file existed are never touched (nor those of another package folder's toolchain). Not in a dry run.
+if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+  packers=$( { grep -ho 'ANV_CM_PACKER_VERSION "[^"]*"' "$PKG"/patches/0001-*.patch "$PKG"/patches/*/0001-*.patch 2>/dev/null |
+                 sed 's/.*"\(.*\)"/\1/'
+               for so in "$PKG"/lib/mesa-*/libvulkan_intel.so; do [ -f "$so" ] && grep -aoE 'cmk2-[A-Za-z0-9]+' "$so"; done
+               echo cmk2-c1; } | sort -u)
+  # shellcheck disable=SC2086   # one argument per packer version
+  python3 - "$PKG/tools" "$CACHE" $packers <<'EOF' 2>&1 | sed 's/^/kernel cache: /'
+import glob, os, sys
+tools, cache, packers = sys.argv[1], sys.argv[2], sys.argv[3:]
+M = 0xffffffff
+def fnv(h, data):
+    for b in data:
+        h = ((h ^ b) * 16777619) & M
+    return h
+# anv_cm_toolchain_gen(): the igc file names in readdir order (os.listdir keeps it), each script's bytes followed by
+# its size as one uint32, the packer version, CM_DEVICE (unset: nothing)
+h = 2166136261
+for sub in ("/../igc/neo/bin", "/../igc/igc/local/lib"):
+    try:
+        names = os.listdir(tools + sub)
+    except OSError:
+        continue
+    for n in names:
+        if n.startswith("ocloc") or n.startswith("libigc.so."):
+            h = fnv(h, os.fsencode(n))
+for s in ("/cmk_pack.py", "/cm-compile.sh"):
+    try:
+        with open(tools + s, "rb") as f:
+            data = f.read()
+    except OSError:
+        continue
+    h = ((fnv(h, data) ^ (len(data) & M)) * 16777619) & M
+gens = sorted({"%08x" % fnv(h, p.encode()) for p in packers})
+state = os.path.join(cache, "kernel-gens")
+try:
+    with open(state) as f:
+        old = set(f.read().split())
+except OSError:
+    old = None
+if old is not None:
+    n = 0
+    for g in old - set(gens):
+        for k in glob.glob(os.path.join(glob.escape(cache), "kernels", "*_*_%s.cmk" % g)):
+            try:
+                os.remove(k)
+                n += 1
+            except OSError:
+                pass
+    if n:
+        print("removed %d kernel(s) of an older toolchain" % n)
+if old != set(gens):
+    with open(state + ".new", "w") as f:
+        f.write("\n".join(gens) + "\n")
+    os.replace(state + ".new", state)
+EOF
+fi
+
 # 1. the ICD file the session's VK_DRIVER_FILES names, and the library it points to (the loader gets nothing else)
 icdlib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$ICD" 2>/dev/null | head -1)
 [ -f "$ICD" ] || fail "no ICD file $ICD" stock
