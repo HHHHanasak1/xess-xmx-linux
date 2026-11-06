@@ -4,6 +4,7 @@ name: build
 #   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
 #   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain)
+#   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
 # plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
 # these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
 
@@ -54,6 +55,40 @@ jobs:
         with:
           name: xmx-icd
           path: out/libvulkan_intel.so
+
+  # layer/ of the release: VK_LAYER_XESS_xmx (xmx-stock.sh, the system's unpatched ANV). It needs VK_KHR_pipeline_binary,
+  # newer than Ubuntu's headers: Vulkan-Headers at a fixed tag, checked against its commit
+  layer:
+    runs-on: ubuntu-latest
+    env:
+      VULKAN_HEADERS_TAG: vulkan-sdk-1.4.350.1
+      VULKAN_HEADERS_COMMIT: 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: ${{ env.VULKAN_HEADERS_TAG }}
+          path: vulkan-headers
+      - name: Vulkan-Headers commit
+        run: test "$(git -C vulkan-headers rev-parse HEAD)" = "$VULKAN_HEADERS_COMMIT"
+      - name: toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends glslang-tools
+      - name: build
+        run: VULKAN_HEADERS="$PWD/vulkan-headers" bash layer/build.sh out
+      - name: unit tests (those without IGC, kernel sets or a device are skipped by the script)
+        run: bash layer/tests/build.sh out/tests
+      - name: exports, glibc floor at most 2.38
+        run: |
+          nm -D --defined-only out/libVkLayer_xess_xmx.so | grep -q ' xmx_NegotiateLoaderLayerInterfaceVersion$'
+          v=$(objdump -T out/libVkLayer_xess_xmx.so | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n -u | tail -1 | cut -d. -f2)
+          echo "GLIBC_2.$v"; [ "$v" -le 38 ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xmx-layer
+          path: |
+            out/libVkLayer_xess_xmx.so
+            out/VkLayer_xess_xmx.json
 
   # lib/bundled/ of the release: SPIRV-Tools and libdisplay-info for systems without them, built on Debian 12 so they
   # run on anything with glibc >= 2.36 (the drivers need 2.38)
