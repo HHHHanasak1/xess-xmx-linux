@@ -22,11 +22,12 @@ The DLL is linked against the static MSVC runtime and imports only `kernel32`/`a
 crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), and XeSS silently fell back to DP4a.
 `shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for releases.
 
-The placeholder table is generated, not written by hand (needs `fxc.exe` from the Windows SDK):
+The two placeholder templates are generated, not written by hand (needs `fxc.exe` from the Windows SDK; under WSL pass
+the Windows `fxc.exe` as the second argument):
 
-    python tools/gen_dyn_dummies.py shim/src/dll/dyn_dummies.inc                       # run-time kernel ids
-    python tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch          # layout matches the driver
-    python tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
+    python tools/gen_placeholders.py shim/src/dll/placeholders.inc                     # kernel and self-test templates
+    python tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch      # they match the driver
+    python tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 
 `ControlLib.dll` (the stand-in for Intel's Control Library that `XESS_FG` above 4x needs) is built the same way:
 
@@ -90,23 +91,30 @@ Three of the options are easy to get wrong:
 
 ### What the patches change
 
-`0001` (mostly under `src/intel/vulkan`, plus a small hook in the common Vulkan runtime):
+`0001` (mostly under `src/intel/vulkan`, plus a small hook in the common Vulkan runtime). The code lives in three
+new files, which are the same in both series; the upstream files only get small hooks:
 
-* `anv_shader_compile.c`: recognises the shim's placeholder shaders (workgroup size on the reserved planes and the
-  stored magic value `0x584D5843`), compiles the kernel on first use into `~/.cache/xess-xmx/kernels`, and fills
-  `brw_cs_prog_data` from the `.cmk` header instead of compiling the NIR.
-* `genX_cmd_buffer.c`: per-dispatch binding table built from the vkd3d-proton descriptor heap, the static sampler of
-  the pipeline layout, null surfaces when the heap is not bound.
-* `genX_shader.c`, `genX_cmd_compute.c`: the NEO-style walker payload (cross-thread data, per-thread local ids).
+* `anv_cm.c` / `anv_cm.h` (all generations): the environment block (`struct anv_cm_env`), recognition of the shim's
+  placeholder shaders (their workgroup size, the stored magic value `0x584D5843` and the kernel hash next to it; the id
+  placeholders of older shims too), the kernel cache
+  `~/.cache/xess-xmx/kernels`, the run-time compile and its retry, and filling `brw_cs_prog_data` from the `.cmk`
+  header instead of compiling the NIR. Hook: `anv_shader_compile.c` (and `anv_device.c` for the retry).
+* `genX_cm.c` (per generation, in `anv_per_hw_ver_files`): the per-dispatch binding table built from the
+  vkd3d-proton descriptor heap (the static sampler of the pipeline layout, null surfaces when the heap is not bound)
+  and the NEO-style walker payload (cross-thread data, per-thread local ids). Hooks: `genX_cmd_buffer.c`,
+  `genX_shader.c`, `genX_cmd_compute.c`.
+* `anv_private.h`: the few names that differ between the Mesa versions (`anv_cm_bind_state`, `ANV_CM_*` macros), so
+  that the three files need no `#if` on the Mesa version.
 * `vk_pipeline.c` / `vk_shader.h`: a `no_cache` flag, so placeholders are never stored in a pipeline cache.
-* `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: the new fields and the environment block (`struct anv_cm_env`).
+* `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: the new fields.
 
 `0002` adds the debug switches listed in [debugging.md](debugging.md).
 
 `0003` (contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32, and in #39) switches Large GRF Mode around CM kernels on
 Xe-HPG and Xe2, including off before Mesa's own BLORP compute work, trace rays, internal shaders and generated commands
 (see how-it-works.md), and drops CM dispatches with
-a zero group count, which the Vulkan specification makes a no-op, on every generation.
+a zero group count, which the Vulkan specification makes a no-op, on every generation. The switch itself is in
+`genX_cm.c`; the other files get one call each.
 
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
 direct-descriptor path, where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw branch.
@@ -125,4 +133,6 @@ samplers and does not take this path.
 
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
-writes `0001` without those blocks and `0002` with them. CI checks that no debug code ends up in `0001`.
+writes `0001` without those blocks and `0002` with them (new files such as `anv_cm.c` may stay untracked in that
+tree; the script picks them up). `0003` and `0005` are single commits on top, rebased when `0001` changes. CI checks
+that no debug code ends up in `0001`.

@@ -3,7 +3,10 @@
 
 Packs one kernel of an Intel zebin (ocloc/IGC output) into the CMK2 format read by the patched ANV.
 --heap/--surf describe how the kernel's surfaces (in argument order) are found at dispatch time: surface k is descriptor
-`push_constants[PCBASE + 4*TABLE] + ELEM` of the descriptor heap at (SET, BINDING) - the vkd3d-proton root signature model."""
+`push_constants[PCBASE + 4*TABLE] + ELEM` of the descriptor heap at (SET, BINDING) - the vkd3d-proton root signature model.
+The patched driver packs with a C port of this script (anv_cm_pack() in src/intel/vulkan/anv_cm.c, patches 0001), for
+the arguments cm-compile.sh passes; it writes the same bytes. A change of the output here needs the same change there and
+a new ANV_CM_PACKER_VERSION. cm-compile.sh still runs this script when a driver of an older package calls it."""
 import os, sys, struct, re
 
 args = sys.argv[1:]

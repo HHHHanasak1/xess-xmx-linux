@@ -25,10 +25,18 @@ jobs:
         run: for f in *.sh tools/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
         run: python3 -m py_compile tools/*.py
-      - name: placeholder id layout matches the driver
+      - name: placeholder templates match the driver (shapes, magic, self-test values, DXBC checksums)
         run: |
-          python3 tools/check_dyn_ids.py patches/0001-anv-cm-kernel-injection.patch
-          python3 tools/check_dyn_ids.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
+          python3 tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch
+          python3 tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
+      - name: the C-for-Metal files are the same in both patch series
+        run: |
+          for f in anv_cm.c anv_cm.h genX_cm.c; do
+            for p in patches patches/mesa-26.3; do
+              cat $p/0*.patch | awk -v f="b/src/intel/vulkan/$f" '/^diff --git /{on = ($4 == f)} /^(-- |From [0-9a-f]+ )/{on = 0} on' > /tmp/$(basename $p).$f
+            done
+            cmp /tmp/patches.$f /tmp/mesa-26.3.$f || { echo "$f differs between the series"; exit 1; }
+          done
       - name: debug tools stay out of the feature patch
         run: |
           ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-26.3/0001-anv-cm-kernel-injection.patch

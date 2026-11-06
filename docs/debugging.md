@@ -153,7 +153,10 @@ Driver (patch 0001):
 | `ANV_CM_SPV_DIR` | where the shim's SPIR-V is (default `$WINEPREFIX/drive_c/igdext_kernels`) |
 | `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | logs (above) |
 
-Driver debug tools (patch 0002; the release driver includes it):
+Driver debug tools (patch 0002; the release driver includes it). They name a kernel x,y as the logs do: all
+placeholders share one workgroup size, so a kernel gets the next free x,y (1..16 each) in the order the process first
+compiles it, and `ANV_CM_DEBUG=1` prints `ANV CM: kernel <hash> is x,y in this process's log` (for the id placeholders
+of an older shim x,y is the workgroup size, as before):
 
 | Variable | Effect |
 |---|---|
@@ -178,4 +181,4 @@ Scripts (shell environment when running them):
 | `tools/get-ffx.sh [package dir]` | AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3 |
 | `tools/fsr-fg.sh all\|on\|off\|status <app id \| game folder>` | FSR on XeSS for Protons without the hook ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (defaults: IGC 2.10.10, compute-runtime 25.18; others are untested) |
-| `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`) |
+| `tools/cm-compile.sh` | called by the driver; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (ocloc `-device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`). The driver also sets `CM_PCI_ID`, `CM_GRF_BYTES` and `CM_OUT_DIR` (ocloc's output folder; the driver packs the `.cmk`). Run by hand without `CM_OUT_DIR` it packs with `tools/cmk_pack.py` |
