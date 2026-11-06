@@ -60,7 +60,8 @@ What `install.sh` does:
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
   `tools/rebuild-driver.sh` rebuilds a driver for the new Mesa version. The check also copies the two host libraries
   the Steam Linux Runtime does not have (SPIRV-Tools, libdisplay-info) into `lib/deps/`, where the driver finds them
-  inside the game's container too.
+  inside the game's container too. The unit runs `~/.config/xess-xmx/session-check.sh`, so a package folder that
+  was deleted or moved also leaves the session on the stock drivers (run `install.sh` again from the new place).
 
 Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 

@@ -4,13 +4,16 @@
 # If a system update breaks one of them, the driver cannot be loaded or cannot create a device, and - because install.sh
 # puts only our 64-bit Intel driver into VK_DRIVER_FILES - every 64-bit Vulkan program of the session, gamescope
 # included, would lose the Intel GPU. This script
-#   1. loads the driver once (every symbol resolved),
+#   1. checks that the ICD file (run/intel_icd.json) and the library it names exist (if not: stock drivers right away),
+#      then loads the driver once (every symbol resolved),
 #   2. lets vulkaninfo create an instance and enumerate the GPU with only the patched driver,
 # (plus two reports that change nothing: Mesa version against the system's, and whether the driver reads the system's
 # per-game workarounds in /usr/share/drirc.d) and if either of the first two fails points the session back to the stock drivers (games still run; the shim's self-test then makes
 # XeSS use DP4a) - unless another driver of the package (lib/mesa-<version>/) passes; that one is then activated.
 # A Mesa version that differs from the system's is only reported (the patched driver is a complete driver).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
+# The unit starts it through ~/.config/xess-xmx/session-check.sh (install.sh), which falls back to the stock drivers
+# by itself when the package folder is gone.
 # The two loading checks run at every login. What only depends on a file's content (the drivers' library names, the
 # drirc report, the system's Mesa version) is kept in ~/.cache/xess-xmx/ until that file changes.
 # Environment: XMX_CHECK_LIB / XMX_CHECK_ICD override the library / ICD file to test (tests only).
@@ -23,9 +26,10 @@ CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx"
 STATUS="$CACHE/driver-status"
 mkdir -p "$CACHE"
 
-fail() { # <reason>
-  # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers
-  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+fail() { # <reason> [stock]
+  # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers (not with
+  # "stock": the ICD file the session names is broken, which another driver would not mend)
+  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ] && [ "${2:-}" != stock ]; then
     local d v
     for d in "$PKG"/lib/mesa-*/; do
       [ -f "$d/libvulkan_intel.so" ] || continue
@@ -133,7 +137,11 @@ for n in $needed; do
   cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
 done
 
-# 1. load
+# 1. the ICD file the session's VK_DRIVER_FILES names, and the library it points to (the loader gets nothing else)
+icdlib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$ICD" 2>/dev/null | head -1)
+[ -f "$ICD" ] || fail "no ICD file $ICD" stock
+[ -n "$icdlib" ] && [ -f "$icdlib" ] || fail "the ICD file's library ${icdlib:-(none)} is missing" stock
+# load
 err=$(python3 - "$LIB" 2>&1 <<'EOF'
 import ctypes, sys
 ctypes.CDLL(sys.argv[1], mode=ctypes.RTLD_LOCAL)   # CPython dlopens with RTLD_NOW: every symbol must resolve
