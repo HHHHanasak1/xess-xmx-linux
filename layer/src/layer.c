@@ -73,13 +73,14 @@ xlog(const char *fmt, ...)
 #define DKEY(h) ((uint64_t)(uintptr_t)(*(void **)(h)))
 #define HKEY(h) ((uint64_t)(h))
 
-static struct xmap instances, devices, physdevs, modules, set_layouts, pipe_layouts, pipelines, cmdbufs;
+static struct xmap instances, devices, physdevs, modules, set_layouts, pipe_layouts, pipelines, cmdbufs, cmdpools;
 static once_flag maps_once = ONCE_FLAG_INIT;
 static void
 maps_init(void)
 {
    xmap_init(&instances); xmap_init(&devices); xmap_init(&physdevs); xmap_init(&modules);
    xmap_init(&set_layouts); xmap_init(&pipe_layouts); xmap_init(&pipelines); xmap_init(&cmdbufs);
+   xmap_init(&cmdpools);
 }
 
 struct xinstance {
@@ -188,9 +189,18 @@ struct xkernel {
    int prof;                    /* its slot in prof.c, -1 if none */
 };
 
+/* the layer's command buffers of a command pool (the application synchronises the pool, so the list needs no lock) */
+struct xcmdpool {
+   struct xdevice *dev;
+   VkCommandPool handle;
+   struct xcmd *cmds;
+   struct xcmdpool *next;       /* x_DestroyDevice's list */
+};
+
 struct xcmd {
    VkCommandBuffer handle;
-   VkCommandPool pool;
+   struct xcmdpool *pool;
+   struct xcmd *prev, *next;    /* in pool->cmds */
    struct xdevice *dev;
    struct xkernel *bound;
    VkDescriptorSet sets[8];
@@ -1018,10 +1028,21 @@ x_AllocateCommandBuffers(VkDevice device, const VkCommandBufferAllocateInfo *ai,
    VkResult r = d->AllocateCommandBuffers(device, ai, out);
    if (r)
       return r;
+   struct xcmdpool *cp = xmap_get(&cmdpools, HKEY(ai->commandPool));
+   if (!cp) {
+      cp = calloc(1, sizeof(*cp));
+      cp->dev = d;
+      cp->handle = ai->commandPool;
+      xmap_put(&cmdpools, HKEY(ai->commandPool), cp);
+   }
    for (uint32_t i = 0; i < ai->commandBufferCount; i++) {
       struct xcmd *c = calloc(1, sizeof(*c));
       c->handle = out[i];
-      c->pool = ai->commandPool;
+      c->pool = cp;
+      c->next = cp->cmds;
+      if (cp->cmds)
+         cp->cmds->prev = c;
+      cp->cmds = c;
       c->dev = d;
       c->primary = ai->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY;
       xmap_put(&cmdbufs, (uint64_t)(uintptr_t)out[i], c);
@@ -1037,6 +1058,12 @@ x_FreeCommandBuffers(VkDevice device, VkCommandPool pool, uint32_t n, const VkCo
    for (uint32_t i = 0; i < n; i++) {
       struct xcmd *c = cbs[i] ? xmap_take(&cmdbufs, (uint64_t)(uintptr_t)cbs[i]) : NULL;
       if (c) {
+         if (c->prev)
+            c->prev->next = c->next;
+         else
+            c->pool->cmds = c->next;
+         if (c->next)
+            c->next->prev = c->prev;
          cmd_release_pools(c);
          free(c);
       }
@@ -1089,26 +1116,27 @@ x_ResetCommandBuffer(VkCommandBuffer cb, VkCommandBufferResetFlags f)
    return d->ResetCommandBuffer(cb, f);
 }
 
-static int pred_pool(void *v, void *u) { return ((struct xcmd *)v)->pool == *(VkCommandPool *)u; }
-static void free_cmd(void *v, void *u) { (void)u; cmd_release_pools(v); free(v); }
-
-struct reset_ctx { VkCommandPool pool; };
-static int
-reset_pool_cmds(void *v, void *u)
+/* the pool's command buffers and the pool itself (already out of cmdpools) */
+static void
+cmdpool_free(struct xcmdpool *cp)
 {
-   struct xcmd *c = v;
-   if (c->pool == ((struct reset_ctx *)u)->pool)
-      cmd_reset(c);
-   return 0;   /* keep */
+   for (struct xcmd *c = cp->cmds, *n; c; c = n) {
+      n = c->next;
+      xmap_take(&cmdbufs, (uint64_t)(uintptr_t)c->handle);
+      cmd_release_pools(c);
+      free(c);
+   }
+   atomic_fetch_add(&cmd_epoch, 1);
+   free(cp);
 }
-static void noop(void *v, void *u) { (void)v; (void)u; }
 
 static VKAPI_ATTR VkResult VKAPI_CALL
 x_ResetCommandPool(VkDevice device, VkCommandPool pool, VkCommandPoolResetFlags f)
 {
    struct xdevice *d = dev_of(device);
-   struct reset_ctx rc = { pool };
-   xmap_take_if(&cmdbufs, reset_pool_cmds, noop, &rc);
+   struct xcmdpool *cp = xmap_get(&cmdpools, HKEY(pool));
+   for (struct xcmd *c = cp ? cp->cmds : NULL; c; c = c->next)
+      cmd_reset(c);
    return d->ResetCommandPool(device, pool, f);
 }
 
@@ -1116,10 +1144,9 @@ static VKAPI_ATTR void VKAPI_CALL
 x_DestroyCommandPool(VkDevice device, VkCommandPool pool, const VkAllocationCallbacks *alloc)
 {
    struct xdevice *d = dev_of(device);
-   if (pool) {
-      atomic_fetch_add(&cmd_epoch, 1);
-      xmap_take_if(&cmdbufs, pred_pool, free_cmd, &pool);
-   }
+   struct xcmdpool *cp = pool ? xmap_take(&cmdpools, HKEY(pool)) : NULL;
+   if (cp)
+      cmdpool_free(cp);
    d->DestroyCommandPool(device, pool, alloc);
 }
 
