@@ -1,4 +1,4 @@
-From 2142b9ff810f5af1f9b003b8c656e5ea00073f5e Mon Sep 17 00:00:00 2001
+From 74ea3e20823274519197ca69844aae6f8de2b5ae Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 30 Oct 2026 21:27:50 +0900
 Subject: [PATCH] anv: CM kernels with a sampler descriptor table
@@ -28,10 +28,10 @@ index 5451798..9baf835 100644
     uint32_t cm_cross_thread_size;
     uint32_t cm_per_thread_size;
 diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
-index e9e1105..60cc629 100644
+index dc32709..4e785a2 100644
 --- a/src/intel/vulkan/anv_cm.c
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -1393,7 +1393,7 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1560,7 +1560,7 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
        cs->cm_sampler_from_layout = ns > 0;
        if (ns != 1)
           fprintf(stderr, "ANV CM: %s samples but the pipeline layout has %u static samplers (%s)\n", path, ns,
@@ -40,7 +40,7 @@ index e9e1105..60cc629 100644
     }
  
     if (h.nsurf > 0) {
-@@ -1426,6 +1426,30 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1593,6 +1593,30 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
           for (uint32_t r = 0; r < ci->push_constant_range_count; r++)
              push_size = MAX2(push_size, ci->push_constant_ranges[r].offset + ci->push_constant_ranges[r].size);
           h.table_pc_base = push_size >= 4 * h.nsurf ? push_size - 4 * h.nsurf : ~0u;
@@ -84,7 +84,7 @@ index 02acea8..37fdd8a 100644
  struct anv_shader {
     struct vk_shader vk;
 diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
-index b7400b5..17f9983 100644
+index dcbd1c0..49ce219 100644
 --- a/src/intel/vulkan/genX_cm.c
 +++ b/src/intel/vulkan/genX_cm.c
 @@ -38,9 +38,17 @@ genX(cm_emit_binding_table)(struct anv_cmd_buffer *cmd_buffer,

@@ -1,4 +1,4 @@
-From 4b69a9cd31abf5f503e7e4b9181fdeab67f36cc4 Mon Sep 17 00:00:00 2001
+From bdfd0ea7c9ed4306f2a283765eb002ba720d2df5 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
 Subject: [PATCH] anv: debug tools for the C-for-Metal kernel injection
@@ -6,10 +6,10 @@ Subject: [PATCH] anv: debug tools for the C-for-Metal kernel injection
 
 ---
  src/intel/vulkan/anv_allocator.c |   4 +
- src/intel/vulkan/anv_cm.c        |  36 +++++++
+ src/intel/vulkan/anv_cm.c        |  41 ++++++++
  src/intel/vulkan/anv_cm.h        |   6 ++
  src/intel/vulkan/genX_cm.c       | 162 +++++++++++++++++++++++++++++++
- 4 files changed, 208 insertions(+)
+ 4 files changed, 213 insertions(+)
 
 diff --git a/src/intel/vulkan/anv_allocator.c b/src/intel/vulkan/anv_allocator.c
 index 6aeb1fc..c524b74 100644
@@ -34,10 +34,10 @@ index 6aeb1fc..c524b74 100644
  
     return VK_SUCCESS;
 diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
-index 1da0453..e9e1105 100644
+index 3d796ea..dc32709 100644
 --- a/src/intel/vulkan/anv_cm.c
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -60,6 +60,18 @@ anv_cm_env_init(void)
+@@ -78,6 +78,23 @@ anv_cm_env_init(void)
     e->debug = getenv("ANV_CM_DEBUG") != NULL;
     const char *t = getenv("ANV_CM_TRACE");
     e->trace = t ? (t[0] == '2' ? 2 : 1) : 0;
@@ -52,11 +52,16 @@ index 1da0453..e9e1105 100644
 +   e->maxgroups = mg ? (uint32_t)atoi(mg) : 0;
 +   const char *pr = getenv("ANV_CM_PREEMPT");
 +   e->preempt = pr ? atoi(pr) != 0 : -1;
-+   e->cap_dir = getenv("ANV_CM_CAP_DIR") ? getenv("ANV_CM_CAP_DIR") : "/tmp/anv_cm_cap";
++   /* ANV_CM_CAP_DIR, else <anv_cm_cache_base>/cap; no captures without either (not a shared /tmp folder) */
++   static char cap[480];
++   if (getenv("ANV_CM_CAP_DIR") && getenv("ANV_CM_CAP_DIR")[0])
++      e->cap_dir = getenv("ANV_CM_CAP_DIR");
++   else if (anv_cm_cache_base(cap, sizeof(cap) - 4))
++      e->cap_dir = strcat(cap, "/cap");
  }
  
  const struct anv_cm_env *
-@@ -69,6 +81,9 @@ anv_cm_env(void)
+@@ -87,6 +104,9 @@ anv_cm_env(void)
     return &anv_cm_env_data;
  }
  
@@ -66,7 +71,7 @@ index 1da0453..e9e1105 100644
  
  struct cmk_header {
     char magic[4];               /* "CMK2" */
-@@ -1243,6 +1258,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1408,6 +1428,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
     const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
     uint32_t cm_id = wx | (wy << 8) | (wz << 16);
     char path[512] = "";
@@ -82,7 +87,7 @@ index 1da0453..e9e1105 100644
     if (wx == 1 && wy == 1 && (wz == ANV_CM_CANARY_WG_Z || wz == ANV_CM_LEGACY_CANARY_WG_Z) &&
         anv_cm_is_placeholder(nir)) {
        /* the shim's self-test: proves to it that this process runs the patched driver and that placeholders still
-@@ -1297,6 +1321,18 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1462,6 +1491,18 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
           fprintf(stderr, "ANV CM:   set %u: type %d bindings %u descriptors %u\n", i, ANV_CM_SET_LAYOUT_MODE(l), l->binding_count, l->descriptor_count);
        }
     }
@@ -126,7 +131,7 @@ index 42f978e..19c1f82 100644
  #ifdef genX
  /* genX_cm.c; only visible to the per-generation files that include this header after genxml/gen_macros.h */
 diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
-index 1d58ccb..5429c88 100644
+index e7824c9..d180f6e 100644
 --- a/src/intel/vulkan/genX_cm.c
 +++ b/src/intel/vulkan/genX_cm.c
 @@ -13,6 +13,8 @@
@@ -188,7 +193,7 @@ index 1d58ccb..5429c88 100644
     }
     if (env->trace)
        fprintf(stderr, "\n");
-+   if (env->gcap && kx < 17 && ky < 17) {
++   if (env->gcap && env->cap_dir && kx < 17 && ky < 17) {
 +      /* ANV_CM_GCAP="kx,ky:N": GPU-side capture of every small buffer (<= 4 KiB) the kernel reads at its N-th dispatch
 +       * (an MI copy in the batch right before the walker); files are written 40 dispatches of the same kernel later */
 +      static struct anv_bo *gbo;
@@ -246,7 +251,7 @@ index 1d58ccb..5429c88 100644
 +         }
 +      }
 +   }
-+   if (env->capture && kx < 17 && ky < 17) {
++   if (env->capture && env->cap_dir && kx < 17 && ky < 17) {
 +      /* ANV_CM_CAPTURE="kx,ky:N;...": at the N-th dispatch of kernel kx,ky dump every buffer surface it uses (CPU side) */
 +      static unsigned cap_count[17][17];
 +      unsigned cn = 0;
@@ -322,7 +327,7 @@ index 1d58ccb..5429c88 100644
     if (env->trace)
        fprintf(stderr, "ANV CM: walker kernel %u,%u,%u groups %u,%u,%u threads %u\n",
                prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
-@@ -161,6 +319,10 @@ genX(cm_setup_walker)(struct anv_device *device,
+@@ -170,6 +328,10 @@ genX(cm_setup_walker)(struct anv_device *device,
     walker->IndirectDataLength = total;
     if (cs_prog_data->cm_has_sampler)
        walker->InterfaceDescriptor.SamplerCount = 1;
