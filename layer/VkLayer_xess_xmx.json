@@ -1,0 +1,18 @@
+{
+  "file_format_version": "1.2.0",
+  "layer": {
+    "name": "VK_LAYER_XESS_xmx",
+    "type": "GLOBAL",
+    "library_path": "./libVkLayer_xess_xmx.so",
+    "api_version": "1.4.0",
+    "implementation_version": "1",
+    "description": "XeSS XMX kernels on an unpatched ANV (xess-xmx-linux)",
+    "functions": {
+      "vkGetInstanceProcAddr": "xmx_GetInstanceProcAddr",
+      "vkGetDeviceProcAddr": "xmx_GetDeviceProcAddr",
+      "vkNegotiateLoaderLayerInterfaceVersion": "xmx_NegotiateLoaderLayerInterfaceVersion"
+    },
+    "enable_environment": { "XMX_LAYER": "1" },
+    "disable_environment": { "XMX_LAYER_DISABLE": "1" }
+  }
+}

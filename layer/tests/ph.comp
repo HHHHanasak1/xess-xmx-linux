@@ -1,0 +1,17 @@
+#version 450
+// Test placeholders for test_placeholder.c, shaped like the shim's: a store of (magic, A, B) with the workgroup size
+// WX,WY,WZ. -DSCALAR stores the three dwords one by one at offsets 0, 1, 2 (the other path vkd3d-proton can take);
+// -DPLAIN stores no magic (an ordinary shader).
+layout(local_size_x = WX, local_size_y = WY, local_size_z = WZ) in;
+layout(set = 0, binding = 0, r32ui) uniform uimageBuffer heap[1];
+void main() {
+#if defined(PLAIN)
+   imageStore(heap[0], 0, uvec4(7u));
+#elif defined(SCALAR)
+   imageStore(heap[0], 0, uvec4(0x584D5843u));
+   imageStore(heap[0], 1, uvec4(A));
+   imageStore(heap[0], 2, uvec4(B));
+#else
+   imageStore(heap[0], 0, uvec4(0x584D5843u, A, B, 0u));
+#endif
+}

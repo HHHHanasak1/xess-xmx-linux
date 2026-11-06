@@ -1,0 +1,375 @@
+/* compile.c - see compile.h. Ported from the patched driver (anv_cm.c); the differences: the helper always runs with
+ * CM_OUT_DIR and CM_NO_LOAD_PAYLOAD=1, its output is always packed here (a helper that ignores CM_OUT_DIR, i.e. one
+ * of an older package, cannot compile for the layer and counts as a failure), and the cache holds CML1 images. */
+#define _GNU_SOURCE
+#include "compile.h"
+#include "cmk.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <spawn.h>
+#include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <threads.h>
+#include <time.h>
+#include <unistd.h>
+
+#define XMX_PACKER_VERSION "cml1-l1"
+
+static uint8_t *
+read_file(const char *path, size_t *size)
+{
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      return NULL;
+   uint8_t *buf = NULL;
+   size_t n = 0, cap = 0;
+   for (;;) {
+      if (cap - n < 65536) {
+         uint8_t *nb = realloc(buf, cap + 65536 + 1);
+         if (!nb) {
+            free(buf);
+            fclose(f);
+            return NULL;
+         }
+         buf = nb;
+         cap += 65536;
+      }
+      const size_t got = fread(buf + n, 1, cap - n, f);
+      n += got;
+      if (got == 0)
+         break;
+   }
+   const bool err = ferror(f);
+   fclose(f);
+   if (err) {
+      free(buf);
+      return NULL;
+   }
+   buf[n] = 0;
+   *size = n;
+   return buf;
+}
+
+static void
+mkdirs(const char *path)
+{
+   char tmp[512];
+   snprintf(tmp, sizeof(tmp), "%s", path);
+   for (char *p = tmp + 1; *p; p++)
+      if (*p == '/') {
+         *p = 0;
+         mkdir(tmp, 0755);
+         *p = '/';
+      }
+   mkdir(tmp, 0755);
+}
+
+void
+xmx_compile_log(const char *fmt, ...)
+{
+   char path[600];
+   const char *log = getenv("CM_LOG"), *xdg = getenv("XDG_CACHE_HOME");
+   if (log && log[0])
+      snprintf(path, sizeof(path), "%s", log);
+   else if (xdg && xdg[0])
+      snprintf(path, sizeof(path), "%s/xess-xmx/compile.log", xdg);
+   else
+      snprintf(path, sizeof(path), "%s/.cache/xess-xmx/compile.log", getenv("HOME") ? getenv("HOME") : "/tmp");
+   FILE *f = fopen(path, "a");
+   if (!f)
+      return;
+   va_list ap;
+   va_start(ap, fmt);
+   vfprintf(f, fmt, ap);
+   va_end(ap);
+   fclose(f);
+}
+
+/* the compile script: XMX_LAYER_HELPER, else ANV_CM_HELPER, else <package>/tools/cm-compile.sh next to
+ * ANV_CM_KERNEL_DIR (the package's environment file sets both of the latter) */
+static bool
+helper_path(char *buf, size_t len)
+{
+   const char *h = getenv("XMX_LAYER_HELPER");
+   if (!h || !h[0])
+      h = getenv("ANV_CM_HELPER");
+   if (h && h[0]) {
+      snprintf(buf, len, "%s", h);
+      return true;
+   }
+   const char *kd = getenv("ANV_CM_KERNEL_DIR");
+   if (!kd || !kd[0])
+      return false;
+   snprintf(buf, len, "%s/../tools/cm-compile.sh", kd);
+   return true;
+}
+
+static uint32_t gen_value;
+static once_flag gen_once = ONCE_FLAG_INIT;
+static void
+gen_init(void)
+{
+   uint32_t h = 2166136261u;
+#define MIX(byte) (h = (h ^ (uint8_t)(byte)) * 16777619u)
+   char helper[600], dir[700];
+   if (helper_path(helper, sizeof(helper))) {
+      char *slash = strrchr(helper, '/');
+      if (slash)
+         *slash = 0;
+      const char *sub[] = { "/../igc/neo/bin", "/../igc/igc/local/lib" };
+      for (unsigned i = 0; i < 2; i++) {
+         snprintf(dir, sizeof(dir), "%s%s", helper, sub[i]);
+         DIR *d = opendir(dir);
+         if (!d)
+            continue;
+         struct dirent *e;
+         while ((e = readdir(d))) {
+            if (strncmp(e->d_name, "ocloc", 5) != 0 && strncmp(e->d_name, "libigc.so.", 10) != 0)
+               continue;
+            for (const char *c = e->d_name; *c; c++)
+               MIX(*c);
+         }
+         closedir(d);
+      }
+      snprintf(dir, sizeof(dir), "%s/cm-compile.sh", helper);
+      size_t size;
+      uint8_t *data = read_file(dir, &size);
+      if (data) {
+         for (size_t k = 0; k < size; k++)
+            MIX(data[k]);
+         free(data);
+         h = (h ^ (uint32_t)size) * 16777619u;
+      }
+   }
+   for (const char *c = XMX_PACKER_VERSION; *c; c++)
+      MIX(*c);
+   const char *cmdev = getenv("CM_DEVICE");
+   for (const char *c = cmdev ? cmdev : ""; *c; c++)
+      MIX(*c);
+#undef MIX
+   gen_value = h;
+}
+
+uint32_t
+xmx_toolchain_gen(void)
+{
+   call_once(&gen_once, gen_init);
+   return gen_value;
+}
+
+void
+xmx_cache_path(const struct xmx_dev_info *dev, const char *hash, char *dir, size_t dirlen, char *path, size_t pathlen)
+{
+   const char *xdg = getenv("XDG_CACHE_HOME");
+   if (xdg && xdg[0])
+      snprintf(dir, dirlen, "%s/xess-xmx/kernels", xdg);
+   else
+      snprintf(dir, dirlen, "%s/.cache/xess-xmx/kernels", getenv("HOME") ? getenv("HOME") : "/tmp");
+   snprintf(path, pathlen, "%s/%s_%04x_%08x.cml", dir, hash, dev->pci_id, xmx_toolchain_gen());
+}
+
+static void
+rm_dir(const char *d)
+{
+   DIR *dir = opendir(d);
+   if (dir) {
+      struct dirent *e;
+      char f[900];
+      while ((e = readdir(dir)))
+         if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) {
+            snprintf(f, sizeof(f), "%s/%s", d, e->d_name);
+            unlink(f);
+         }
+      closedir(dir);
+   }
+   rmdir(d);
+}
+
+/* the first k_*.bin ocloc wrote into outdir */
+static bool
+find_zebin(const char *outdir, char *bin, size_t len)
+{
+   DIR *dir = opendir(outdir);
+   if (!dir)
+      return false;
+   struct dirent *e;
+   char best[256] = "";
+   while ((e = readdir(dir))) {
+      const size_t l = strlen(e->d_name);
+      if (l > 6 && !strncmp(e->d_name, "k_", 2) && !strcmp(e->d_name + l - 4, ".bin") &&
+          (!best[0] || strcmp(e->d_name, best) < 0))
+         snprintf(best, sizeof(best), "%s", e->d_name);
+   }
+   closedir(dir);
+   if (!best[0])
+      return false;
+   snprintf(bin, len, "%s/%s", outdir, best);
+   return true;
+}
+
+/* runs the helper for <sdir>/<name>.spv and writes the CML1 image to path */
+static bool
+compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, const char *hash, const char *cdir,
+            const char *path)
+{
+   char spv[600], opt[600];
+   snprintf(spv, sizeof(spv), "%s/%s.spv", sdir, name);
+   snprintf(opt, sizeof(opt), "%s/%s.opt", sdir, name);
+   if (access(spv, R_OK) || access(opt, R_OK))
+      return false;
+   char helper[600];
+   if (!helper_path(helper, sizeof(helper))) {
+      xmx_compile_log("cm-compile FAILED (layer): %s: no compile script (set ANV_CM_HELPER or ANV_CM_KERNEL_DIR)\n", spv);
+      return false;
+   }
+   mkdirs(cdir);
+   char outdir[600];
+   const char *tmpdir = getenv("TMPDIR");
+   snprintf(outdir, sizeof(outdir), "%s/cml.XXXXXX", tmpdir && tmpdir[0] ? tmpdir : "/tmp");
+   if (!mkdtemp(outdir))
+      return false;
+   char pci[32], grf[32], out[640], ignored[700];
+   snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", dev->pci_id);
+   snprintf(grf, sizeof(grf), "CM_GRF_BYTES=%u", dev->grf_bytes);
+   snprintf(out, sizeof(out), "CM_OUT_DIR=%s", outdir);
+   snprintf(ignored, sizeof(ignored), "%s/helper-out.cmk", outdir);   /* never read: see the file comment */
+   extern char **environ;
+   unsigned nenv = 0;
+   while (environ[nenv])
+      nenv++;
+   char **envp = calloc(nenv + 5, sizeof(char *));
+   if (!envp) {
+      rm_dir(outdir);
+      return false;
+   }
+   unsigned ne = 0;
+   for (unsigned e = 0; e < nenv; e++)
+      if (strncmp(environ[e], "CM_PCI_ID=", 10) && strncmp(environ[e], "CM_GRF_BYTES=", 13) &&
+          strncmp(environ[e], "CM_OUT_DIR=", 11) && strncmp(environ[e], "CM_NO_LOAD_PAYLOAD=", 19))
+         envp[ne++] = environ[e];
+   envp[ne++] = pci;
+   envp[ne++] = grf;
+   envp[ne++] = out;
+   envp[ne++] = (char *)"CM_NO_LOAD_PAYLOAD=1";
+   char *argv[] = { (char *)"/bin/sh", helper, spv, opt, ignored, NULL };
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   pid_t pid;
+   int rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, envp);
+   free(envp);
+   if (rc == 0) {
+      int status = 0;
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+         ;
+      rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+   }
+   bool ok = false;
+   char err[300] = "", bin[900], infop[700];
+   snprintf(infop, sizeof(infop), "%s/info", outdir);
+   size_t infon = 0;
+   uint8_t *info = read_file(infop, &infon);
+   if (rc != 0) {
+      snprintf(err, sizeof(err), "helper exit %d", rc);
+   } else if (!info || !strstr((char *)info, "-noLoadPayload")) {
+      snprintf(err, sizeof(err), "the compile script does not support CM_NO_LOAD_PAYLOAD (older package?)");
+   } else if (!find_zebin(outdir, bin, sizeof(bin))) {
+      snprintf(err, sizeof(err), "no zebin");
+   } else {
+      size_t zn, on;
+      uint8_t *z = read_file(bin, &zn), *o = read_file(opt, &on);
+      if (z && o) {
+         uint64_t lws[3];
+         xmx_opt_lws(o, on, lws);
+         size_t cn, mn;
+         uint32_t gc;
+         uint8_t *cmk = xmx_pack(z, zn, lws, dev->grf_bytes, &cn, &gc, err, sizeof(err));
+         uint8_t *cml = cmk ? xmx_cml_from_cmk(cmk, cn, gc, XMX_CML_NO_LOAD_PAYLOAD, &mn) : NULL;
+         if (cml) {
+            static atomic_int seq;
+            char tmp[800];
+            snprintf(tmp, sizeof(tmp), "%s.%d.%d.tmp", path, (int)getpid(), atomic_fetch_add(&seq, 1));
+            FILE *f = fopen(tmp, "wb");
+            ok = f && fwrite(cml, 1, mn, f) == mn;
+            if (f && fclose(f) != 0)
+               ok = false;
+            if (ok && rename(tmp, path) != 0)
+               ok = false;
+            if (!ok) {
+               snprintf(err, sizeof(err), "cannot write %s: %s", tmp, strerror(errno));
+               unlink(tmp);
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (ok) {
+               const char *ob = strrchr(path, '/');
+               xmx_compile_log("cm-compile ok (layer): %s from %s.spv lws %" PRIu64 "x%" PRIu64 "x%" PRIu64
+                               " group_count %s in %.1f s\n", ob ? ob + 1 : path, name, lws[0], lws[1], lws[2],
+                               gc == XMX_NO_GC ? "no" : "yes",
+                               (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
+            }
+         } else if (cmk && !err[0]) {
+            snprintf(err, sizeof(err), "CML1 conversion");
+         }
+         free(cml);
+         free(cmk);
+      }
+      free(z);
+      free(o);
+   }
+   free(info);
+   rm_dir(outdir);
+   if (!ok)
+      xmx_compile_log("cm-compile FAILED (layer): %s: %s\n", spv, err);
+   (void)hash;
+   return ok;
+}
+
+/* kernels that failed to compile in this process: not tried again until the next launch (as the driver) */
+static char failed[64][20];
+static unsigned nfailed;
+static mtx_t fm;
+static once_flag fo = ONCE_FLAG_INIT;
+static void fm_init(void) { mtx_init(&fm, mtx_plain); }
+
+bool
+xmx_kernel_get(const struct xmx_dev_info *dev, const char *sdir, int id, const char *name, const char *hash,
+               uint8_t **img, size_t *n)
+{
+   char cdir[512], path[700];
+   xmx_cache_path(dev, hash, cdir, sizeof(cdir), path, sizeof(path));
+   struct xmx_cml m;
+   if ((*img = read_file(path, n)) && xmx_cml_parse(*img, *n, &m))
+      return true;
+   free(*img);
+   *img = NULL;
+   call_once(&fo, fm_init);
+   mtx_lock(&fm);
+   bool known = false;
+   for (unsigned k = 0; k < nfailed && !known; k++)
+      known = !strcmp(failed[k], hash);
+   mtx_unlock(&fm);
+   if (known)
+      return false;
+   if (compile_one(dev, sdir, name, hash, cdir, path) && (*img = read_file(path, n)) && xmx_cml_parse(*img, *n, &m))
+      return true;
+   free(*img);
+   *img = NULL;
+   mtx_lock(&fm);
+   if (nfailed < 64)
+      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
+   mtx_unlock(&fm);
+   char mark[600];
+   snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
+   FILE *ff = fopen(mark, "a");
+   if (ff) {
+      fprintf(ff, "%d %s\n", id, hash);
+      fclose(ff);
+   }
+   return false;
+}

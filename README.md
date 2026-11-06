@@ -67,6 +67,10 @@ What `install.sh` does:
 
 Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 
+**The system's own driver for one game (experimental):** `/path/to/package/xmx-stock.sh %command%` runs that game on
+the distribution's unpatched Mesa ANV with this project's Vulkan layer (`layer/`) instead of the patched driver; Mesa
+26.1, 26.3 and 27.0. It installs nothing ([docs/launch-options.md](docs/launch-options.md)).
+
 **Per game instead of system-wide:** `XMX_APPID=<steam app id> ./enable.sh` (or `XMX_PREFIX=<prefix>` for other
 launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
 `/path/to/package/xmx-launch.sh %command%` into the game's launch options. `disable.sh` undoes it.
@@ -144,7 +148,7 @@ path; 26.3 is this project's patched Mesa 26.3.0-rc3 (release 20261104):
   than its GPU.
 * With frame generation on, the shim's low latency mode (built on the XeLL API) cuts the latency of the frame queue
   by 36–50% at the same frame rate (Wuthering Waves; a game's own XeSS frame generation, not the FSR routes).
-* Mesa 26.3.0-rc3 unpatched, with a Vulkan layer of this project that is not in a release yet, runs as fast as the
+* Mesa 26.3.0-rc3 unpatched, with this project's Vulkan layer (`xmx-stock.sh`, experimental), runs as fast as the
   patched driver.
 
 Settings, every run and the latency tests: [docs/performance.md](docs/performance.md). #19 has a Final Fantasy VII
@@ -177,6 +181,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                                   patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
                                   RE Engine games, and 0006, a Jay crash fix for cooperative matrix shaders
+    layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on the system's unpatched ANV, per game (experimental)
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
@@ -203,12 +208,12 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
     tools/make-release.py         builds the release archive (the developer tools stay out of it)
     docs/                         how it works, building, debugging, games, Steam launch options, performance
-    .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD and both
-                                  drivers, checks the scripts
+    .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the ICD, both
+                                  drivers and the layer, checks the scripts
 
 The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, the drivers in
-`lib/mesa-<version>/`, the ICD `lib/libvulkan_intel.so`) and the scripts. It contains no Intel kernels; they are
-compiled on your machine from the SPIR-V inside the game's XeSS libraries.
+`lib/mesa-<version>/`, the ICD `lib/libvulkan_intel.so`, the layer `layer/libVkLayer_xess_xmx.so`) and the scripts.
+It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
 
 ## License
 

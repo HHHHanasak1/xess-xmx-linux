@@ -1,0 +1,35 @@
+#version 450
+// Variants of one shader for working out a Mesa version's serialized layout (tests/layout_probe.py): each -D switch
+// changes one property of the base shader. Set 7 = the layer's set (probe.c's layout).
+#ifndef LX
+#define LX 1
+#define LY 1
+#define LZ 1
+#endif
+layout(local_size_x = LX, local_size_y = LY, local_size_z = LZ) in;
+layout(set = 7, binding = 1, r32ui) uniform uimageBuffer b1;
+layout(set = 7, binding = 2, r32ui) uniform uimageBuffer b2;
+#ifdef SAMPLE
+layout(set = 7, binding = 0) uniform texture2D t0;
+layout(set = 7, binding = 32) uniform sampler s;
+#endif
+#ifdef SHARED
+shared uint sh[SHARED];
+#endif
+void main() {
+   uint v = imageLoad(b2, int(gl_LocalInvocationIndex)).x;
+#ifdef SAMPLE
+   v += floatBitsToUint(textureLod(sampler2D(t0, s), vec2(0.5), 0.0).x);
+#endif
+#ifdef SHARED
+   sh[gl_LocalInvocationIndex % SHARED] = v;
+   barrier();
+   v += sh[(gl_LocalInvocationIndex + 1) % SHARED];
+#elif defined(BARRIER)
+   barrier();
+#endif
+#ifdef NUMWG
+   v += gl_NumWorkGroups.x * 3 + gl_NumWorkGroups.y * 5 + gl_NumWorkGroups.z * 7;
+#endif
+   imageStore(b1, int(gl_GlobalInvocationID.x), uvec4(v));
+}

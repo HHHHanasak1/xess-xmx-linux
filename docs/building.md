@@ -2,7 +2,8 @@
 
 The release archive contains binaries built from this repository: the shim `igdext64.dll`, `ControlLib.dll`, the FSR
 DLLs in `ffxfg/`, the patched Mesa ANV drivers `lib/mesa-<version>/libvulkan_intel.so` and the small ICD
-`lib/libvulkan_intel.so` that loads one of them.
+`lib/libvulkan_intel.so` that loads one of them, and the Vulkan layer `layer/libVkLayer_xess_xmx.so` for the system's
+own driver (`xmx-stock.sh`).
 The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI
 (`.github/workflows/build.yml`) builds all of them on every push and keeps them as workflow artifacts; a release
 archive is made with `tools/make-release.py` from the artifacts of the release commit.
@@ -42,6 +43,16 @@ fetches them into `ffxfg/inc/` and checks each one by SHA-256. Then, on Windows 
     ffxfg\build.bat           -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll, amd_fidelityfx_framegeneration_dx12.dll, dxgi.dll
 
 The package keeps them in `ffxfg/` ([fsr-frame-generation.md](fsr-frame-generation.md)).
+
+## The layer (`layer/libVkLayer_xess_xmx.so`)
+
+Linux with gcc, `glslangValidator` and python3, against Vulkan-Headers 1.4.350 (the distribution's headers may lack
+`VK_KHR_pipeline_binary`):
+
+    VULKAN_HEADERS=<Vulkan-Headers checkout> layer/build.sh out   # -> out/libVkLayer_xess_xmx.so, out/VkLayer_xess_xmx.json
+    layer/tests/build.sh                                          # unit tests
+
+For a release archive, the CI artifact `xmx-layer` goes into `layer/` (the manifest there is the repository's own).
 
 ## The driver (`libvulkan_intel.so`)
 

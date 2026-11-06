@@ -15,3 +15,6 @@ ffxfg/dxgi.dll
 ffxfg/inc/
 ffxfg/ffxsdk/
 ffx/
+layer/out/
+layer/tests/out/
+layer/libVkLayer_xess_xmx.so
