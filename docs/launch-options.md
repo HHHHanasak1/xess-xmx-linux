@@ -50,7 +50,9 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 wait in that queue is most of its latency. While frame generation runs, the shim starts each frame so that it reaches
 the GPU when the GPU gets free (after `xellSleep`, from XeLL's own frame reports). Wuthering Waves, Arc B390, 3x,
 simulation start to present end: 69 -> 35 ms GPU-limited, 76 -> 48 ms and 105 -> 67 ms CPU-limited, at the same frame
-rate. A game without a queue (CONTROL) does not wait, so nothing changes there. It is off while frame generation is
+rate. A game without a queue (CONTROL) does not wait, so nothing changes there. It works for a game's own XeSS frame
+generation only: with `FSR=xess`, `FSR_FG` and `OFLOW_FG` the package's frame generation DLL reports each present to XeLL
+right before the next frame's sleep, so the shim never sees a queue and does not wait. It is off while frame generation is
 off; `IGDEXT_XELL_LOG=1` shows its state (`low latency: on`, `auto: frame generation on ...`, `auto: waited in ...`).
 
 **XeSS older than 2.0.2.68:** DXVK reports an Intel GPU as an AMD one to such a game, so XeSS super resolution looks

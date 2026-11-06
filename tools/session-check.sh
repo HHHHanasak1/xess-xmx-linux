@@ -4,13 +4,16 @@
 # If a system update breaks one of them, the driver cannot be loaded or cannot create a device, and - because install.sh
 # puts only our 64-bit Intel driver into VK_DRIVER_FILES - every 64-bit Vulkan program of the session, gamescope
 # included, would lose the Intel GPU. This script
-#   1. loads the driver once (every symbol resolved),
+#   1. checks that the ICD file (run/intel_icd.json) and the library it names exist (if not: stock drivers right away),
+#      then loads the driver once (every symbol resolved),
 #   2. lets vulkaninfo create an instance and enumerate the GPU with only the patched driver,
 # (plus two reports that change nothing: Mesa version against the system's, and whether the driver reads the system's
 # per-game workarounds in /usr/share/drirc.d) and if either of the first two fails points the session back to the stock drivers (games still run; the shim's self-test then makes
 # XeSS use DP4a) - unless another driver of the package (lib/mesa-<version>/) passes; that one is then activated.
 # A Mesa version that differs from the system's is only reported (the patched driver is a complete driver).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
+# The unit starts it through ~/.config/xess-xmx/session-check.sh (install.sh), which falls back to the stock drivers
+# by itself when the package folder is gone.
 # The two loading checks run at every login. What only depends on a file's content (the drivers' library names, the
 # drirc report, the system's Mesa version) is kept in ~/.cache/xess-xmx/ until that file changes.
 # Environment: XMX_CHECK_LIB / XMX_CHECK_ICD override the library / ICD file to test (tests only).
@@ -23,9 +26,10 @@ CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx"
 STATUS="$CACHE/driver-status"
 mkdir -p "$CACHE"
 
-fail() { # <reason>
-  # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers
-  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+fail() { # <reason> [stock]
+  # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers (not with
+  # "stock": the ICD file the session names is broken, which another driver would not mend)
+  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ] && [ "${2:-}" != stock ]; then
     local d v
     for d in "$PKG"/lib/mesa-*/; do
       [ -f "$d/libvulkan_intel.so" ] || continue
@@ -133,7 +137,74 @@ for n in $needed; do
   cmp -s "$src" "$PKG/lib/deps/$n" || { cp -L "$src" "$PKG/lib/deps/$n.new" && mv -f "$PKG/lib/deps/$n.new" "$PKG/lib/deps/$n"; }
 done
 
-# 1. load
+# 0b. run-time compiled kernels of an older toolchain: the driver names them <hash>_<pci id>_<gen>.cmk, <gen> being
+#     anv_cm_toolchain_gen() of the patch (FNV-1a over the igc file names, both helper scripts and the .cmk packer
+#     version; CM_DEVICE also goes in). The same value is computed here for every packer version the package knows
+#     and kept in CACHE/kernel-gens; a value from the previous session that is not computed any more belongs to a
+#     toolchain no driver can use again, and only the files with that value go. Kernels compiled with CM_DEVICE set or
+#     before this file existed are never touched (nor those of another package folder's toolchain). Not in a dry run.
+if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+  packers=$( { grep -ho 'ANV_CM_PACKER_VERSION "[^"]*"' "$PKG"/patches/0001-*.patch "$PKG"/patches/*/0001-*.patch 2>/dev/null |
+                 sed 's/.*"\(.*\)"/\1/'
+               for so in "$PKG"/lib/mesa-*/libvulkan_intel.so; do [ -f "$so" ] && grep -aoE 'cmk2-[A-Za-z0-9]+' "$so"; done
+               echo cmk2-c1; } | sort -u)
+  # shellcheck disable=SC2086   # one argument per packer version
+  python3 - "$PKG/tools" "$CACHE" $packers <<'EOF' 2>&1 | sed 's/^/kernel cache: /'
+import glob, os, sys
+tools, cache, packers = sys.argv[1], sys.argv[2], sys.argv[3:]
+M = 0xffffffff
+def fnv(h, data):
+    for b in data:
+        h = ((h ^ b) * 16777619) & M
+    return h
+# anv_cm_toolchain_gen(): the igc file names in readdir order (os.listdir keeps it), each script's bytes followed by
+# its size as one uint32, the packer version, CM_DEVICE (unset: nothing)
+h = 2166136261
+for sub in ("/../igc/neo/bin", "/../igc/igc/local/lib"):
+    try:
+        names = os.listdir(tools + sub)
+    except OSError:
+        continue
+    for n in names:
+        if n.startswith("ocloc") or n.startswith("libigc.so."):
+            h = fnv(h, os.fsencode(n))
+for s in ("/cmk_pack.py", "/cm-compile.sh"):
+    try:
+        with open(tools + s, "rb") as f:
+            data = f.read()
+    except OSError:
+        continue
+    h = ((fnv(h, data) ^ (len(data) & M)) * 16777619) & M
+gens = sorted({"%08x" % fnv(h, p.encode()) for p in packers})
+state = os.path.join(cache, "kernel-gens")
+try:
+    with open(state) as f:
+        old = set(f.read().split())
+except OSError:
+    old = None
+if old is not None:
+    n = 0
+    for g in old - set(gens):
+        for k in glob.glob(os.path.join(glob.escape(cache), "kernels", "*_*_%s.cmk" % g)):
+            try:
+                os.remove(k)
+                n += 1
+            except OSError:
+                pass
+    if n:
+        print("removed %d kernel(s) of an older toolchain" % n)
+if old != set(gens):
+    with open(state + ".new", "w") as f:
+        f.write("\n".join(gens) + "\n")
+    os.replace(state + ".new", state)
+EOF
+fi
+
+# 1. the ICD file the session's VK_DRIVER_FILES names, and the library it points to (the loader gets nothing else)
+icdlib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$ICD" 2>/dev/null | head -1)
+[ -f "$ICD" ] || fail "no ICD file $ICD" stock
+[ -n "$icdlib" ] && [ -f "$icdlib" ] || fail "the ICD file's library ${icdlib:-(none)} is missing" stock
+# load
 err=$(python3 - "$LIB" 2>&1 <<'EOF'
 import ctypes, sys
 ctypes.CDLL(sys.argv[1], mode=ctypes.RTLD_LOCAL)   # CPython dlopens with RTLD_NOW: every symbol must resolve

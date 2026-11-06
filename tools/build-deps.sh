@@ -9,18 +9,23 @@ set -eu
 OUT="$(mkdir -p "$1" && cd "$1" && pwd)"
 SPIRV_TAG=vulkan-sdk-1.4.350.1
 DI_TAG=0.3.0
+# the commits those tags name (a tag can move): a checkout that is not this commit is refused
+SPIRV_TOOLS_COMMIT=0539c81f69a3daeb706fd3477dca61435b475156
+SPIRV_HEADERS_COMMIT=ad9184e76a66b1001c29db9b0a3e87f646c64de0
+DI_COMMIT=47a5590e9c4eb35d67651b8c05a55f1a48259329
 if command -v apt-get >/dev/null && [ "$(id -u)" = 0 ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq && apt-get install -y -qq build-essential cmake ninja-build meson pkg-config python3 hwdata curl \
+  apt-get update -qq && apt-get install -y -qq build-essential cmake ninja-build meson pkg-config python3 hwdata git \
     ca-certificates >/dev/null
 fi
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; cd "$W"
-get() { # <url> <dir>
-  mkdir -p "$2"; curl -sfL "$1" | tar -xz -C "$2" --strip-components=1
+get() { # <git url> <tag> <commit> <dir>
+  git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$4"
+  [ "$(git -C "$4" rev-parse 'HEAD^{commit}')" = "$3" ] || { echo "!! $1 tag $2 is not commit $3" >&2; exit 1; }
 }
-get "https://github.com/KhronosGroup/SPIRV-Tools/archive/refs/tags/$SPIRV_TAG.tar.gz" spirv-tools
-get "https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/$SPIRV_TAG.tar.gz" spirv-headers
-get "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/archive/$DI_TAG/libdisplay-info-$DI_TAG.tar.gz" libdisplay-info
+get https://github.com/KhronosGroup/SPIRV-Tools.git "$SPIRV_TAG" "$SPIRV_TOOLS_COMMIT" spirv-tools
+get https://github.com/KhronosGroup/SPIRV-Headers.git "$SPIRV_TAG" "$SPIRV_HEADERS_COMMIT" spirv-headers
+get https://gitlab.freedesktop.org/emersion/libdisplay-info.git "$DI_TAG" "$DI_COMMIT" libdisplay-info
 
 cmake -S spirv-tools -B spirv-tools/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSPIRV-Headers_SOURCE_DIR="$W/spirv-headers" \
   -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=ON -DSPIRV_WERROR=OFF >/dev/null

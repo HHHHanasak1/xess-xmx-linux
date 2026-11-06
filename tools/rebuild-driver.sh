@@ -6,7 +6,8 @@
 # libdrm, wayland, xcb headers). On SteamOS use an Arch Linux distrobox:
 #     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh
 # The version defaults to the system's Mesa (read from the host's stock driver). If the patches do not apply to that
-# version, nothing is changed and the script says so. Source: the release tarball from archive.mesa3d.org; source and
+# version, nothing is changed and the script says so. Source: the release tarball from archive.mesa3d.org, checked
+# against its sha256 (known for the versions CI builds; any other: XMX_MESA_SHA256=<sha256>); source and
 # build tree: ${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>.
 set -eu
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,17 +23,41 @@ if [ -z "$VER" ]; then
   done
 fi
 [ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0-rc3)"; exit 1; }
+[[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "!! '$VER' is not a Mesa version (26.1.2, 26.3.0-rc3)"; exit 1; }
 echo "== Mesa $VER"
+# the tarball's sha256: the versions CI builds (.github/workflows/build.yml, mesa job - keep both lists the same);
+# another version needs XMX_MESA_SHA256=<sha256 from Mesa's release notes, docs/relnotes/<version>.rst>
+case "$VER" in
+  26.1.2) SHA=bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0 ;;
+  26.3.0-rc3) SHA=3600c01f11439628d0a85de5ed9cb76f297d13e9783cdeecb91aa685055c9942 ;;
+  *) SHA="" ;;
+esac
+[ -n "${XMX_MESA_SHA256:-}" ] && SHA=$XMX_MESA_SHA256
+[[ "$SHA" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "!! no known sha256 for the Mesa $VER tarball: run again with XMX_MESA_SHA256=<its sha256> (Mesa's release notes"
+  echo "   list it, docs/relnotes/$VER.rst; nothing was changed)"; exit 1; }
 # the release tarball, not the git tag: upstream can delete a tag (mesa-26.3.0-rc1 went, together with its commit,
 # when staging/26.3 was branched again). One tree per version, committed as "base" so the patches go on with git am.
 T="$SRC/$VER"
 if [ ! -d "$T/.git" ]; then
   rm -rf "$T"; mkdir -p "$T"
-  if ! curl -sfL "https://archive.mesa3d.org/mesa-$VER.tar.xz" | tar -xJ -C "$T" --strip-components=1; then
-    rm -rf "$T"
+  TAR="$SRC/mesa-$VER.tar.xz"
+  if ! curl -sfL -o "$TAR" "https://archive.mesa3d.org/mesa-$VER.tar.xz"; then
+    rm -rf "$T" "$TAR"
     echo "!! could not download https://archive.mesa3d.org/mesa-$VER.tar.xz (nothing was changed)"
     exit 1
   fi
+  if ! echo "$SHA  $TAR" | sha256sum -c --quiet - >/dev/null 2>&1; then
+    rm -rf "$T" "$TAR"
+    echo "!! mesa-$VER.tar.xz does not have the sha256 $SHA (nothing was changed)"
+    exit 1
+  fi
+  if ! tar -xJf "$TAR" -C "$T" --strip-components=1; then
+    rm -rf "$T" "$TAR"
+    echo "!! could not unpack mesa-$VER.tar.xz (nothing was changed)"
+    exit 1
+  fi
+  rm -f "$TAR"
   git -C "$T" init -q
   git -C "$T" add -A
   git -C "$T" -c user.name=xess-xmx -c user.email=xmx@localhost commit -qm "mesa $VER"

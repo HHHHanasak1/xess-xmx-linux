@@ -266,13 +266,35 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
     *orig = p + 5 + rel;
     intptr_t d = (uint8_t*) hook - (p + 5);
     if (d > INT32_MAX || d < INT32_MIN) { XLog("%s: hook too far from the thunk (%lld), not hooked", name, (long long) d); return false; }
+    // only the rel32 (bytes 1-4) changes. When it lies inside one aligned 8-byte word (10 of 16 thunk positions), that
+    // word is swapped (compare-exchange: the neighbouring thunks' bytes stay as they are); otherwise the 8 bytes from the
+    // thunk on, unaligned as before (atomic on x86-64, a split lock when they cross a cache line)
+    const uintptr_t r = (uintptr_t) (p + 1);
+    uint8_t* w = (r & 7) <= 4 ? (uint8_t*) (r & ~(uintptr_t) 7) : p;
+    uint8_t* lo = w < p ? w : p;
+    const SIZE_T span = (SIZE_T) (std::max(w, p) + 8 - lo);
     DWORD old;
-    if (!VirtualProtect(p, 8, PAGE_EXECUTE_READWRITE, &old)) { XLog("%s: VirtualProtect failed %lu", name, GetLastError()); return false; }
-    uint64_t cur = *(volatile uint64_t*) p;
-    uint64_t neu = (cur & ~0xFFFFFFFFFFull) | 0xE9ull | ((uint64_t)(uint32_t)(int32_t) d << 8);
-    InterlockedExchange64((volatile LONG64*) p, (LONG64) neu);
-    VirtualProtect(p, 8, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), p, 8);
+    if (!VirtualProtect(lo, span, PAGE_EXECUTE_READWRITE, &old)) { XLog("%s: VirtualProtect failed %lu", name, GetLastError()); return false; }
+    if (w != p)
+    {
+        const unsigned sh = (unsigned) (r & 7) * 8;
+        const uint64_t mask = 0xFFFFFFFFull << sh, rel = (uint64_t) (uint32_t) (int32_t) d << sh;
+        uint64_t cur = *(volatile uint64_t*) w;
+        for (;;)
+        {
+            const uint64_t prev = (uint64_t) InterlockedCompareExchange64((volatile LONG64*) w, (LONG64) ((cur & ~mask) | rel), (LONG64) cur);
+            if (prev == cur) break;
+            cur = prev;
+        }
+    }
+    else
+    {
+        uint64_t cur = *(volatile uint64_t*) p;
+        uint64_t neu = (cur & ~0xFFFFFFFFFFull) | 0xE9ull | ((uint64_t)(uint32_t)(int32_t) d << 8);
+        InterlockedExchange64((volatile LONG64*) p, (LONG64) neu);
+    }
+    VirtualProtect(lo, span, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), lo, span);
     XLog("%s hooked: thunk %p -> %p (orig %p)", name, thunk, hook, *orig);
     return true;
 }
@@ -363,8 +385,9 @@ static DWORD WINAPI XellThread(LPVOID)
     const ULONGLONG deadline = GetTickCount64() + kWatchTotalMs;
     HMODULE m = nullptr;
     // the check first: the library may have been loaded before the notification was in place; after the last wait it
-    // is the final check
-    while (!(m = GetModuleHandleW(L"libxell.dll")) && WatchWait(ev, deadline, 100)) {}
+    // is the final check. A reference is taken (as XefgInstallHooks does): the library must not be unloaded between
+    // here and the patching 200 ms later
+    while (!(GetModuleHandleExW(0, L"libxell.dll", &m) && m) && WatchWait(ev, deadline, 100)) m = nullptr;
     if (ev) WatchStop();
     if (!m) { XLog("libxell.dll never loaded"); return 0; }
     XLog("libxell.dll found at %p", m);
@@ -372,7 +395,7 @@ static DWORD WINAPI XellThread(LPVOID)
     auto set = (void*) GetProcAddress(m, "xellSetSleepMode");
     auto slp = (void*) GetProcAddress(m, "xellSleep");
     auto fg = (void*) GetProcAddress(m, "xellSetFgEnabled");
-    if (!set || !slp || !fg) { XLog("XeLL exports missing"); return 0; }
+    if (!set || !slp || !fg) { XLog("XeLL exports missing"); FreeLibrary(m); return 0; }
     g_setLog = (PFN_XellSetLog) GetProcAddress(m, "xellSetLoggingCallback");
     g_reports = (PFN_XellReports) GetProcAddress(m, "xellGetFramesReports");
     // the original pointers are stored before each jmp goes live (PatchThunk writes *orig first): xellSleep runs on
@@ -380,6 +403,7 @@ static DWORD WINAPI XellThread(LPVOID)
     PatchThunk(slp, (void*) Hook_Sleep, (void**) &g_origSleep, "xellSleep");
     PatchThunk(set, (void*) Hook_SetSleepMode, (void**) &g_origSet, "xellSetSleepMode");
     PatchThunk(fg, (void*) Hook_SetFg, (void**) &g_origFg, "xellSetFgEnabled");
+    FreeLibrary(m);
     return 0;
 }
 
@@ -548,7 +572,9 @@ static void XefgRaiseOnce(void* dev, void* ctx)
     AcquireSRWLockExclusive(&g_fgLock);
     g_fgOwner = GetCurrentThreadId();
     bool seen = false;
-    for (LONG i = 0; i < g_fgNDone && !seen; ++i) seen = g_fgDone[i] == ctx;
+    // the last 16 contexts (g_fgNDone keeps counting past the ring's size)
+    const LONG nDone = std::min<LONG>(g_fgNDone, 16);
+    for (LONG i = 0; i < nDone && !seen; ++i) seen = g_fgDone[i] == ctx;
     if (!seen)
     {
         g_fgDone[g_fgNDone % 16] = ctx; ++g_fgNDone;
@@ -681,9 +707,11 @@ static int32_t Hook_XefgTagRes(void* ctx, void* cl, uint32_t id, const XefgResDa
         uint64_t key = (uint64_t) d->type | (uint64_t) d->validity << 4 | (uint64_t) fmt << 8 | (uint64_t) d->w << 16 | (uint64_t) d->h << 40 | (uint64_t) (cl != nullptr) << 63;
         bool known = false;
         for (LONG i = 0; i < nSeen && i < 32; ++i) known |= seen[i] == key;
-        if (!known && nSeen < 32)
+        // the slot is taken first: two threads past the check would otherwise both index from one count
+        const LONG slot = !known && nSeen < 32 ? InterlockedIncrement(&nSeen) - 1 : 32;
+        if (slot < 32)
         {
-            seen[InterlockedIncrement(&nSeen) - 1] = key;
+            seen[slot] = key;
             FLog("tag resource id %u: type %u validity %u base %u,%u size %ux%u format %u state 0x%x cmdlist %d -> %d", id, d->type,
                  d->validity, d->baseX, d->baseY, d->w, d->h, fmt, d->state, cl != nullptr, r);
         }
