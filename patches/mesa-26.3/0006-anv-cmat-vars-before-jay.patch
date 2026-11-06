@@ -1,0 +1,45 @@
+From f7be6fb0dd062bc5754cf5abdd98ac796ee3422f Mon Sep 17 00:00:00 2001
+From: xess-xmx-linux <xmx@localhost>
+Date: Fri, 6 Nov 2026 23:11:27 +0900
+Subject: [PATCH] anv: lower the variables cooperative matrix lowering leaves
+ before Jay (xess-xmx-linux)
+
+brw_nir_lower_cmat leaves function_temp variables behind; in a compute
+shader of Cyberpunk 2077 they are dead stores into ivec8 vectors. The
+cooperative matrix block of anv_shader_compile runs no vars_to_ssa or
+dead-variable removal after it, so the derefs reach Jay, whose
+jay_emit_instr has UNREACHABLE("All derefs should've been lowered") for
+them. In a release build that is __builtin_unreachable: the code jumps
+into whatever the compiler placed next (jay_emit_fb_write with GCC 15),
+and the game crashes while it compiles the shader. An assert build stops
+there instead. Whether a given build crashes depends on its code layout.
+
+Lower them to SSA and remove the dead stores and variables right after
+the cooperative matrix lowering.
+---
+ src/intel/vulkan/anv_shader_compile.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
+index 707a359..d73c60d 100644
+--- a/src/intel/vulkan/anv_shader_compile.c
++++ b/src/intel/vulkan/anv_shader_compile.c
+@@ -1491,6 +1491,15 @@ anv_shader_lower_nir(struct anv_device *device,
+ 
+       NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+                nir_var_function_temp, 16);
++
++      /* The lowering leaves function_temp variables behind (in Cyberpunk 2077, dead stores into vectors of
++       * the matrix lowering). brw copes with derefs, Jay does not: it reaches an UNREACHABLE for them, which in
++       * a release build jumps into unrelated code and can crash the game while it compiles the shader.
++       */
++      NIR_PASS(_, nir, nir_lower_vars_to_ssa);
++      NIR_PASS(_, nir, nir_opt_dead_write_vars);
++      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
++      NIR_PASS(_, nir, nir_opt_dce);
+    }
+ 
+    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+-- 
+2.53.0
+

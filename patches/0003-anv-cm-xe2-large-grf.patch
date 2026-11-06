@@ -1,4 +1,4 @@
-From 381622e487f77b5e3bb0b20cb91cb1a60d0de093 Mon Sep 17 00:00:00 2001
+From cf8a5a86e4f2bbf199c68b1b34a023c377831f56 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Sun, 4 Oct 2026 17:08:57 -0300
 Subject: [PATCH] anv: enable Large GRF Mode around CM kernels on Xe2
@@ -148,10 +148,10 @@ index f6f2124..eac5943 100644
  
     /* Apply any outstanding flushes in case pipeline select haven't. */
 diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
-index 5429c88..b7400b5 100644
+index d180f6e..dcbd1c0 100644
 --- a/src/intel/vulkan/genX_cm.c
 +++ b/src/intel/vulkan/genX_cm.c
-@@ -328,3 +328,62 @@ genX(cm_setup_walker)(struct anv_device *device,
+@@ -337,3 +337,62 @@ genX(cm_setup_walker)(struct anv_device *device,
     walker->IndirectDataStartAddress = shader->cm_indirect.offset;
  }
  #endif

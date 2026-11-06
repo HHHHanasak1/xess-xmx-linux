@@ -173,7 +173,7 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                                   patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
-                                  RE Engine games
+                                  RE Engine games, and 0006, a Jay crash fix for cooperative matrix shaders
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),

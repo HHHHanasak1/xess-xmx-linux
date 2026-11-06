@@ -1,4 +1,4 @@
-From 3c4f3e4bf78ddf5c96b58043f7ca379e3d76ad44 Mon Sep 17 00:00:00 2001
+From 26f07733858670396a1f853ab5cbd349df84912f Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
 Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
@@ -6,13 +6,13 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
 
 ---
  src/intel/compiler/brw/brw_compiler.h   |   21 +
- src/intel/vulkan/anv_cm.c               | 1425 +++++++++++++++++++++++
- src/intel/vulkan/anv_cm.h               |   69 ++
+ src/intel/vulkan/anv_cm.c               | 1794 +++++++++++++++++++++++
+ src/intel/vulkan/anv_cm.h               |   69 +
  src/intel/vulkan/anv_device.c           |   20 +-
  src/intel/vulkan/anv_private.h          |    9 +
  src/intel/vulkan/anv_shader.c           |    5 +
  src/intel/vulkan/anv_shader_compile.c   |   14 +-
- src/intel/vulkan/genX_cm.c              |  168 +++
+ src/intel/vulkan/genX_cm.c              |  177 +++
  src/intel/vulkan/genX_cmd_buffer.c      |   28 +-
  src/intel/vulkan/genX_cmd_compute.c     |    8 +
  src/intel/vulkan/genX_shader.c          |    5 +
@@ -20,7 +20,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
  src/intel/vulkan/meson.build            |    3 +
  src/vulkan/runtime/vk_pipeline.c        |    2 +-
  src/vulkan/runtime/vk_shader.h          |    3 +
- 15 files changed, 1773 insertions(+), 11 deletions(-)
+ 15 files changed, 2151 insertions(+), 11 deletions(-)
  create mode 100644 src/intel/vulkan/anv_cm.c
  create mode 100644 src/intel/vulkan/anv_cm.h
  create mode 100644 src/intel/vulkan/genX_cm.c
@@ -59,10 +59,10 @@ index 6d499ae..7610ec0 100644
        struct brw_push_const_block per_thread;
 diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
 new file mode 100644
-index 0000000..1da0453
+index 0000000..d685456
 --- /dev/null
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -0,0 +1,1425 @@
+@@ -0,0 +1,1794 @@
 +/*
 + * Copyright © 2026 xess-xmx-linux contributors
 + * SPDX-License-Identifier: MIT
@@ -89,6 +89,9 @@ index 0000000..1da0453
 +#include <sys/wait.h>
 +#include <dirent.h>
 +#include <dlfcn.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <pthread.h>
 +#include "util/simple_mtx.h"
 +#include <time.h>
 +#include <spawn.h>
@@ -113,6 +116,22 @@ index 0000000..1da0453
 +#define ANV_CM_CANARY_LO 0x00414e43u
 +#define ANV_CM_CANARY_HI 0x7fa15952u
 +#define ANV_CM_LEGACY_CANARY_WG_Z 17
++
++/* Per-user folder of the kernel cache and the compile log: $XDG_CACHE_HOME/xess-xmx, else ~/.cache/xess-xmx. False if
++ * neither variable holds an absolute path: then nothing is cached or logged, rather than in a folder such as /tmp that
++ * other users can write to (a kernel planted there would run on the GPU). */
++static bool
++anv_cm_cache_base(char *buf, size_t len)
++{
++   const char *xdg = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
++   if (xdg && xdg[0] == '/')
++      snprintf(buf, len, "%s/xess-xmx", xdg);
++   else if (home && home[0] == '/')
++      snprintf(buf, len, "%s/.cache/xess-xmx", home);
++   else
++      return false;
++   return true;
++}
 +
 +static struct anv_cm_env anv_cm_env_data;
 +static util_once_flag anv_cm_env_once = UTIL_ONCE_FLAG_INIT;
@@ -308,13 +327,12 @@ index 0000000..1da0453
 +/* Generation of the compiler toolchain: FNV-1a over the ocloc and IGC library file names in <package>/igc, the
 + * contents of the helper scripts and the packer version. Part of every cached kernel's name, so an IGC/ocloc update,
 + * a changed compile script or a new .cmk format invalidates them. */
-+static uint32_t
-+anv_cm_toolchain_gen(void)
++static uint32_t anv_cm_toolchain_gen_value;
++static util_once_flag anv_cm_toolchain_gen_once = UTIL_ONCE_FLAG_INIT;
++
++static void
++anv_cm_toolchain_gen_init(void)
 +{
-+   static uint32_t gen;
-+   static bool done;
-+   if (done)
-+      return gen;
 +   uint32_t h = 2166136261u;
 +   char helper[600], dir[700];
 +   if (anv_cm_helper_path(helper, sizeof(helper))) {
@@ -357,21 +375,34 @@ index 0000000..1da0453
 +   const char *cmdev = getenv("CM_DEVICE");
 +   for (const char *c = cmdev ? cmdev : ""; *c; c++)
 +      h = (h ^ (uint8_t)*c) * 16777619u;
-+   gen = h;
-+   done = true;
-+   return gen;
++   anv_cm_toolchain_gen_value = h;
 +}
 +
-+/* Per-user kernel cache: ~/.cache/xess-xmx/kernels (XDG_CACHE_HOME honoured); fills the folder and the file name. */
-+static void
-+anv_cm_cache_path(struct anv_device *device, const char *hash, char *dir, size_t dirlen, char *path, size_t pathlen)
++/* computed once; several threads may ask at the same time */
++static uint32_t
++anv_cm_toolchain_gen(void)
 +{
-+   const char *xdg = getenv("XDG_CACHE_HOME");
-+   if (xdg && xdg[0])
-+      snprintf(dir, dirlen, "%s/xess-xmx/kernels", xdg);
-+   else
-+      snprintf(dir, dirlen, "%s/.cache/xess-xmx/kernels", getenv("HOME") ? getenv("HOME") : "/tmp");
-+   snprintf(path, pathlen, "%s/%s_%04x_%08x.cmk", dir, hash, device->info->pci_device_id, anv_cm_toolchain_gen());
++   util_call_once(&anv_cm_toolchain_gen_once, anv_cm_toolchain_gen_init);
++   return anv_cm_toolchain_gen_value;
++}
++
++/* Per-user kernel cache: <anv_cm_cache_base>/kernels; fills the folder and the file name of a kernel for the GPU with
++ * PCI device id pci. False (and a line once) when there is no per-user cache folder. */
++static bool
++anv_cm_cache_path(uint32_t pci, const char *hash, char *dir, size_t dirlen, char *path, size_t pathlen)
++{
++   char base[480];
++   if (!anv_cm_cache_base(base, sizeof(base))) {
++      static bool said;
++      if (!said)
++         fprintf(stderr, "ANV CM: neither XDG_CACHE_HOME nor HOME is an absolute path: no kernel cache, kernels "
++                 "cannot be compiled\n");
++      said = true;
++      return false;
++   }
++   snprintf(dir, dirlen, "%s/kernels", base);
++   snprintf(path, pathlen, "%s/%s_%04x_%08x.cmk", dir, hash, pci, anv_cm_toolchain_gen());
++   return true;
 +}
 +
 +/* ---- .cmk packer ------------------------------------------------------------------------------------------------
@@ -825,18 +856,21 @@ index 0000000..1da0453
 +}
 +/* ---- end of the .cmk packer ---- */
 +
-+/* Appends a line to the compile log: CM_LOG, else ~/.cache/xess-xmx/compile.log (as tools/cm-compile.sh) */
++/* Appends a line to the compile log: CM_LOG, else <anv_cm_cache_base>/compile.log (as tools/cm-compile.sh); without
++ * either nothing is logged */
 +static void PRINTFLIKE(1, 2)
 +anv_cm_log(const char *fmt, ...)
 +{
 +   char path[600];
-+   const char *log = getenv("CM_LOG"), *xdg = getenv("XDG_CACHE_HOME");
-+   if (log && log[0])
++   const char *log = getenv("CM_LOG");
++   if (log && log[0]) {
 +      snprintf(path, sizeof(path), "%s", log);
-+   else if (xdg && xdg[0])
-+      snprintf(path, sizeof(path), "%s/xess-xmx/compile.log", xdg);
-+   else
-+      snprintf(path, sizeof(path), "%s/.cache/xess-xmx/compile.log", getenv("HOME") ? getenv("HOME") : "/tmp");
++   } else {
++      char base[400];
++      if (!anv_cm_cache_base(base, sizeof(base)))
++         return;
++      snprintf(path, sizeof(path), "%s/compile.log", base);
++   }
 +   FILE *f = fopen(path, "a");
 +   if (!f)
 +      return;
@@ -847,10 +881,33 @@ index 0000000..1da0453
 +   fclose(f);
 +}
 +
++/* What a compile needs of the GPU, copied: a background compile (see anv_cm_prefetch) may outlive the device. */
++struct anv_cm_target {
++   uint32_t pci_id;
++   uint32_t grf_size;
++};
++
++static struct anv_cm_target
++anv_cm_target(const struct anv_device *device)
++{
++   return (struct anv_cm_target) { device->info->pci_device_id, device->info->grf_size };
++}
++
++/* A kernel hash as the placeholders carry it and the shim names its files: 16 lowercase hex digits. Anything else read
++ * from a file (compile_failed.txt, map.txt) is not used to build paths. */
++static bool
++anv_cm_hash_ok(const char *s)
++{
++   for (unsigned i = 0; i < 16; i++)
++      if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
++         return false;
++   return s[16] == 0;
++}
++
 +/* Packs the zebin in outdir (k_*.bin, as ocloc names it) with the work-group size of the options file opt into
 + * path, through a private temporary name (two threads may compile the same kernel). */
 +static bool
-+anv_cm_pack_dir(struct anv_device *device, const char *outdir, const char *opt, const char *path,
++anv_cm_pack_dir(uint32_t grf_size, const char *outdir, const char *opt, const char *path,
 +                uint64_t lws[3], char *err, size_t errlen)
 +{
 +   char bin[700] = "";
@@ -878,7 +935,7 @@ index 0000000..1da0453
 +   if (z && o) {
 +      anv_cm_opt_lws(o, on, lws);
 +      size_t cn;
-+      uint8_t *cmk = anv_cm_pack(z, zn, lws, device->info->grf_size, &cn, err, errlen);
++      uint8_t *cmk = anv_cm_pack(z, zn, lws, grf_size, &cn, err, errlen);
 +      if (cmk) {
 +         static int seq;
 +         char tmp[800];
@@ -903,10 +960,56 @@ index 0000000..1da0453
 +   return ok;
 +}
 +
++/* Seconds one run of the compiler helper may take: ANV_CM_COMPILE_TIMEOUT, default 120 (a kernel normally compiles in
++ * well under a second), 0 = no limit. A helper past it is killed with everything it started and counts as a failed
++ * compile, so the marker is written and the shim falls back to XeSS' DP4a path instead of the game waiting forever. */
++static unsigned
++anv_cm_compile_timeout(void)
++{
++   const char *t = getenv("ANV_CM_COMPILE_TIMEOUT");
++   if (!t || !t[0])
++      return 120;
++   char *end;
++   const unsigned long v = strtoul(t, &end, 10);
++   return *end ? 120 : (unsigned)MIN2(v, 86400ul);
++}
++
++/* Waits for the helper, which leads its own process group (see anv_cm_compile). Returns its exit code, -1 if a signal
++ * ended it, -2 if the deadline passed (the whole group is killed then). A helper reaped by someone else (SIGCHLD
++ * ignored by the game) counts as exit code 0, as before: packing then shows whether it worked. */
++static int
++anv_cm_wait(pid_t pid, unsigned timeout_s)
++{
++   struct timespec t0, now;
++   clock_gettime(CLOCK_MONOTONIC, &t0);
++   for (;;) {
++      int status = 0;
++      const pid_t r = waitpid(pid, &status, timeout_s ? WNOHANG : 0);
++      if (r == pid)
++         return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
++      if (r < 0) {
++         if (errno == EINTR)
++            continue;
++         return 0;
++      }
++      if (r != 0)
++         continue;
++      clock_gettime(CLOCK_MONOTONIC, &now);
++      if ((now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9 >= timeout_s) {
++         kill(-pid, SIGKILL);
++         while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
++            ;
++         return -2;
++      }
++      const struct timespec nap = { 0, 5 * 1000 * 1000 };
++      nanosleep(&nap, NULL);
++   }
++}
++
 +/* Runs the compiler helper for <name>.spv (the kernel's hash, or dyn_<id> from an older shim) and packs its output
-+ * into path; true when the packed kernel exists afterwards. */
++ * into path; true when the packed kernel exists afterwards. Safe to run on several threads at once. */
 +static bool
-+anv_cm_compile(struct anv_device *device, const char *sdir, const char *name, const char *hash, const char *cdir,
++anv_cm_compile(const struct anv_cm_target *tgt, const char *sdir, const char *name, const char *hash, const char *cdir,
 +               const char *path)
 +{
 +   char spv[600], opt[600];
@@ -931,8 +1034,8 @@ index 0000000..1da0453
 +   }
 +   /* posix_spawn instead of system(): no fork of the (multi-GB) game process for every kernel */
 +   char pci[32], grf[32], out[640];
-+   snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", device->info->pci_device_id);
-+   snprintf(grf, sizeof(grf), "CM_GRF_BYTES=%u", (unsigned)device->info->grf_size);
++   snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", tgt->pci_id);
++   snprintf(grf, sizeof(grf), "CM_GRF_BYTES=%u", (unsigned)tgt->grf_size);
 +   snprintf(out, sizeof(out), "CM_OUT_DIR=%s", outdir);
 +   extern char **environ;
 +   unsigned nenv = 0;
@@ -955,20 +1058,41 @@ index 0000000..1da0453
 +   fprintf(stderr, "ANV CM: compiling kernel %s (%s.spv)\n", hash, name);
 +   struct timespec t0, t1;
 +   clock_gettime(CLOCK_MONOTONIC, &t0);
++   /* The helper leads its own process group, so that one past its deadline is killed together with the ocloc it
++    * started. No signal blocked (the calling thread may block some) and SIGCHLD/SIGPIPE at their defaults (the
++    * shell waits for ocloc); stdin is /dev/null, as a background process group reading a terminal would stop. */
++   posix_spawnattr_t attr;
++   posix_spawn_file_actions_t fa;
++   sigset_t none, dfl;
++   sigemptyset(&none);
++   sigemptyset(&dfl);
++   sigaddset(&dfl, SIGCHLD);
++   sigaddset(&dfl, SIGPIPE);
++   posix_spawnattr_init(&attr);
++   posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
++   posix_spawnattr_setpgroup(&attr, 0);
++   posix_spawnattr_setsigmask(&attr, &none);
++   posix_spawnattr_setsigdefault(&attr, &dfl);
++   posix_spawn_file_actions_init(&fa);
++   posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
 +   pid_t pid;
-+   int rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, envp);
++   int rc = posix_spawn(&pid, "/bin/sh", &fa, &attr, argv, envp);
++   posix_spawn_file_actions_destroy(&fa);
++   posix_spawnattr_destroy(&attr);
 +   free(envp);
-+   if (rc == 0) {
-+      int status = 0;
-+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-+         ;
-+      rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-+   }
 +   bool ok = false;
 +   char err[300] = "";
 +   if (rc == 0) {
++      const unsigned timeout = anv_cm_compile_timeout();
++      rc = anv_cm_wait(pid, timeout);
++      if (rc == -2) {
++         snprintf(err, sizeof(err), "no result after %u s, killed (ANV_CM_COMPILE_TIMEOUT)", timeout);
++         anv_cm_log("cm-compile TIMEOUT: %s: %s\n", spv, err);
++      }
++   }
++   if (rc == 0) {
 +      uint64_t lws[3];
-+      if (anv_cm_pack_dir(device, outdir, opt, path, lws, err, sizeof(err))) {
++      if (anv_cm_pack_dir(tgt->grf_size, outdir, opt, path, lws, err, sizeof(err))) {
 +         clock_gettime(CLOCK_MONOTONIC, &t1);
 +         /* device and flags as the helper chose them (CM_OUT_DIR/info) */
 +         char info[700], dev[64] = "?", flags[512] = "";
@@ -1014,34 +1138,229 @@ index 0000000..1da0453
 +   return true;
 +}
 +
++/* ---- compile jobs ----------------------------------------------------------------------------------------------
++ * Every kernel this process compiles has a job, keyed by its cache file. The kernel a pipeline needs now is compiled
++ * by the thread creating it. On such a miss the other kernels in the shim's folder whose packed file is missing (all
++ * of them after a driver, IGC or helper update) are queued for up to ANV_CM_COMPILE_JOBS worker threads (default one
++ * less than the online CPUs, at most 8; 0 = off), so they are ready when XeSS asks for them instead of compiling one
++ * after another inside vkCreateComputePipelines. A thread that needs a kernel a worker is compiling waits for it; a
++ * queued one it takes over. Results reach the cache under a private name and are renamed into place, so threads and
++ * other processes see either no file or a whole one. A failed background compile is not final (the kernel is compiled
++ * again when it is needed); a failed compile of a needed kernel is not tried again in this process (each recreation of
++ * the placeholder would spawn the compiler once more and append another marker line; the next launch retries it). */
++enum anv_cm_job_state {
++   ANV_CM_JOB_QUEUED,
++   ANV_CM_JOB_RUNNING,
++   ANV_CM_JOB_OK,
++   ANV_CM_JOB_PREFETCH_FAILED,
++   ANV_CM_JOB_FAILED,
++};
++
++struct anv_cm_job {
++   enum anv_cm_job_state state;
++   struct anv_cm_target tgt;            /* the fields below never change after the job is created */
++   char hash[20], name[32];
++   char sdir[512], cdir[512], path[512];
++};
++
++#define ANV_CM_MAX_JOBS 1024
++static struct anv_cm_job *anv_cm_jobs[ANV_CM_MAX_JOBS];   /* never freed: a few hundred per process at most */
++static unsigned anv_cm_njobs, anv_cm_nworkers;
++static pthread_mutex_t anv_cm_jobs_mtx = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t anv_cm_jobs_cnd = PTHREAD_COND_INITIALIZER;
++
++/* The job of cache file path, created in state st if there is none (*created); NULL if the table is full. Called with
++ * anv_cm_jobs_mtx held. */
++static struct anv_cm_job *
++anv_cm_job_get(const char *path, enum anv_cm_job_state st, const struct anv_cm_target *tgt, const char *sdir,
++               const char *name, const char *hash, const char *cdir, bool *created)
++{
++   *created = false;
++   for (unsigned i = 0; i < anv_cm_njobs; i++)
++      if (strcmp(anv_cm_jobs[i]->path, path) == 0)
++         return anv_cm_jobs[i];
++   if (anv_cm_njobs == ANV_CM_MAX_JOBS)
++      return NULL;
++   struct anv_cm_job *j = calloc(1, sizeof(*j));
++   if (!j)
++      return NULL;
++   j->state = st;
++   j->tgt = *tgt;
++   snprintf(j->hash, sizeof(j->hash), "%s", hash);
++   snprintf(j->name, sizeof(j->name), "%s", name);
++   snprintf(j->sdir, sizeof(j->sdir), "%s", sdir);
++   snprintf(j->cdir, sizeof(j->cdir), "%s", cdir);
++   snprintf(j->path, sizeof(j->path), "%s", path);
++   anv_cm_jobs[anv_cm_njobs++] = j;
++   *created = true;
++   return j;
++}
++
++static void *
++anv_cm_worker(void *arg)
++{
++   (void)arg;
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   for (;;) {
++      struct anv_cm_job *j = NULL;
++      for (unsigned i = 0; i < anv_cm_njobs && !j; i++)
++         if (anv_cm_jobs[i]->state == ANV_CM_JOB_QUEUED)
++            j = anv_cm_jobs[i];
++      if (!j)
++         break;
++      j->state = ANV_CM_JOB_RUNNING;
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++      /* another process may have packed it meanwhile */
++      const bool ok = access(j->path, R_OK) == 0 ||
++                      anv_cm_compile(&j->tgt, j->sdir, j->name, j->hash, j->cdir, j->path);
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      j->state = ok ? ANV_CM_JOB_OK : ANV_CM_JOB_PREFETCH_FAILED;
++      pthread_cond_broadcast(&anv_cm_jobs_cnd);
++   }
++   anv_cm_nworkers--;   /* workers end when the queue is empty; the next miss starts new ones */
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   return NULL;
++}
++
++/* ANV_CM_COMPILE_JOBS, else one less than the online CPUs (the thread that needs a kernel compiles too), at most 8 */
++static unsigned
++anv_cm_max_workers(void)
++{
++   const char *s = getenv("ANV_CM_COMPILE_JOBS");
++   if (s && s[0])
++      return (unsigned)MIN2(strtoul(s, NULL, 10), 32ul);
++   const long n = sysconf(_SC_NPROCESSORS_ONLN);
++   return n > 1 ? (unsigned)MIN2(n - 1, 8l) : 0;
++}
++
++/* The workers run code of this library: it stays mapped even if the loader unloads the driver (the last
++ * vkDestroyInstance) while they compile. */
++static void
++anv_cm_pin_library(void)
++{
++   Dl_info dl;
++   if (dladdr((void *)anv_cm_pin_library, &dl) && dl.dli_fname)
++      (void)dlopen(dl.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE);
++}
++
++/* Queues every kernel of the shim's folder sdir whose packed file is missing and that this process has no job for
++ * (<16 hex digits>.spv with its .opt: the shim writes both under a temporary name and renames them, the .opt last), and
++ * starts workers for them. */
++static void
++anv_cm_prefetch(const struct anv_cm_target *tgt, const char *sdir)
++{
++   const unsigned max = anv_cm_max_workers();
++   if (max == 0)
++      return;
++   DIR *d = opendir(sdir);
++   if (!d)
++      return;
++   unsigned queued = 0;
++   struct dirent *e;
++   while ((e = readdir(d))) {
++      char hash[17], opt[600], cdir[512], path[512];
++      if (strlen(e->d_name) != 20 || strcmp(e->d_name + 16, ".spv") != 0)
++         continue;
++      memcpy(hash, e->d_name, 16);
++      hash[16] = 0;
++      if (!anv_cm_hash_ok(hash) || !anv_cm_cache_path(tgt->pci_id, hash, cdir, sizeof(cdir), path, sizeof(path)) ||
++          access(path, R_OK) == 0)
++         continue;
++      snprintf(opt, sizeof(opt), "%s/%s.opt", sdir, hash);
++      if (access(opt, R_OK) != 0)
++         continue;
++      bool created;
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      anv_cm_job_get(path, ANV_CM_JOB_QUEUED, tgt, sdir, hash, hash, cdir, &created);
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++      queued += created;
++   }
++   closedir(d);
++   if (queued == 0)
++      return;
++   static util_once_flag pin_once = UTIL_ONCE_FLAG_INIT;
++   util_call_once(&pin_once, anv_cm_pin_library);
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   unsigned waiting = 0;
++   for (unsigned i = 0; i < anv_cm_njobs; i++)
++      waiting += anv_cm_jobs[i]->state == ANV_CM_JOB_QUEUED;
++   unsigned started = 0;
++   while (anv_cm_nworkers < MIN2(max, waiting)) {
++      /* signals blocked in the workers, so that none of the game's handlers runs on them */
++      sigset_t all, old;
++      sigfillset(&all);
++      pthread_sigmask(SIG_SETMASK, &all, &old);
++      pthread_attr_t attr;
++      pthread_attr_init(&attr);
++      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++      pthread_t t;
++      const int rc = pthread_create(&t, &attr, anv_cm_worker, NULL);
++      pthread_attr_destroy(&attr);
++      pthread_sigmask(SIG_SETMASK, &old, NULL);
++      if (rc != 0)
++         break;
++      anv_cm_nworkers++;
++      started++;
++   }
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   fprintf(stderr, "ANV CM: %u more kernel(s) without a packed file queued, %u background compile(s) started\n",
++           queued, started);
++}
++
++/* A kernel needed now: compiled on this thread, or waited for if a worker is compiling it. prefetch: queue the other
++ * kernels of sdir too (placeholders of the hash format). *fresh is false when the kernel failed earlier in this process
++ * and was not tried again. */
++static bool
++anv_cm_compile_needed(const struct anv_cm_target *tgt, const char *sdir, const char *name, const char *hash,
++                      const char *cdir, const char *path, bool prefetch, bool *fresh)
++{
++   *fresh = false;
++   bool created;
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   struct anv_cm_job *j = anv_cm_job_get(path, ANV_CM_JOB_RUNNING, tgt, sdir, name, hash, cdir, &created);
++   while (j && !created) {
++      if (j->state == ANV_CM_JOB_RUNNING) {
++         pthread_cond_wait(&anv_cm_jobs_cnd, &anv_cm_jobs_mtx);
++         continue;
++      }
++      if (j->state == ANV_CM_JOB_FAILED || (j->state == ANV_CM_JOB_OK && access(path, R_OK) == 0)) {
++         const bool ok = j->state == ANV_CM_JOB_OK;
++         pthread_mutex_unlock(&anv_cm_jobs_mtx);
++         return ok;
++      }
++      j->state = ANV_CM_JOB_RUNNING;   /* still queued, failed in the background, or its file is gone: compile it here */
++      break;
++   }
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   if (prefetch)
++      anv_cm_prefetch(tgt, sdir);
++   *fresh = true;
++   const bool ok = anv_cm_compile(tgt, sdir, name, hash, cdir, path);
++   if (j) {
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      j->state = ok ? ANV_CM_JOB_OK : ANV_CM_JOB_FAILED;
++      pthread_cond_broadcast(&anv_cm_jobs_cnd);
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   }
++   return ok;
++}
++
 +/* The packed kernel of a placeholder, compiled from <sdir>/<name>.spv on a cache miss. name is the kernel's hash
-+ * (placeholders that carry it) or dyn_<id> (the id placeholders of an older shim, id >= 0). */
++ * (placeholders that carry it, id -1) or dyn_<id> (the id placeholders of an older shim, id >= 0). */
 +static bool
 +anv_cm_kernel_path(struct anv_device *device, const char *sdir, int id, const char *name, const char *hash,
 +                   char *path, size_t pathlen)
 +{
++   const struct anv_cm_target tgt = anv_cm_target(device);
 +   char cdir[512];
-+   anv_cm_cache_path(device, hash, cdir, sizeof(cdir), path, pathlen);
-+   if (access(path, R_OK) == 0)
-+      return true;
-+   /* a kernel that failed to compile in this process is not tried again here (each recreation of the placeholder
-+    * would spawn the compiler once more and append another marker line); the next launch retries it */
-+   static char failed[64][32];
-+   static unsigned nfailed;
-+   static simple_mtx_t failed_mtx = SIMPLE_MTX_INITIALIZER;
-+   simple_mtx_lock(&failed_mtx);
-+   bool known = false;
-+   for (unsigned k = 0; k < nfailed && !known; k++)
-+      known = strcmp(failed[k], hash) == 0;
-+   simple_mtx_unlock(&failed_mtx);
-+   if (known)
-+      return false;
-+   if (anv_cm_compile(device, sdir, name, hash, cdir, path))
-+      return true;
-+   simple_mtx_lock(&failed_mtx);
-+   if (nfailed < ARRAY_SIZE(failed))
-+      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
-+   simple_mtx_unlock(&failed_mtx);
++   bool ok = false, fresh = true;
++   if (anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, pathlen)) {
++      if (access(path, R_OK) == 0)
++         return true;
++      ok = anv_cm_compile_needed(&tgt, sdir, name, hash, cdir, path, id < 0, &fresh);
++   }
++   if (ok || !fresh)
++      return ok;
 +   /* tells the shim to fall back to XeSS' DP4a path on the next launch; retried by anv_cm_retry_failed(). The line is
 +    * "<id> <hash>", id -1 for a kernel named by its hash. */
 +   char mark[600];
@@ -1068,7 +1387,7 @@ index 0000000..1da0453
 +      char line[128], h[32];
 +      int i;
 +      while (fgets(line, sizeof(line), mf))
-+         if (sscanf(line, "%d %31s", &i, h) == 2 && i == id)
++         if (sscanf(line, "%d %31s", &i, h) == 2 && i == id && anv_cm_hash_ok(h))
 +            snprintf(hash, sizeof(hash), "%s", h);
 +      fclose(mf);
 +   }
@@ -1131,8 +1450,9 @@ index 0000000..1da0453
 +            snprintf(hash, hashlen, "%08x%08x", v[j], v[i]);
 +            char spv[700], cdir[512], cmk[700];
 +            snprintf(spv, sizeof(spv), "%s/%s.spv", sdir, hash);
-+            anv_cm_cache_path(device, hash, cdir, sizeof(cdir), cmk, sizeof(cmk));
-+            if (access(spv, R_OK) == 0 || access(cmk, R_OK) == 0)
++            if (access(spv, R_OK) == 0 ||
++                (anv_cm_cache_path(device->info->pci_device_id, hash, cdir, sizeof(cdir), cmk, sizeof(cmk)) &&
++                 access(cmk, R_OK) == 0))
 +               return true;
 +         }
 +      }
@@ -1236,13 +1556,15 @@ index 0000000..1da0453
 +   f = fopen(mark, "r");
 +   if (!f)
 +      return;
++   const struct anv_cm_target tgt = anv_cm_target(device);
 +   char hash[32], keep[64][48];
 +   int id, nkeep = 0, ok = 0;
 +   while (fgets(line, sizeof(line), f)) {
-+      if (line[0] == '#' || sscanf(line, "%d %31s", &id, hash) != 2)
++      /* only lines as anv_cm_kernel_path writes them: the hash builds file names */
++      if (line[0] == '#' || sscanf(line, "%d %31s", &id, hash) != 2 || id < -1 || !anv_cm_hash_ok(hash))
 +         continue;
 +      char cdir[512], path[700];
-+      anv_cm_cache_path(device, hash, cdir, sizeof(cdir), path, sizeof(path));
++      const bool cache = anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, sizeof(path));
 +      bool done = false;
 +      for (int k = 0; k < nkeep; k++)      /* duplicate line of a kernel that failed again */
 +         done |= strncmp(keep[k], line, sizeof(keep[k]) - 1) == 0;
@@ -1253,7 +1575,7 @@ index 0000000..1da0453
 +         snprintf(name, sizeof(name), "dyn_%d", id);   /* an older shim's id */
 +      else
 +         snprintf(name, sizeof(name), "%s", hash);
-+      if (access(path, R_OK) == 0 || anv_cm_compile(device, sdir, name, hash, cdir, path))
++      if (cache && (access(path, R_OK) == 0 || anv_cm_compile(&tgt, sdir, name, hash, cdir, path)))
 +         ok++;
 +      else if (nkeep < 64)
 +         snprintf(keep[nkeep++], sizeof(keep[0]), "%d %s\n", id, hash);
@@ -1273,6 +1595,44 @@ index 0000000..1da0453
 +   }
 +   fprintf(stderr, "ANV CM: %d kernel(s) failed to compile again (attempt %d); XeSS uses its generic paths in this prefix\n",
 +           nkeep, attempts + 1);
++}
++
++/* Highest binding table index of a kernel: the table is built per dispatch with an entry for every index up to the
++ * kernel's highest, and 240..255 name special surfaces (SLM, stateless). ocloc numbers a kernel's surfaces from 0. */
++#define ANV_CM_MAX_BTI 239
++/* Per-thread data: the packers write one GRF of packed local ids; up to a few GRFs are accepted. */
++#define ANV_CM_MAX_PER_THREAD 512
++/* COMPUTE_WALKER Indirect Data Length is a 17-bit field */
++#define ANV_CM_MAX_INDIRECT 0x1ffffu
++
++/* Checks a .cmk header against what the packers (anv_cm_pack, tools/cmk_pack.py) can write and the hardware limits,
++ * before any field sizes an allocation, indexes a table or reaches the GPU. *why: the first field out of range. */
++static bool
++anv_cm_header_ok(const struct anv_device *device, const struct cmk_header *h, const char **why)
++{
++#define CMK_CHECK(cond, what) do { if (!(cond)) { *why = what; return false; } } while (0)
++   CMK_CHECK(memcmp(h->magic, "CMK2", 4) == 0, "magic");
++   CMK_CHECK(h->code_size > 0 && h->code_size <= (16u << 20), "code size");
++   CMK_CHECK(h->grf_count >= 1 && h->grf_count <= 256, "GRF count");
++   CMK_CHECK(h->slm_size <= intel_device_info_get_max_slm_size(device->info), "SLM size");
++   /* one hardware thread per work item, dispatched as SIMD32 over lws.x * 32 */
++   for (unsigned k = 0; k < 3; k++)
++      CMK_CHECK(h->lws[k] >= 1 && h->lws[k] <= 1024, "work-group size");
++   const uint64_t threads = (uint64_t)h->lws[0] * h->lws[1] * h->lws[2];
++   CMK_CHECK(h->lws[0] <= 32 && threads <= 1024, "work-group size");
++   CMK_CHECK(h->cross_size <= sizeof(h->cross_data) && h->cross_size % 32 == 0, "cross-thread size");
++   CMK_CHECK(h->per_thread_size == 0 ||
++             (h->per_thread_size >= 6 && h->per_thread_size <= ANV_CM_MAX_PER_THREAD &&
++              h->per_thread_size % device->info->grf_size == 0), "per-thread size");
++   CMK_CHECK(h->cross_size + h->per_thread_size * threads <= ANV_CM_MAX_INDIRECT, "payload size");
++   CMK_CHECK(h->nsurf <= ARRAY_SIZE(h->bti), "surface count");
++   for (unsigned k = 0; k < h->nsurf; k++) {
++      CMK_CHECK(h->bti[k] <= ANV_CM_MAX_BTI, "binding table index");
++      CMK_CHECK(h->table_idx[k] < MAX_PUSH_CONSTANTS_SIZE / 4, "descriptor table");
++      CMK_CHECK(h->elem[k] < (1u << 20), "descriptor table element");
++   }
++   return true;
++#undef CMK_CHECK
 +}
 +
 +/* The pipeline layout's static sampler (vkd3d-proton turns D3D12 static samplers into immutable samplers). */
@@ -1368,14 +1728,11 @@ index 0000000..1da0453
 +      return ANV_CM_FAILED;
 +   }
 +   struct cmk_header h;
-+   if (fread(&h, sizeof(h), 1, f) != 1 || memcmp(h.magic, "CMK2", 4) != 0 ||
-+       h.code_size == 0 || h.code_size > (16u << 20) ||
-+       h.lws[0] == 0 || h.lws[0] > 32 || h.lws[1] == 0 || h.lws[2] == 0 ||
-+       h.lws[0] * h.lws[1] * h.lws[2] > 1024 ||
-+       h.cross_size > sizeof(h.cross_data) || (h.per_thread_size != 0 && h.per_thread_size < 6) ||
-+       h.nsurf > 24) {
-+      fprintf(stderr, "ANV CM: bad header in %s (lws %u,%u,%u cross %u per-thread %u surfaces %u)\n", path,
-+              h.lws[0], h.lws[1], h.lws[2], h.cross_size, h.per_thread_size, h.nsurf);
++   memset(&h, 0, sizeof(h));
++   const char *why = "too short";
++   if (fread(&h, sizeof(h), 1, f) != 1 || !anv_cm_header_ok(device, &h, &why)) {
++      fprintf(stderr, "ANV CM: bad header in %s (%s; lws %u,%u,%u cross %u per-thread %u surfaces %u)\n",
++              path, why, h.lws[0], h.lws[1], h.lws[2], h.cross_size, h.per_thread_size, h.nsurf);
 +      fclose(f);
 +      return ANV_CM_FAILED;
 +   }
@@ -1459,6 +1816,18 @@ index 0000000..1da0453
 +      if (!l || h.heap_binding >= l->binding_count || h.nsurf > 24 || h.table_pc_base == ~0u) {
 +         fprintf(stderr, "ANV CM: %s: no vkd3d-style descriptor heap in the pipeline layout (%u sets) - "
 +                 "is VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer set?\n", path, ci->set_layout_count);
++         *cs = saved;
++         return ANV_CM_FAILED;
++      }
++      /* every descriptor-table offset the binding table reads at dispatch time lies inside the push constants */
++      uint32_t pc_size = 0;
++      for (uint32_t r = 0; r < ci->push_constant_range_count; r++)
++         pc_size = MAX2(pc_size, ci->push_constant_ranges[r].offset + ci->push_constant_ranges[r].size);
++      bool pc_ok = pc_size <= MAX_PUSH_CONSTANTS_SIZE;
++      for (uint32_t k = 0; k < h.nsurf && pc_ok; k++)
++         pc_ok = (uint64_t)h.table_pc_base + 4ull * h.table_idx[k] + 4 <= pc_size;
++      if (!pc_ok) {
++         fprintf(stderr, "ANV CM: %s: descriptor tables outside the %u bytes of push constants\n", path, pc_size);
 +         *cs = saved;
 +         return ANV_CM_FAILED;
 +      }
@@ -1720,10 +2089,10 @@ index 50731c7..c57bf5f 100644
  
 diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
 new file mode 100644
-index 0000000..1d58ccb
+index 0000000..e7824c9
 --- /dev/null
 +++ b/src/intel/vulkan/genX_cm.c
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,177 @@
 +/*
 + * Copyright © 2026 xess-xmx-linux contributors
 + * SPDX-License-Identifier: MIT
@@ -1869,9 +2238,18 @@ index 0000000..1d58ccb
 +    * indirect object heap (base address 0, so the general state pool offset is the address). */
 +   const uint32_t cross = cs_prog_data->cm_cross_thread_size;
 +   const uint32_t per = cs_prog_data->cm_per_thread_size;
-+   const uint32_t total = cross + per * threads;
++   /* anv_cm_kernel_replace keeps cross + per * threads within Indirect Data Length (17 bits) */
++   const uint64_t total64 = cross + (uint64_t)per * threads;
++   assert(total64 <= 0x1ffff);
++   const uint32_t total = MIN2(total64, 0x1ffff);
 +   shader->cm_indirect = anv_state_pool_alloc(&device->general_state_pool,
 +                                              align(total, 64), 64);
++   if (shader->cm_indirect.map == NULL) {
++      fprintf(stderr, "ANV CM: kernel %u,%u,%u: no memory for its %u-byte payload\n", cs_prog_data->cm_id & 0xff,
++              (cs_prog_data->cm_id >> 8) & 0xff, cs_prog_data->cm_id >> 16, total);
++      shader->cm_indirect = (struct anv_state) { 0 };
++      return;
++   }
 +   memset(shader->cm_indirect.map, 0, align(total, 64));
 +   memcpy(shader->cm_indirect.map, cs_prog_data->cm_cross_thread_data,
 +          MIN2(cross, sizeof(cs_prog_data->cm_cross_thread_data)));
