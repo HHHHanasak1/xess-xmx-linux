@@ -17,11 +17,15 @@ on:
     paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
 
+# the jobs only read the tree and upload artifacts
+permissions:
+  contents: read
+
 jobs:
   scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shell syntax
         run: for f in *.sh tools/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
@@ -45,13 +49,13 @@ jobs:
   icd:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: build
         run: |
           mkdir -p out
           gcc -O2 -Wall -shared -fPIC -fvisibility=hidden -o out/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
           nm -D --defined-only out/libvulkan_intel.so | grep -c ' vk_icd' | grep -qx 3
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xmx-icd
           path: out/libvulkan_intel.so
@@ -96,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:bookworm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: build
         run: bash tools/build-deps.sh out
       - name: glibc floor at most 2.38, sonames the drivers ask for
@@ -108,7 +112,7 @@ jobs:
           done
           objdump -p out/libdisplay-info.so.3 | grep -q 'SONAME *libdisplay-info\.so\.3$'
           objdump -T out/libSPIRV-Tools.so | grep -q ' spvContextCreate$'
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bundled-deps
           path: out/
@@ -116,15 +120,15 @@ jobs:
   shim:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - name: configure
         run: cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: build
         run: cmake --build shim/build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: igdext64
           path: shim/build/igdext64.dll
@@ -134,7 +138,7 @@ jobs:
           mkdir controllib\build
           cl /nologo /O2 /W3 /MT /LD controllib\ControlLib.c /Focontrollib\build\ /Fe:controllib\build\ControlLib.dll /link dxgi.lib dxguid.lib
         shell: cmd
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ControlLib
           path: controllib/build/ControlLib.dll
@@ -143,10 +147,17 @@ jobs:
       - name: FSR headers
         run: bash ffxfg/get-headers.sh
         shell: bash
+      # OFLOW_FG=1: the optical flow (FidelityFX SDK 1.1.4, MIT) is linked into the frame generation DLL
+      - name: FidelityFX SDK 1.1.4 optical flow libraries
+        run: ffxfg\build-ffxsdk.bat
+        shell: cmd
       - name: amd_fidelityfx_framegeneration_dx12.dll
         run: |
           mkdir ffxfg\build
-          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll /link dxguid.lib
+          dxc -nologo -T cs_6_0 -E main -Vn g_oflowExpandCs -Fh ffxfg\build\oflow_expand_cs.h ffxfg\oflow_expand.hlsl || exit /b 1
+          dxc -nologo -T cs_6_0 -E main -Vn g_oflowDownCs -Fh ffxfg\build\oflow_down_cs.h ffxfg\oflow_down.hlsl || exit /b 1
+          cl /nologo /c /O2 /W3 /MT /EHsc /std:c++17 /I ffxfg\build /I ffxfg\ffxsdk\sdk\include ffxfg\ffx_oflow.cpp /Foffxfg\build\ || exit /b 1
+          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xefg.cpp ffxfg\build\ffx_oflow.obj /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll /link dxguid.lib d3d12.lib ffxfg\ffxsdk\sdk\bin\ffx_sdk\ffx_opticalflow_x64.lib ffxfg\ffxsdk\sdk\bin\ffx_sdk\ffx_backend_dx12_x64.lib || exit /b 1
           dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"ffxConfigure" /c:"ffxCreateContext" /c:"ffxDestroyContext" /c:"ffxDispatch" /c:"ffxQuery"
           dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"XefgBridgeCreateSwapChain" /c:"XefgBridgeFrame"
         shell: cmd
@@ -161,7 +172,7 @@ jobs:
           cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\dxgi_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\dxgi.dll
           dumpbin /exports ffxfg\build\dxgi.dll | findstr /c:"CreateDXGIFactory2" /c:"DXGIGetDebugInterface1"
         shell: cmd
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ffx-xess
           path: |
@@ -203,7 +214,7 @@ jobs:
             echo "toolchain download failed (try $try), waiting"
             sleep $((try * 60))
           done
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # the release tarball, not the git tag: upstream deleted the mesa-26.3.0-rc1 tag and its commit when staging/26.3
       # was branched again, and a tag can move; the tarball is checked against a fixed sha256
       - name: mesa source (release tarball from archive.mesa3d.org)
@@ -235,7 +246,7 @@ jobs:
           objdump -p mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -q 'RUNPATH *[$]ORIGIN/[.][.]/deps$'
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBC_2\.[0-9]*" | sort -t. -k2 -n -u | tail -1
           objdump -T mesa/build/src/intel/vulkan/libvulkan_intel.so | grep -o "GLIBCXX_3\.4\.[0-9]*" | sort -t. -k3 -n -u | tail -1
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.name == '26.1.2' && 'libvulkan_intel' || format('libvulkan_intel-{0}', matrix.name) }}
           path: mesa/build/src/intel/vulkan/libvulkan_intel.so

@@ -24,6 +24,7 @@ ENVD="$HOME/.config/environment.d"
 # the prefix folder that holds the shim (shim_pass below), as XeSS sees it
 ALT_EXT='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
 UNITD="$HOME/.config/systemd/user"
+CFGD="$HOME/.config/xess-xmx"   # the session check's copy (step 5)
 SHIM="$PKG/igdext64.dll"
 case "${XMX_WAIT_PREFIX:-0}" in 0|"") MANUAL=1 ;; *) MANUAL=0 ;; esac
 for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/tools/cm-compile.sh"; do
@@ -132,6 +133,10 @@ $f";; esac
   chmod u+w "$f" 2>/dev/null
   put_shim "$f"
 }
+# the hook's path as a Python string literal (a package folder with quotes or backslashes in its name); without python3
+# only " and \ are escaped
+HOOK_LIT=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$PKG/tools/proton-hook.py" 2>/dev/null) || {
+  HOOK_LIT=${PKG//\\/\\\\}/tools/proton-hook.py; HOOK_LIT="\"${HOOK_LIT//\"/\\\"}\""; }
 install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR=xess, FSR_FG=xess)
   local p=$1 u="$1/user_settings.py"
   [ -f "$p/proton" ] && [ -w "$p" ] || return
@@ -143,7 +148,7 @@ install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook
 import os as _os
 user_settings = {}
 try:
-    _h = "$PKG/tools/proton-hook.py"
+    _h = $HOOK_LIT
     if _os.path.isfile(_h):
         exec(compile(open(_h).read(), _h, "exec"), {"__file__": _h, "__name__": "xess_xmx_hook", "SETTINGS": user_settings})
 except Exception as _e:
@@ -245,7 +250,8 @@ if [ -n "$watch" ]; then
     printf '%s\n' "${watch#
 }"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path.new"
   put_unit "$UNITD/xess-xmx-shim.path"
-  { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
+  # without the package folder (moved or deleted without uninstall.sh) the watcher's runs are skipped, not failures
+  { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "ConditionPathExists=$PKG/install.sh"; echo "[Service]"; echo "Type=oneshot";
     echo "ExecStart=/bin/bash \"$PKG/install.sh\""; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service.new"
   put_unit "$UNITD/xess-xmx-shim.service"
   # the watcher itself leaves systemd alone unless a unit changed (a new library or Proton to watch)
@@ -257,8 +263,31 @@ if [ -n "$watch" ]; then
 fi
 # 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
 #    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU
+#    The unit runs a small copy outside the package: if the package folder is deleted or moved, the session environment
+#    still names its driver and leaves out the stock one, so without the folder that copy points the session back to the
+#    stock drivers
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
-  mkdir -p "$UNITD"
+  mkdir -p "$UNITD" "$CFGD"
+  {
+    echo "#!/bin/bash"
+    echo "# xess-xmx session check, written by install.sh, removed by uninstall.sh: runs the package's tools/session-check.sh;"
+    echo "# without the package folder (deleted or moved) the session gets the stock Vulkan drivers back"
+    printf 'PKG=%q\n' "$PKG"
+    cat <<'EOF'
+[ -f "$PKG/tools/session-check.sh" ] && exec /bin/bash "$PKG/tools/session-check.sh" "$@"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx"
+mkdir -p "$CACHE"
+echo "FAILED $(date '+%F %T') package folder $PKG not found" > "$CACHE/driver-status"
+echo "xess-xmx: package folder $PKG not found - using the stock Vulkan drivers; run install.sh again from the package's new place, or uninstall.sh" >&2
+[ "${1:-}" = --dry-run ] && exit 1
+stock=""
+for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
+  for j in "$d"/*.json; do [ -f "$j" ] && stock="${stock:+$stock:}$j"; done
+done
+systemctl --user set-environment "VK_DRIVER_FILES=$stock" "VKD3D_DISABLE_EXTENSIONS=" "ANV_CM_KERNEL_DIR=" "ANV_CM_HELPER="
+exit 0
+EOF
+  } > "$CFGD/session-check.sh.new" && mv -f "$CFGD/session-check.sh.new" "$CFGD/session-check.sh"
   unit_changed=0
   {
     echo "[Unit]"
@@ -267,7 +296,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "[Service]"
     echo "Type=oneshot"
     echo "RemainAfterExit=yes"
-    echo "ExecStart=/bin/bash \"$PKG/tools/session-check.sh\""
+    echo "ExecStart=/bin/bash \"$CFGD/session-check.sh\""
     echo "[Install]"
     echo "WantedBy=graphical-session-pre.target default.target"
   } > "$UNITD/xess-xmx-check.service.new"

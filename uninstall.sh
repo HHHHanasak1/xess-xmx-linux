@@ -12,6 +12,7 @@ systemctl --user unset-environment VK_DRIVER_FILES VKD3D_DISABLE_EXTENSIONS ANV_
 systemctl --user disable --now xess-xmx-shim.path >/dev/null 2>&1
 systemctl --user disable xess-xmx-check.service >/dev/null 2>&1
 rm -f "$HOME/.config/systemd/user/xess-xmx-shim.path" "$HOME/.config/systemd/user/xess-xmx-shim.service" "$HOME/.config/systemd/user/xess-xmx-check.service"
+rm -f "$HOME/.config/xess-xmx/session-check.sh"; rmdir "$HOME/.config/xess-xmx" 2>/dev/null
 systemctl --user daemon-reload 2>/dev/null
 . "$PKG/tools/steam-libraries.sh"
 STEAM="$(steam_root)"

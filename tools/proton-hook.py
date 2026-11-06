@@ -16,6 +16,9 @@
 #   FSR_FG=xess %command%   only the frame generation (the game's own FSR upscaler stays)
 #   FSR=xess FSR_FG=inject %command%   for a game with FSR 3.1+ upscaling and no FSR frame generation: dxgi.dll next to
 #                           the game gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/)
+#   OFLOW_FG=1 %command%    experimental, any DX12 game: the same dxgi.dll next to the game's executable, XeSS-FG fed
+#                           with motion vectors from optical flow on the final image (FFX_XEFG_OFLOW=1,
+#                           docs/optical-flow-frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame
 # Debug: FSR_VENDOR=amd (DXVK reports the GPU as AMD's, for a game that offers FSR only on AMD GPUs; XeSS still gets
 # Intel's vendor id from the package's DLLs).
 # (XESS_FG=<n>, the frame generation override, needs no hook: ControlLib.dll and the shim read it in the game)
@@ -61,15 +64,66 @@ def version(path):
     """a.b.c.d from the file's VS_FIXEDFILEINFO, or None"""
     if path in _versions:
         return _versions[path]
+    sig = b"\xbd\x04\xef\xfe"
+    u16 = lambda b, o: int.from_bytes(b[o:o + 2], "little")
+    u32 = lambda b, o: int.from_bytes(b[o:o + 4], "little")
+
+    def resources(f):
+        """the resource section's bytes (VS_FIXEDFILEINFO lives there; libxess.dll is tens of MB, its resources a few
+        KB), or None when the file is not a PE image with one"""
+        h = f.read(64)
+        if len(h) < 64 or h[:2] != b"MZ":
+            return None
+        pe = u32(h, 0x3c)
+        f.seek(pe)
+        h = f.read(24 + 240)
+        if len(h) < 24 or h[:4] != b"PE\0\0":
+            return None
+        nsec, optsize = u16(h, 6), u16(h, 20)
+        opt = h[24:24 + optsize]
+        dirs = {0x10b: 92, 0x20b: 108}.get(u16(opt, 0))   # NumberOfRvaAndSizes, PE32 / PE32+
+        if dirs is None or len(opt) < dirs + 4 or u32(opt, dirs) < 3 or len(opt) < dirs + 4 + 24:
+            return None
+        rva, size = u32(opt, dirs + 4 + 16), u32(opt, dirs + 4 + 20)   # data directory 2: resources
+        if not rva or not size:
+            return None
+        f.seek(pe + 24 + optsize)
+        secs = f.read(40 * nsec)
+        for s in range(min(nsec, len(secs) // 40)):
+            va, raw, ptr = u32(secs, 40 * s + 12), u32(secs, 40 * s + 16), u32(secs, 40 * s + 20)
+            if va <= rva < va + max(raw, u32(secs, 40 * s + 8)):
+                f.seek(ptr + rva - va)
+                return f.read(min(size, 64 << 20))
+        return None
+
+    def scan(f):
+        """the first signature anywhere in the file, read in pieces (not a PE image: as before)"""
+        f.seek(0)
+        carry = b""
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                return None
+            buf = carry + chunk
+            i = buf.find(sig)
+            if i >= 0:
+                d = buf[i:i + 16]
+                return d + f.read(16 - len(d)) if len(d) < 16 else d
+            carry = buf[-(len(sig) - 1):]
+
     try:
         with open(path, "rb") as f:
-            d = f.read()
+            d = resources(f)
+            if d is not None:
+                i = d.find(sig)
+                d = d[i:i + 16] if i >= 0 else None
+            else:
+                d = scan(f)
     except OSError:
         return None   # not kept: the file may appear later in this run (a link of ours)
-    i = d.find(b"\xbd\x04\xef\xfe")
     v = None
-    if i >= 0:
-        ms, ls = int.from_bytes(d[i + 8:i + 12], "little"), int.from_bytes(d[i + 12:i + 16], "little")
+    if d is not None and len(d) >= 16:
+        ms, ls = u32(d, 8), u32(d, 12)
         v = (ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff)
     _versions[path] = v
     return v
@@ -231,6 +285,42 @@ def inject_fg(top, swaps, ours_fg):
         say("FSR_FG=inject: XeSS-FG swap chain through %s" % f)
 
 
+def oflow_fg(swaps):
+    """OFLOW_FG=1: frame generation for any DX12 game, from optical flow on the final image. dxgi.dll and the frame
+    generation DLL (as ffx_xefg_bridge.dll) with the SDK's libxess_fg.dll and libxell.dll go next to the executable
+    Proton starts (its path is Proton's second argument). Returns True when it is set up."""
+    exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    if sys.argv[1] != "waitforexitandrun":   # Steam's install scripts and redistributables run with "run"
+        return False
+    ours_fg, dxgi = os.path.join(FFXFG, FG_DLL), os.path.join(FFXFG, "dxgi.dll")
+    if not (os.path.isfile(ours_fg) and os.path.isfile(dxgi) and os.path.isfile(os.path.join(STORE, "libxess_fg.dll"))):
+        say("OFLOW_FG: %s, %s or the XeSS SDK (%s, tools/get-xess.sh) missing; no frame generation"
+            % (ours_fg, dxgi, STORE))
+        return False
+    if not exe.lower().endswith(".exe") or not os.path.isfile(exe):
+        say("OFLOW_FG: Proton was not given a game executable (%s); no frame generation" % (exe or "nothing"))
+        return False
+    top = os.path.dirname(os.path.realpath(exe))
+    game = os.path.realpath(os.environ.get("STEAM_COMPAT_INSTALL_PATH", ""))
+    if not game or os.path.commonpath([top, game]) != game:
+        say("OFLOW_FG: %s is not in the game folder; no frame generation" % exe)
+        return False
+    # anything there already (the game's own, or a link a killed run left that clean_left_over could not tell as
+    # ours): left alone, as linking over a link would turn it into a lasting copy
+    for name in ("dxgi.dll", "ffx_xefg_bridge.dll"):
+        if os.path.lexists(os.path.join(top, name)):
+            say("OFLOW_FG: %s already has a %s; no frame generation" % (top, name))
+            return False
+    if os.path.lexists(os.path.join(top, FG_DLL)) or os.path.lexists(os.path.join(top, SINGLE_DLL)):
+        say("OFLOW_FG: the game has FSR frame generation of its own (FSR=xess runs it on XeSS-FG with the game's inputs)")
+    swaps.link(os.path.join(top, "dxgi.dll"), dxgi)
+    swaps.link(os.path.join(top, "ffx_xefg_bridge.dll"), ours_fg)
+    xess_libs(top, swaps, ["libxess_fg.dll", "libxell.dll"])
+    SETTINGS["FFX_XEFG_OFLOW"] = "1"
+    say("OFLOW_FG: XeSS-FG from optical flow next to %s" % os.path.basename(exe))
+    return True
+
+
 def fsr(game, swaps, fg, sr, inject=False, found=None):
     """FSR=xess (upscaling on XeSS SR and frame generation on XeSS-FG) and FSR_FG=xess (frame generation only) in
     every folder with FidelityFX DLLs. FSR 3.1.4+ has a loader with the providers next to it, and only those are
@@ -356,6 +446,7 @@ def main():
     want = os.environ.get("XESS", "")
     fg = os.environ.get("FSR_FG", "")
     sr = os.environ.get("FSR", "")
+    oflow = os.environ.get("OFLOW_FG", "") not in ("", "0")
     game = os.environ.get("STEAM_COMPAT_INSTALL_PATH", "")
     clean_left_over()
     # a session started before install.sh disabled present wait 2 as well (frame generation crashed in
@@ -385,7 +476,10 @@ def main():
         sr = ""
     if sr == "xess":
         fg = "xess"
-    if want != "latest" and fg != "xess" and not sr:
+    if oflow and (fg or sr):
+        say("OFLOW_FG=1 with FSR / FSR_FG: OFLOW_FG is left out (the game's own inputs are better than optical flow)")
+        oflow = False
+    if want != "latest" and fg != "xess" and not sr and not oflow:
         return
     if not game or not os.path.isdir(game):
         say("XESS / FSR: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
@@ -427,6 +521,8 @@ def main():
         else:
             say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
                 % (STORE, PKG))
+    if oflow:
+        oflow_fg(swaps)
     if fsr(game, swaps, fg == "xess", sr, inject, found) and os.environ.get("FSR_VENDOR", "") == "amd":
         # debug, for a game that offers FSR only on AMD GPUs; XeSS still gets Intel's vendor id from the package's DLLs
         add_env("DXVK_CONFIG", "dxgi.customVendorId = 1002", "customVendorId")

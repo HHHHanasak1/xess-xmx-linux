@@ -15,6 +15,8 @@ vkd3d-proton:
   in its launch options ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)). A game that has XeSS itself
   should use that: this route can flicker more. With `dxgi.dll`, a game with FSR upscaling and no FSR frame generation
   gets XeSS frame generation as well: `FSR=xess FSR_FG=inject`.
+* Experimental: XeSS frame generation for any DX12 game, with motion vectors from optical flow on the final image, as
+  a driver-level frame generation works: `OFLOW_FG=1` ([docs/optical-flow-frame-generation.md](docs/optical-flow-frame-generation.md)).
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
 Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super resolution renders correctly and is
@@ -60,7 +62,8 @@ What `install.sh` does:
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
   `tools/rebuild-driver.sh` rebuilds a driver for the new Mesa version. The check also copies the two host libraries
   the Steam Linux Runtime does not have (SPIRV-Tools, libdisplay-info) into `lib/deps/`, where the driver finds them
-  inside the game's container too.
+  inside the game's container too. The unit runs `~/.config/xess-xmx/session-check.sh`, so a package folder that
+  was deleted or moved also leaves the session on the stock drivers (run `install.sh` again from the new place).
 
 Only the native Steam client is supported (SteamOS, distribution packages), not Flatpak Steam.
 
@@ -144,7 +147,7 @@ path; 26.3 is this project's patched Mesa 26.3.0-rc3 (release 20261104):
   compiler backend. Forza Horizon 6 is held back by its render thread on this device, so its frame rate gains less
   than its GPU.
 * With frame generation on, the shim's low latency mode (built on the XeLL API) cuts the latency of the frame queue
-  by 36–50% at the same frame rate (Wuthering Waves).
+  by 36–50% at the same frame rate (Wuthering Waves; a game's own XeSS frame generation, not the FSR routes).
 * Mesa 26.3.0-rc3 unpatched, with this project's Vulkan layer (`xmx-stock.sh`, experimental), runs as fast as the
   patched driver.
 
@@ -177,14 +180,16 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                                   patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
-                                  RE Engine games
+                                  RE Engine games, and 0006, a Jay crash fix for cooperative matrix shaders
     layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on the system's unpatched ANV, per game (experimental)
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
                                   amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
-                                  dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject);
-                                  get-headers.sh fetches the AMD / Intel headers they are built against
+                                  dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject, and
+                                  for any DX12 game from optical flow, OFLOW_FG=1); get-headers.sh fetches the AMD /
+                                  Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
+                                  optical flow libraries
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)

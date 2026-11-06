@@ -9,12 +9,12 @@ A launch option applies to that game only and takes effect at its next start. No
 `install.sh` sets the system-wide defaults (`~/.config/environment.d/50-xess-xmx.conf`). A launch option overrides
 them for one game.
 
-`XESS`, `XESS_LOG`, `FSR` and `FSR_FG` need the system-wide install: `install.sh` puts a small `user_settings.py` into every Proton,
+`XESS`, `XESS_LOG`, `FSR`, `FSR_FG` and `OFLOW_FG` need the system-wide install: `install.sh` puts a small `user_settings.py` into every Proton,
 which Proton runs before it starts a game (`tools/proton-hook.py`). A `user_settings.py` of your own is kept as
 `user_settings.user.py` next to it and still applies. With the per-game install (`enable.sh`) the wrapper comes last,
 after the variables (`MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%`), and these four are not available:
 `XESS=dp4a` and `XESS_LOG=1` have their long variables (debugging.md), `FSR` and `FSR_FG=xess` have
-`tools/fsr-fg.sh` ([fsr-frame-generation.md](fsr-frame-generation.md)), `XESS=latest` and `FSR_FG=inject` have nothing.
+`tools/fsr-fg.sh` ([fsr-frame-generation.md](fsr-frame-generation.md)), `XESS=latest`, `FSR_FG=inject` and `OFLOW_FG` have nothing.
 
 ## Driver
 
@@ -64,6 +64,7 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 | `FSR=xess %command%` | the game's FSR 3.1+ upscaling runs on XeSS super resolution and its FSR frame generation on XeSS frame generation (with `XESS_FG`: multi-frame) | a game with FSR 3.1+ and no XeSS; a game that has XeSS should use it, this route can flicker more ([fsr-frame-generation.md](fsr-frame-generation.md)) |
 | `FSR_FG=xess %command%` | only the game's FSR 3.1+ frame generation runs on XeSS frame generation; the game's FSR upscaling stays | as `FSR=xess`, when the game's own FSR upscaling is wanted |
 | `FSR=xess FSR_FG=inject %command%` | XeSS frame generation for a game with FSR 3.1+ upscaling and no FSR frame generation, fed from the upscaler; choose FSR upscaling in the game. The HUD is interpolated too ([fsr-frame-generation.md](fsr-frame-generation.md)) | a game whose frame generation is DLSS-G only, such as Forza Horizon 6 |
+| `OFLOW_FG=1 %command%` | **experimental**: XeSS frame generation for any DX12 game, with motion vectors from optical flow on the final image instead of the game's; `XESS_FG=<n>` sets the frames shown per rendered frame. The HUD is interpolated too, the rendered frame rate is kept even ([optical-flow-frame-generation.md](optical-flow-frame-generation.md)) | a DX12 game with neither XeSS nor FSR 3.1+, such as Resident Evil 4 (2023) or Viewfinder (`-force-d3d12` after `%command%`) |
 | `FSR_VENDOR=amd %command%` | with `FSR` / `FSR_FG`: DXVK reports the GPU as AMD's to the game; XeSS-FG and XeLL still see Intel's | a game that offers FSR only on AMD GPUs, such as Wuthering Waves (which should rather use its own XeSS) |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | applies the XeLL frame-cap fix (30 fps with frame generation until the pause menu is opened and closed) in this game | another game shows the Wuthering Waves symptom |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | turns that fix off (it is on for Wuthering Waves only) | the fix is suspected to cause a problem |
@@ -75,7 +76,9 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 wait in that queue is most of its latency. While frame generation runs, the shim starts each frame so that it reaches
 the GPU when the GPU gets free (after `xellSleep`, from XeLL's own frame reports). Wuthering Waves, Arc B390, 3x,
 simulation start to present end: 69 -> 35 ms GPU-limited, 76 -> 48 ms and 105 -> 67 ms CPU-limited, at the same frame
-rate. A game without a queue (CONTROL) does not wait, so nothing changes there. It is off while frame generation is
+rate. A game without a queue (CONTROL) does not wait, so nothing changes there. It works for a game's own XeSS frame
+generation only: with `FSR=xess`, `FSR_FG` and `OFLOW_FG` the package's frame generation DLL reports each present to XeLL
+right before the next frame's sleep, so the shim never sees a queue and does not wait. It is off while frame generation is
 off; `IGDEXT_XELL_LOG=1` shows its state (`low latency: on`, `auto: frame generation on ...`, `auto: waited in ...`).
 
 **XeSS older than 2.0.2.68:** DXVK reports an Intel GPU as an AMD one to such a game, so XeSS super resolution looks

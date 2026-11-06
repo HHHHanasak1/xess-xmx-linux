@@ -13,6 +13,7 @@ version = sys.argv[1]
 outdir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(root, "release")
 name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration_dx12.dll", "ffxfg/amd_fidelityfx_upscaler_dx12.dll", "ffxfg/dxgi.dll",
+         "ffxfg/LICENSE.FidelityFX-SDK.txt",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "xmx-stock.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
 # what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py)

@@ -121,14 +121,28 @@ on() {
   echo "launch options sets the number of frames (docs/fsr-frame-generation.md)."
 }
 
+package_copy() { # <file>: true when it is a copy of one of the package's DLLs of that name (all the files "on" can add)
+  local name=${1##*/} p
+  for p in "$PKG/ffxfg/$name" "$PKG/ffx/$name" "$STORE/$name"; do
+    [ -f "$p" ] && cmp -s "$1" "$p" && return 0
+  done
+  return 1
+}
+
 off() {
   local game=$1 o a f name n=0
   while IFS= read -r -d '' o; do
     f="${o%.ffxfg-orig}"; mv -f "$o" "$f" && n=$((n + 1)) && echo "   restored ${f#$game/}"
   done < <(find "$game" -maxdepth 11 -name '*.ffxfg-orig' -print0 2>/dev/null)
+  # .ffxfg-added lists the files "on" put in that folder: only plain names are taken, and only a file that is still
+  # the package's copy goes (one of the game's own, or one changed since, stays)
   while IFS= read -r -d '' a; do
     while IFS= read -r name; do
-      [ -n "$name" ] && rm -f "$(dirname "$a")/$name" && n=$((n + 1)) && echo "   removed $(dirname "${a#$game/}")/$name"
+      case "$name" in ""|.|..|*/*) continue ;; esac
+      f="$(dirname "$a")/$name"
+      [ -f "$f" ] || continue
+      if ! package_copy "$f"; then echo "   kept $(dirname "${a#$game/}")/$name (not the package's copy)"; continue; fi
+      rm -f "$f" && n=$((n + 1)) && echo "   removed $(dirname "${a#$game/}")/$name"
     done < "$a"
     rm -f "$a"
   done < <(find "$game" -maxdepth 11 -name .ffxfg-added -print0 2>/dev/null)
