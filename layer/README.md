@@ -4,7 +4,8 @@ A Vulkan layer that runs XeSS' XMX kernels on an **unpatched** Mesa ANV. It does
 the driver, but from outside, so the distribution's own `vulkan-intel` package can be used. It works with the
 same shim (`igdext64.dll`), both the hash placeholders and the id placeholders of older shims.
 
-Status: experimental. It is not part of the release archive or `install.sh` yet.
+Status: experimental. The release archive carries it (`layer/`) as an option per game, through the launch wrapper
+`xmx-stock.sh`; the patched driver stays the default. `install.sh` does not enable it anywhere.
 
 ## How it works
 
@@ -36,11 +37,22 @@ The headers must define `VK_KHR_pipeline_binary`; the layer is built with Vulkan
 
 ## Use
 
-    VK_ADD_LAYER_PATH=<out dir> VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx \
-    XMX_LAYER_HELPER=<package>/tools/cm-compile.sh XMX_IGC_DIR=<package>/igc %command%
+Steam launch options of the game, with the release archive unpacked in `<package>`:
 
-The Vulkan driver must be an unpatched ANV. If the session points `VK_DRIVER_FILES` at the package's patched driver,
-point it back at the distribution's `intel_icd.*.json`.
+    <package>/xmx-stock.sh %command%
+
+The wrapper sets everything below before Steam's runtime container starts and installs nothing; what it sets and
+keeps: `docs/launch-options.md`. The game's prefix needs the shim (`install.sh`, or `enable.sh` for that game) and
+`<package>/igc` the compiler bundle (`tools/get-igc.sh`). By hand, outside Steam's container:
+
+    VK_DRIVER_FILES=<the distribution's intel_icd.*.json and other drivers, not the package's run/intel_icd.json> \
+    VK_ADD_LAYER_PATH=<package>/layer VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx \
+    XMX_LAYER_HELPER=<package>/tools/cm-compile.sh XMX_IGC_DIR=<package>/igc \
+    VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2 <game>
+
+The Vulkan driver must be an unpatched ANV, and only one Intel ICD may be in the list: changing `VK_DRIVER_FILES`
+inside the container (Proton's `user_settings.py`) loaded the container's copy of the patched ICD next to the stock one,
+and the games recreated their swap chain thousands of times a minute.
 
 | Variable | Effect |
 |---|---|

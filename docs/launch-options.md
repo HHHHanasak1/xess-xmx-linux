@@ -22,7 +22,32 @@ after the variables (`MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%`
 |---|---|---|
 | `MESA=26.1 %command%` | this game uses the package's Mesa 26.1.2 driver | a game misbehaves on Mesa 26.3 only (please report it) |
 | `MESA=26.3 %command%` | this game uses the package's Mesa 26.3 driver | the default was changed to 26.1 and one game should keep 26.3 |
+| `/path/to/package/xmx-stock.sh %command%` | **experimental**: this game runs on the system's own, unpatched Mesa ANV with the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), which puts the XMX kernels in from outside the driver; the patched driver stays the default for every other game | a distribution whose own Mesa should stay (no patched driver for that game), or testing the layer against the patched driver. The layer knows Mesa 26.1, 26.3 and 27.0 (SteamOS ships 26.1.2); with another version XeSS runs on DP4a |
 | `INTEL_DEBUG=no-jay %command%` | Mesa 26.3 compiles the game's own shaders with the old compiler instead of Jay (XeSS is not affected) | a rendering bug or crash that goes away with `MESA=26.1`: tells whether Jay is the cause |
+
+**`xmx-stock.sh`** is a wrapper, not a variable: it has to set the driver list before Steam's runtime container starts
+(inside it the list has already been rewritten, and a list changed there loaded two Intel drivers at once). Variables
+go before it: `XESS=latest /path/to/package/xmx-stock.sh %command%`. It installs nothing and changes nothing outside the
+game's environment. It needs the shim in the game's prefix and the compiler bundle (`igc/`): `install.sh` gives both;
+without the system-wide install, `XMX_APPID=<app id> ./enable.sh` puts the shim in and `tools/get-igc.sh` fetches the
+compiler (do not combine it with `xmx-launch.sh`, whose file points at the patched driver). What it sets:
+
+* `VK_DRIVER_FILES`: the system's Intel ICDs (`intel_icd.x86_64.json`, then `intel_icd.i686.json`, from
+  `/usr/share/vulkan/icd.d` and the loader's other folders), then every other entry of the session's list (other GPUs'
+  drivers), without the package's ICD (`run/intel_icd.json`, which `install.sh` puts first). Without a session list:
+  every ICD of the system. `XMX_STOCK_ICD=<json>` uses that Intel ICD instead (e.g. a Mesa built by hand);
+* `VK_ADD_LAYER_PATH=<package>/layer` and `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, added to values already set
+  (MangoHud and other layers keep working);
+* `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh` and `XMX_IGC_DIR=<package>/igc`, unless already set;
+* `VK_EXT_descriptor_buffer` and `VK_KHR_present_wait2` added to `VKD3D_DISABLE_EXTENSIONS`, `force_vk_vendor=0` and
+  `INTC_ALT_DRIVER_EXTENSIONS_PATH` as `install.sh` sets them, unless already set. `ANV_CM_KERNEL_DIR` and
+  `ANV_CM_HELPER` stay: the stock driver does not read them.
+
+It writes one `xess-xmx: xmx-stock:` line naming the driver and the layer to Steam's output (the terminal Steam was
+started from; in Game Mode the user journal), not to `PROTON_LOG`'s file. If the layer files or a 64-bit Intel ICD of
+the system are missing, that line says so and the game starts unchanged (on the patched driver after `install.sh`).
+`MESA` has no effect with it. The layer's own log: `XMX_LAYER_LOG=1` (stderr) or `XMX_LAYER_LOG=<file>`; its
+other switches are in `layer/README.md`.
 
 `MESA` takes a version or a prefix of one (`26.1`, `26.3`, `26.1.2`). An unknown version falls back to the default
 driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The default for all games is set with
