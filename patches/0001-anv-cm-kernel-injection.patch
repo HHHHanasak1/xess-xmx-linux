@@ -1,22 +1,28 @@
-From 4b2092a88bf6005559ea8ccfe20a64fb4a99f8e2 Mon Sep 17 00:00:00 2001
+From 579a6ffac34bb00766a045a2cb17f2bd8ffd6180 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
-Subject: [PATCH 1/3] anv: native C-for-Metal kernel injection for XeSS
+Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
  (xess-xmx-linux)
 
 ---
- src/intel/compiler/brw/brw_compiler.h |  21 +
- src/intel/vulkan/anv_allocator.c      |   2 +
- src/intel/vulkan/anv_device.c         |   3 +
- src/intel/vulkan/anv_private.h        |  12 +
- src/intel/vulkan/anv_shader.c         |   5 +
- src/intel/vulkan/anv_shader_compile.c | 642 ++++++++++++++++++++++++++
- src/intel/vulkan/genX_cmd_buffer.c    | 100 ++++
- src/intel/vulkan/genX_cmd_compute.c   |  12 +
- src/intel/vulkan/genX_shader.c        |  28 ++
- src/vulkan/runtime/vk_pipeline.c      |   2 +-
- src/vulkan/runtime/vk_shader.h        |   3 +
- 11 files changed, 829 insertions(+), 1 deletion(-)
+ src/intel/compiler/brw/brw_compiler.h |   21 +
+ src/intel/vulkan/anv_cm.c             | 1425 +++++++++++++++++++++++++
+ src/intel/vulkan/anv_cm.h             |   69 ++
+ src/intel/vulkan/anv_device.c         |    4 +
+ src/intel/vulkan/anv_private.h        |    9 +
+ src/intel/vulkan/anv_shader.c         |    5 +
+ src/intel/vulkan/anv_shader_compile.c |   10 +
+ src/intel/vulkan/genX_cm.c            |  168 +++
+ src/intel/vulkan/genX_cmd_buffer.c    |    6 +
+ src/intel/vulkan/genX_cmd_compute.c   |    8 +
+ src/intel/vulkan/genX_shader.c        |    5 +
+ src/intel/vulkan/meson.build          |    3 +
+ src/vulkan/runtime/vk_pipeline.c      |    2 +-
+ src/vulkan/runtime/vk_shader.h        |    3 +
+ 14 files changed, 1737 insertions(+), 1 deletion(-)
+ create mode 100644 src/intel/vulkan/anv_cm.c
+ create mode 100644 src/intel/vulkan/anv_cm.h
+ create mode 100644 src/intel/vulkan/genX_cm.c
 
 diff --git a/src/intel/compiler/brw/brw_compiler.h b/src/intel/compiler/brw/brw_compiler.h
 index 8deb32e..5451798 100644
@@ -50,112 +56,32 @@ index 8deb32e..5451798 100644
     struct {
        struct brw_push_const_block cross_thread;
        struct brw_push_const_block per_thread;
-diff --git a/src/intel/vulkan/anv_allocator.c b/src/intel/vulkan/anv_allocator.c
-index 6aeb1fc..046ed6f 100644
---- a/src/intel/vulkan/anv_allocator.c
-+++ b/src/intel/vulkan/anv_allocator.c
-@@ -1627,6 +1627,7 @@ anv_bo_vma_alloc_or_close(struct anv_device *device,
-    return VK_SUCCESS;
- }
- 
+diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
+new file mode 100644
+index 0000000..1da0453
+--- /dev/null
++++ b/src/intel/vulkan/anv_cm.c
+@@ -0,0 +1,1425 @@
++/*
++ * Copyright © 2026 xess-xmx-linux contributors
++ * SPDX-License-Identifier: MIT
++ */
 +
- VkResult
- anv_device_alloc_bo(struct anv_device *device,
-                     const char *name,
-@@ -1779,6 +1780,7 @@ anv_device_alloc_bo(struct anv_device *device,
- 
-    *bo_out = bo;
- 
-+
-    ANV_RMV(bo_allocate, device, bo);
- 
-    return VK_SUCCESS;
-diff --git a/src/intel/vulkan/anv_device.c b/src/intel/vulkan/anv_device.c
-index 0b743bc..5949d51 100644
---- a/src/intel/vulkan/anv_device.c
-+++ b/src/intel/vulkan/anv_device.c
-@@ -1115,6 +1115,9 @@ VkResult anv_CreateDevice(
- 
-    simple_mtx_init(&device->accel_struct_build.mutex, mtx_plain);
- 
-+   /* xess-xmx-linux: retry kernels whose run-time compile failed earlier (lifts the shim's DP4a fallback) */
-+   anv_cm_retry_failed(device);
-+
-    *pDevice = anv_device_to_handle(device);
- 
-    return VK_SUCCESS;
-diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
-index 3b57e0c..9637962 100644
---- a/src/intel/vulkan/anv_private.h
-+++ b/src/intel/vulkan/anv_private.h
-@@ -1314,6 +1314,15 @@ struct anv_shader_group_rt_replay {
-    uint64_t intersection;
- };
- 
-+/* xess-xmx-linux: environment of the C-for-Metal kernel injection, read once */
-+struct anv_cm_env {
-+   const char *kernel_dir;   /* ANV_CM_KERNEL_DIR */
-+   bool debug;               /* ANV_CM_DEBUG */
-+   int trace;                /* ANV_CM_TRACE=1|2 */
-+};
-+const struct anv_cm_env *anv_cm_env(void);
-+void anv_cm_retry_failed(struct anv_device *device);
-+
- struct anv_shader {
-    struct vk_shader vk;
- 
-@@ -1340,6 +1349,9 @@ struct anv_shader {
- 
-    struct anv_pipeline_bind_map bind_map;
- 
-+   /* CM kernel walker indirect payload (general state pool) */
-+   struct anv_state cm_indirect;
-+
-    uint32_t instance_multiplier;
- 
-    /* Not saved in the pipeline cache.
-diff --git a/src/intel/vulkan/anv_shader.c b/src/intel/vulkan/anv_shader.c
-index 5efe5ac..ee4df4e 100644
---- a/src/intel/vulkan/anv_shader.c
-+++ b/src/intel/vulkan/anv_shader.c
-@@ -23,6 +23,8 @@ anv_shader_destroy(struct vk_device *vk_device,
-    for (uint32_t i = 0; i < shader->bind_map.embedded_sampler_count; i++)
-       anv_embedded_sampler_unref(device, shader->embedded_samplers[i]);
- 
-+   if (shader->cm_indirect.map)
-+      anv_state_pool_free(&device->general_state_pool, shader->cm_indirect);
-    anv_shader_heap_free(&device->shader_heap, shader->kernel);
-    if (shader->replay_kernel.alloc_size != 0)
-       anv_shader_heap_free(&device->shader_heap, shader->replay_kernel);
-@@ -757,6 +759,9 @@ anv_shader_create(struct anv_device *device,
-    }
-    shader->vk.scratch_size = shader->prog_data->total_scratch;
-    shader->vk.ray_queries = shader->prog_data->ray_queries;
-+   if (shader->vk.stage == MESA_SHADER_COMPUTE &&
-+       ((const struct brw_cs_prog_data *)shader->prog_data)->cm_no_cache)
-+      shader->vk.no_cache = true;
- 
-    result =
-       anv_reloc_list_init(&shader->relocs, &device->vk.alloc,
-diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index 7f2c77b..4ea58f7 100644
---- a/src/intel/vulkan/anv_shader_compile.c
-+++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1204,6 +1204,634 @@ anv_shader_compile_fs(struct anv_device *device,
-    }
- }
- 
 +/* ---- C-for-Metal kernel injection (xess-xmx-linux) ------------------------------------------------------------
 + * The igdext shim turns every C-for-Metal kernel XeSS submits into a placeholder D3D12 compute shader. The
-+ * placeholder stores ANV_CM_DUMMY_MAGIC and its workgroup size encodes a kernel id on the z = 7 / 11 / 13 planes:
-+ * the shim wrote the kernel's SPIR-V + options and its hash to $WINEPREFIX/drive_c/igdext_kernels; the kernel is
-+ * compiled on first use (ANV_CM_HELPER, default <package>/tools/cm-compile.sh) into the per-user cache
-+ * ~/.cache/xess-xmx/kernels/<hash>_<pci id>.cmk.
++ * placeholder has the workgroup size (1, 1, ANV_CM_HASH_WG_Z) and stores ANV_CM_DUMMY_MAGIC and the kernel's 64-bit
++ * hash; the shim wrote the kernel's SPIR-V + options as <hash>.spv / <hash>.opt to $WINEPREFIX/drive_c/igdext_kernels.
++ * (The placeholders of older shims encode an id on the workgroup planes z = 7 / 11 / 13 instead, with the hash in the
++ * shim's map.txt and the files named dyn_<id>.) The kernel is compiled on first use (ANV_CM_HELPER, default
++ * <package>/tools/cm-compile.sh) into the per-user cache ~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk.
 + * The placeholder's bindings only provide the pipeline layout; code, GRF count, SLM and payload come from the .cmk
-+ * file (tools/cmk_pack.py). Placeholders are never stored in the pipeline cache, so a changed kernel or a compile
-+ * that failed once is picked up again on the next launch. */
++ * file (packed by anv_cm_pack() below from ocloc's zebin). Placeholders are never stored in the pipeline cache, so a
++ * changed kernel or a compile that failed once is picked up again on the next launch. */
 +#include <stdio.h>
 +#include <stdlib.h>
++#include <stdarg.h>
++#include <string.h>
++#include <inttypes.h>
 +#include <unistd.h>
 +#include <errno.h>
 +#include <sys/stat.h>
@@ -166,8 +92,26 @@ index 7f2c77b..4ea58f7 100644
 +#include <time.h>
 +#include <spawn.h>
 +#include "util/u_call_once.h"
++#include "util/u_atomic.h"
++
++#include "anv_private.h"
++#include "anv_shader.h"
++#include "anv_cm.h"
++#include "nir/nir.h"
++#include "util/ralloc.h"
 +
 +#define ANV_CM_DUMMY_MAGIC 0x584d5843u   /* stored by every placeholder shader of the shim */
++/* The placeholder shapes; tools/check_placeholders.py checks them against the shim's templates
++ * (shim/src/dll/placeholders.inc, written by tools/gen_placeholders.py). A kernel placeholder stores
++ * l(ANV_CM_DUMMY_MAGIC, hash & 0xffffffff, hash >> 32), the self-test l(ANV_CM_DUMMY_MAGIC, ANV_CM_CANARY_LO,
++ * ANV_CM_CANARY_HI). The self-test of an older shim is (1, 1, 17) with the magic alone. */
++#define ANV_CM_HASH_WG_Z 23
++#define ANV_CM_CANARY_WG_Z 19
++/* as floats a denormal and a signaling NaN: a translation step that flushed or canonicalized them would also alter
++ * some kernel hashes, so the self-test fails then instead */
++#define ANV_CM_CANARY_LO 0x00414e43u
++#define ANV_CM_CANARY_HI 0x7fa15952u
++#define ANV_CM_LEGACY_CANARY_WG_Z 17
 +
 +static struct anv_cm_env anv_cm_env_data;
 +static util_once_flag anv_cm_env_once = UTIL_ONCE_FLAG_INIT;
@@ -188,6 +132,7 @@ index 7f2c77b..4ea58f7 100644
 +   util_call_once(&anv_cm_env_once, anv_cm_env_init);
 +   return &anv_cm_env_data;
 +}
++
 +
 +struct cmk_header {
 +   char magic[4];               /* "CMK2" */
@@ -233,10 +178,10 @@ index 7f2c77b..4ea58f7 100644
 +   return magic;
 +}
 +
-+/* Dynamic ids: planes z = 7, 11, 13; inside a plane every (x, y) with x * y * z <= 1024, ordered by y then x.
-+ * Must match tools/gen_dyn_dummies.py. */
++/* The ids of older shims: planes z = 7, 11, 13; inside a plane every (x, y) with x * y * z <= 1024, ordered by y
++ * then x (their tools/gen_dyn_dummies.py; the layout is fixed). */
 +static const uint32_t anv_cm_dyn_planes[] = { 7, 11, 13 };
-+static bool anv_cm_spv_dir(char *buf, size_t len);
++static bool anv_cm_spv_dir(char *buf, size_t len, bool warn);
 +static void anv_cm_mkdirs(const char *path);
 +
 +static int
@@ -274,9 +219,11 @@ index 7f2c77b..4ea58f7 100644
 +   mkdir(tmp, 0755);
 +}
 +
-+/* Folder with the shim's SPIR-V, map.txt and compile_failed.txt (the prefix's C:\igdext_kernels). */
++/* Folder with the shim's SPIR-V, map.txt and compile_failed.txt (the prefix's C:\igdext_kernels). warn: a
++ * placeholder was seen, so a missing folder is worth a line in the log. The retry at every vkCreateDevice passes
++ * false: processes outside Wine (gamescope, vulkaninfo) have neither variable and nothing to resolve. */
 +static bool
-+anv_cm_spv_dir(char *buf, size_t len)
++anv_cm_spv_dir(char *buf, size_t len, bool warn)
 +{
 +   const char *sdir = getenv("ANV_CM_SPV_DIR");
 +   if (sdir) {
@@ -286,9 +233,10 @@ index 7f2c77b..4ea58f7 100644
 +   const char *pfx = getenv("WINEPREFIX");
 +   if (!pfx) {
 +      static bool said;
-+      if (!said)
++      if (warn && !said) {
 +         fprintf(stderr, "ANV CM: neither ANV_CM_SPV_DIR nor WINEPREFIX is set: placeholders cannot be resolved\n");
-+      said = true;
++         said = true;
++      }
 +      return false;
 +   }
 +   snprintf(buf, len, "%s/drive_c/igdext_kernels", pfx);
@@ -316,8 +264,49 @@ index 7f2c77b..4ea58f7 100644
 +   return true;
 +}
 +
-+/* Generation of the compiler toolchain: FNV-1a over the ocloc and IGC library file names in <package>/igc and the
-+ * packer's size. Part of every cached kernel's name, so an IGC/ocloc update or a new .cmk format invalidates them. */
++/* Whole file, NUL-terminated (not counted in *size); NULL if it cannot be read. */
++static uint8_t *
++anv_cm_read_file(const char *path, size_t *size)
++{
++   FILE *f = fopen(path, "rb");
++   if (!f)
++      return NULL;
++   uint8_t *buf = NULL;
++   size_t n = 0, cap = 0;
++   for (;;) {
++      if (cap - n < 65536) {
++         uint8_t *nb = realloc(buf, cap + 65536 + 1);
++         if (!nb) {
++            free(buf);
++            fclose(f);
++            return NULL;
++         }
++         buf = nb;
++         cap += 65536;
++      }
++      const size_t got = fread(buf + n, 1, cap - n, f);
++      n += got;
++      if (got == 0)
++         break;
++   }
++   const bool err = ferror(f);
++   fclose(f);
++   if (err) {
++      free(buf);
++      return NULL;
++   }
++   buf[n] = 0;
++   *size = n;
++   return buf;
++}
++
++/* Version of the .cmk packer below; part of the toolchain generation, so a change of the format it writes leads to
++ * recompiles. */
++#define ANV_CM_PACKER_VERSION "cmk2-c1"
++
++/* Generation of the compiler toolchain: FNV-1a over the ocloc and IGC library file names in <package>/igc, the
++ * contents of the helper scripts and the packer version. Part of every cached kernel's name, so an IGC/ocloc update,
++ * a changed compile script or a new .cmk format invalidates them. */
 +static uint32_t
 +anv_cm_toolchain_gen(void)
 +{
@@ -346,14 +335,23 @@ index 7f2c77b..4ea58f7 100644
 +         }
 +         closedir(d);
 +      }
++      /* cm-compile.sh runs ocloc; cmk_pack.py packs when the script is one of an older package, which ignores
++       * CM_OUT_DIR (see anv_cm_compile) */
 +      const char *scripts[] = { "/cmk_pack.py", "/cm-compile.sh" };
 +      for (unsigned i = 0; i < ARRAY_SIZE(scripts); i++) {
 +         snprintf(dir, sizeof(dir), "%s%s", helper, scripts[i]);
-+         struct stat st;
-+         if (stat(dir, &st) == 0)
-+            h = (h ^ (uint32_t)st.st_size) * 16777619u;
++         size_t size;
++         uint8_t *data = anv_cm_read_file(dir, &size);
++         if (!data)
++            continue;
++         for (size_t k = 0; k < size; k++)
++            h = (h ^ data[k]) * 16777619u;
++         free(data);
++         h = (h ^ (uint32_t)size) * 16777619u;   /* file boundary */
 +      }
 +   }
++   for (const char *c = ANV_CM_PACKER_VERSION; *c; c++)
++      h = (h ^ (uint8_t)*c) * 16777619u;
 +   /* a compile-device override changes every kernel */
 +   const char *cmdev = getenv("CM_DEVICE");
 +   for (const char *c = cmdev ? cmdev : ""; *c; c++)
@@ -375,36 +373,587 @@ index 7f2c77b..4ea58f7 100644
 +   snprintf(path, pathlen, "%s/%s_%04x_%08x.cmk", dir, hash, device->info->pci_device_id, anv_cm_toolchain_gen());
 +}
 +
-+/* Runs the compiler helper for dyn_<id>.spv into path; true when the packed kernel exists afterwards. */
++/* ---- .cmk packer ------------------------------------------------------------------------------------------------
++ * A C port of tools/cmk_pack.py as tools/cm-compile.sh calls it (kernel "auto", --heap auto --surf auto, group count
++ * 1,1,1): one kernel of the zebin ocloc wrote is packed into the CMK2 file anv_cm_kernel_replace() reads. The
++ * .ze_info YAML is not parsed but matched the way the script's regular expressions match it (Python's \s, \d and \w
++ * on the section decoded as Latin-1), and every input the script rejects is rejected here, so that both write the
++ * same bytes. Packing in the driver saves a python3 start per kernel. */
++struct anv_cm_sv {
++   const char *p;
++   size_t n;
++};
++
++#define ANV_CM_NPOS SIZE_MAX
++
 +static bool
-+anv_cm_compile(struct anv_device *device, const char *sdir, int id, const char *hash, const char *cdir, const char *path)
++anv_cm_py_space(uint8_t c)
++{
++   return (c >= 0x09 && c <= 0x0d) || (c >= 0x1c && c <= 0x20) || c == 0x85 || c == 0xa0;
++}
++
++static bool
++anv_cm_py_word(uint8_t c)   /* str.isalnum() or '_' */
++{
++   return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' ||
++          c == 0xaa || c == 0xb2 || c == 0xb3 || c == 0xb5 || c == 0xb9 || c == 0xba || (c >= 0xbc && c <= 0xbe) ||
++          (c >= 0xc0 && c != 0xd7 && c != 0xf7);
++}
++
++static size_t
++anv_cm_sv_find(struct anv_cm_sv s, size_t from, const char *sub)
++{
++   const size_t k = strlen(sub);
++   for (size_t i = from; i <= s.n && s.n - i >= k; i++)
++      if (memcmp(s.p + i, sub, k) == 0)
++         return i;
++   return ANV_CM_NPOS;
++}
++
++/* str.split(sep)[1], if sep occurs */
++static bool
++anv_cm_sv_split1(struct anv_cm_sv s, const char *sep, struct anv_cm_sv *out)
++{
++   const size_t a = anv_cm_sv_find(s, 0, sep);
++   if (a == ANV_CM_NPOS)
++      return false;
++   const size_t from = a + strlen(sep), b = anv_cm_sv_find(s, from, sep);
++   *out = (struct anv_cm_sv) { s.p + from, (b == ANV_CM_NPOS ? s.n : b) - from };
++   return true;
++}
++
++/* str.split(sep)[0] */
++static struct anv_cm_sv
++anv_cm_sv_split0(struct anv_cm_sv s, const char *sep)
++{
++   const size_t a = anv_cm_sv_find(s, 0, sep);
++   return (struct anv_cm_sv) { s.p, a == ANV_CM_NPOS ? s.n : a };
++}
++
++/* the pattern pieces \s+, a literal, (\d+) and (\w+) at *i; *i moves past them on a match */
++static bool
++anv_cm_re_ws(struct anv_cm_sv s, size_t *i)
++{
++   size_t j = *i;
++   while (j < s.n && anv_cm_py_space(s.p[j]))
++      j++;
++   if (j == *i)
++      return false;
++   *i = j;
++   return true;
++}
++
++static bool
++anv_cm_re_lit(struct anv_cm_sv s, size_t *i, const char *lit)
++{
++   const size_t k = strlen(lit);
++   if (*i > s.n || s.n - *i < k || memcmp(s.p + *i, lit, k) != 0)
++      return false;
++   *i += k;
++   return true;
++}
++
++static bool
++anv_cm_re_num(struct anv_cm_sv s, size_t *i, uint64_t *v)   /* saturates; such values fail later, as in Python */
++{
++   size_t j = *i;
++   uint64_t x = 0;
++   while (j < s.n && s.p[j] >= '0' && s.p[j] <= '9') {
++      const unsigned d = s.p[j] - '0';
++      x = x > (UINT64_MAX - d) / 10 ? UINT64_MAX : x * 10 + d;
++      j++;
++   }
++   if (j == *i)
++      return false;
++   *i = j;
++   *v = x;
++   return true;
++}
++
++static bool
++anv_cm_re_word(struct anv_cm_sv s, size_t *i, struct anv_cm_sv *w)
++{
++   size_t j = *i;
++   while (j < s.n && anv_cm_py_word(s.p[j]))
++      j++;
++   if (j == *i)
++      return false;
++   *w = (struct anv_cm_sv) { s.p + *i, j - *i };
++   *i = j;
++   return true;
++}
++
++static bool
++anv_cm_sv_eq(struct anv_cm_sv s, const char *lit)
++{
++   return s.n == strlen(lit) && memcmp(s.p, lit, s.n) == 0;
++}
++
++/* re.search(r"\n\s+" + key + r":\s+(\d+)", s) */
++static bool
++anv_cm_re_geti(struct anv_cm_sv s, const char *key, uint64_t *v)
++{
++   for (size_t i = 0; i < s.n; i++) {
++      size_t j = i + 1;
++      if (s.p[i] == '\n' && anv_cm_re_ws(s, &j) && anv_cm_re_lit(s, &j, key) && anv_cm_re_lit(s, &j, ":") &&
++          anv_cm_re_ws(s, &j) && anv_cm_re_num(s, &j, v))
++         return true;
++   }
++   return false;
++}
++
++/* re.finditer(r"- arg_type:\s+(\w+)\s+offset:\s+(\d+)\s+size:\s+(\d+)", s), one match per call from *pos */
++static bool
++anv_cm_re_next_arg(struct anv_cm_sv s, size_t *pos, struct anv_cm_sv *type, uint64_t *off, uint64_t *size)
++{
++   for (size_t i = anv_cm_sv_find(s, *pos, "- arg_type:"); i != ANV_CM_NPOS; i = anv_cm_sv_find(s, i + 1, "- arg_type:")) {
++      size_t j = i + strlen("- arg_type:");
++      if (anv_cm_re_ws(s, &j) && anv_cm_re_word(s, &j, type) && anv_cm_re_ws(s, &j) &&
++          anv_cm_re_lit(s, &j, "offset:") && anv_cm_re_ws(s, &j) && anv_cm_re_num(s, &j, off) && anv_cm_re_ws(s, &j) &&
++          anv_cm_re_lit(s, &j, "size:") && anv_cm_re_ws(s, &j) && anv_cm_re_num(s, &j, size)) {
++         *pos = j;
++         return true;
++      }
++   }
++   return false;
++}
++
++/* re.finditer(r"bti_value:\s+(\d+)\s+arg_index:\s+(\d+)", s), one match per call from *pos */
++static bool
++anv_cm_re_next_bti(struct anv_cm_sv s, size_t *pos, uint64_t *bti, uint64_t *arg)
++{
++   for (size_t i = anv_cm_sv_find(s, *pos, "bti_value:"); i != ANV_CM_NPOS; i = anv_cm_sv_find(s, i + 1, "bti_value:")) {
++      size_t j = i + strlen("bti_value:");
++      if (anv_cm_re_ws(s, &j) && anv_cm_re_num(s, &j, bti) && anv_cm_re_ws(s, &j) &&
++          anv_cm_re_lit(s, &j, "arg_index:") && anv_cm_re_ws(s, &j) && anv_cm_re_num(s, &j, arg)) {
++         *pos = j;
++         return true;
++      }
++   }
++   return false;
++}
++
++/* bytes.decode() (strict UTF-8) succeeds */
++static bool
++anv_cm_utf8_ok(const uint8_t *s, size_t n)
++{
++   for (size_t i = 0; i < n;) {
++      const uint8_t c = s[i];
++      unsigned len, cp;
++      if (c < 0x80) {
++         i++;
++         continue;
++      } else if (c >= 0xc2 && c <= 0xdf) {
++         len = 2, cp = c & 0x1f;
++      } else if (c >= 0xe0 && c <= 0xef) {
++         len = 3, cp = c & 0x0f;
++      } else if (c >= 0xf0 && c <= 0xf4) {
++         len = 4, cp = c & 0x07;
++      } else {
++         return false;
++      }
++      if (n - i < len)
++         return false;
++      for (unsigned k = 1; k < len; k++) {
++         if ((s[i + k] & 0xc0) != 0x80)
++            return false;
++         cp = cp << 6 | (s[i + k] & 0x3f);
++      }
++      if ((len == 3 && (cp < 0x800 || (cp >= 0xd800 && cp <= 0xdfff))) || (len == 4 && (cp < 0x10000 || cp > 0x10ffff)))
++         return false;
++      i += len;
++   }
++   return true;
++}
++
++static uint64_t
++anv_cm_rd_le(const uint8_t *p, unsigned bytes)
++{
++   uint64_t v = 0;
++   for (unsigned i = 0; i < bytes; i++)
++      v |= (uint64_t)p[i] << (8 * i);
++   return v;
++}
++
++static void
++anv_cm_wr32(uint8_t *p, uint32_t v)
++{
++   for (unsigned i = 0; i < 4; i++)
++      p[i] = v >> (8 * i);
++}
++
++/* d[off:off + size] with Python's clamping */
++static struct anv_cm_sv
++anv_cm_slice(const uint8_t *d, size_t n, uint64_t off, uint64_t size)
++{
++   const uint64_t a = MIN2(off, (uint64_t)n);
++   const uint64_t b = size > n - a ? n : a + size;
++   return (struct anv_cm_sv) { (const char *)d + a, b - a };
++}
++
++#define ANV_CM_HEADER_SIZE 472
++
++/* Packs zebin d (n bytes) for the work-group size lws into a malloc'd CMK2 image; NULL and a reason on failure. */
++static uint8_t *
++anv_cm_pack(const uint8_t *d, size_t n, const uint64_t lws[3], uint32_t grf_bytes, size_t *out_size,
++            char *err, size_t errlen)
++{
++#define PACK_FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); goto fail; } while (0)
++   char *s = NULL;
++   uint8_t *out = NULL;
++   /* the ELF section headers */
++   if (n < 4 || memcmp(d, "\x7f" "ELF", 4) != 0)
++      PACK_FAIL("not an ELF file");
++   if (n < 0x40)
++      PACK_FAIL("truncated ELF header");
++   const uint64_t shoff = anv_cm_rd_le(d + 0x28, 8);
++   const unsigned shentsize = anv_cm_rd_le(d + 0x3a, 2), shnum = anv_cm_rd_le(d + 0x3c, 2),
++                  shstrndx = anv_cm_rd_le(d + 0x3e, 2);
++   if (shstrndx >= shnum)
++      PACK_FAIL("no section name table");
++   for (unsigned k = 0; k < shnum; k++) {
++      const uint64_t o = shoff + (uint64_t)k * shentsize;
++      if (o < shoff || o > n || n - o < 40)
++         PACK_FAIL("section header %u out of the file", k);
++   }
++#define SEC(k, field) anv_cm_rd_le(d + shoff + (uint64_t)(k) * shentsize + (field), (field) < 8 ? 4 : 8)
++   const uint64_t stroff = SEC(shstrndx, 24);
++   /* every section name must be readable (the script decodes them all); the kernel is the first .text.* that is
++    * not .text.Intel_*, its code and .ze_info the last section of that name */
++   int text = -1, zeinfo = -1;
++   struct anv_cm_sv kname = { NULL, 0 };
++   for (unsigned k = 0; k < shnum; k++) {
++      const uint64_t no = stroff + SEC(k, 0);
++      if (no < stroff || no >= n)
++         PACK_FAIL("section name %u out of the file", k);
++      const uint8_t *nm = d + no, *end = memchr(nm, 0, n - no);
++      if (!end)
++         PACK_FAIL("section name %u not terminated", k);
++      const size_t len = end - nm;
++      if (!anv_cm_utf8_ok(nm, len))
++         PACK_FAIL("section name %u is not UTF-8", k);
++      if (!kname.p && len >= 6 && memcmp(nm, ".text.", 6) == 0 && !(len >= 12 && memcmp(nm, ".text.Intel_", 12) == 0))
++         kname = (struct anv_cm_sv) { (const char *)nm + 6, len - 6 };
++      if (len == 8 && memcmp(nm, ".ze_info", 8) == 0)
++         zeinfo = k;
++   }
++   if (!kname.p)
++      PACK_FAIL("no kernel in the zebin");
++   for (unsigned k = 0; k < shnum; k++) {
++      const uint8_t *nm = d + stroff + SEC(k, 0);
++      if (strlen((const char *)nm) == kname.n + 6 && memcmp(nm, ".text.", 6) == 0 && memcmp(nm + 6, kname.p, kname.n) == 0)
++         text = k;
++   }
++   if (zeinfo < 0)
++      PACK_FAIL("no .ze_info");
++   for (size_t i = 0; i < kname.n; i++)
++      if ((uint8_t)kname.p[i] >= 0x80)
++         PACK_FAIL("kernel name is not ASCII");   /* the script's Latin-1/UTF-8 comparison could never match it */
++   const struct anv_cm_sv code = anv_cm_slice(d, n, SEC(text, 24), SEC(text, 32));
++   const struct anv_cm_sv info = anv_cm_slice(d, n, SEC(zeinfo, 24), SEC(zeinfo, 32));
++#undef SEC
++
++   /* the kernel's block: re.split(r"\n  - name:\s+", "\n" + info[info.index("kernels:"):]), the first piece that
++    * starts with the kernel's name */
++   const size_t ki = anv_cm_sv_find(info, 0, "kernels:");
++   if (ki == ANV_CM_NPOS)
++      PACK_FAIL("no kernels in .ze_info");
++   s = malloc(info.n - ki + 1);
++   if (!s)
++      PACK_FAIL("out of memory");
++   s[0] = '\n';
++   memcpy(s + 1, info.p + ki, info.n - ki);
++   const struct anv_cm_sv all = { s, info.n - ki + 1 };
++   struct anv_cm_sv blk = { NULL, 0 };
++   for (size_t from = 0;;) {
++      size_t ms = ANV_CM_NPOS, me = 0;
++      for (size_t i = anv_cm_sv_find(all, from, "\n  - name:"); i != ANV_CM_NPOS; i = anv_cm_sv_find(all, i + 1, "\n  - name:")) {
++         size_t j = i + strlen("\n  - name:");
++         if (anv_cm_re_ws(all, &j)) {
++            ms = i, me = j;
++            break;
++         }
++      }
++      const struct anv_cm_sv piece = { all.p + from, (ms == ANV_CM_NPOS ? all.n : ms) - from };
++      if (piece.n >= kname.n && memcmp(piece.p, kname.p, kname.n) == 0) {
++         blk = piece;
++         break;
++      }
++      if (ms == ANV_CM_NPOS)
++         break;
++      from = me;
++   }
++   if (!blk.p)
++      PACK_FAIL("kernel %.*s not in .ze_info", (int)kname.n, kname.p);
++   /* the driver gives kernels no scratch or private memory (as the script) */
++   if (anv_cm_sv_find(blk, 0, "per_thread_memory_buffers") != ANV_CM_NPOS)
++      PACK_FAIL("kernel %.*s needs scratch or private memory, which the driver does not provide", (int)kname.n, kname.p);
++   uint64_t grf = 128, slm = 0, barriers = 0;
++   anv_cm_re_geti(blk, "grf_count", &grf);
++   anv_cm_re_geti(blk, "slm_size", &slm);
++   anv_cm_re_geti(blk, "barrier_count", &barriers);
++   for (size_t i = anv_cm_sv_find(blk, 0, "addrspace:"); i != ANV_CM_NPOS; i = anv_cm_sv_find(blk, i + 1, "addrspace:")) {
++      size_t j = i + strlen("addrspace:");
++      if (anv_cm_re_ws(blk, &j) && anv_cm_re_lit(blk, &j, "sampler")) {
++         barriers |= 0x80000000u;
++         break;
++      }
++   }
++   for (unsigned k = 0; k < 3; k++)
++      if (lws[k] > UINT32_MAX)
++         PACK_FAIL("work-group size out of range");
++
++   /* cross-thread data */
++   uint8_t cross[128] = { 0 };
++   uint64_t cross_size = 0;
++   struct anv_cm_sv pay = { NULL, 0 }, typ;
++   if (anv_cm_sv_split1(blk, "payload_arguments:", &pay))
++      pay = anv_cm_sv_split0(pay, "per_thread_payload_arguments:");
++   uint64_t off, size;
++   for (size_t pos = 0; pay.p && anv_cm_re_next_arg(pay, &pos, &typ, &off, &size);) {
++      if (size == 0)
++         continue;
++      cross_size = MAX2(cross_size, off > UINT64_MAX - size ? UINT64_MAX : off + size);
++      if (anv_cm_sv_eq(typ, "local_size") || anv_cm_sv_eq(typ, "enqueued_local_size") || anv_cm_sv_eq(typ, "group_count")) {
++         if (off > sizeof(cross) - 12)
++            PACK_FAIL("cross-thread argument at %" PRIu64 " out of range", off);
++         const bool gc = anv_cm_sv_eq(typ, "group_count");   /* written once per shader: 1,1,1 */
++         for (unsigned k = 0; k < 3; k++)
++            anv_cm_wr32(cross + off + 4 * k, gc ? 1 : (uint32_t)lws[k]);
++      } else if (anv_cm_sv_eq(typ, "work_dimensions")) {
++         if (off > sizeof(cross) - 4)
++            PACK_FAIL("cross-thread argument at %" PRIu64 " out of range", off);
++         anv_cm_wr32(cross + off, lws[2] > 1 ? 3 : (lws[1] > 1 ? 2 : 1));
++      }
++   }
++   cross_size = cross_size > sizeof(cross) ? UINT64_MAX : (cross_size + 31) / 32 * 32;
++   if (cross_size > sizeof(cross))
++      PACK_FAIL("cross-thread data larger than 128 bytes");
++
++   /* per-thread data: one GRF per thread */
++   uint64_t per_size = 0;
++   struct anv_cm_sv per;
++   if (anv_cm_sv_split1(blk, "per_thread_payload_arguments:", &per)) {
++      for (size_t pos = 0; anv_cm_re_next_arg(per, &pos, &typ, &off, &size);)
++         per_size = MAX2(per_size, off > UINT64_MAX - size ? UINT64_MAX : off + size);
++   }
++   if (per_size <= UINT32_MAX)
++      per_size = (per_size + grf_bytes - 1) / grf_bytes * grf_bytes;
++   if (per_size > UINT32_MAX)
++      PACK_FAIL("per-thread data out of range");
++
++   /* surfaces in argument order; surface k is the k-th descriptor table */
++   uint64_t bti_arg[24], bti_val[24], b, a;
++   unsigned ns = 0;
++   struct anv_cm_sv bt;
++   if (anv_cm_sv_split1(blk, "binding_table_indices:", &bt)) {
++      for (size_t pos = 0; anv_cm_re_next_bti(bt, &pos, &b, &a);) {
++         unsigned k = 0;
++         while (k < ns && bti_arg[k] != a)
++            k++;
++         if (k == ns) {
++            if (ns == ARRAY_SIZE(bti_arg))
++               PACK_FAIL("more than 24 surfaces");
++            /* sorted by argument index */
++            while (k > 0 && bti_arg[k - 1] > a) {
++               bti_arg[k] = bti_arg[k - 1];
++               bti_val[k] = bti_val[k - 1];
++               k--;
++            }
++            bti_arg[k] = a;
++            ns++;
++         }
++         bti_val[k] = b;
++      }
++   }
++   if (grf > UINT32_MAX || slm > UINT32_MAX || barriers > UINT32_MAX || code.n > UINT32_MAX)
++      PACK_FAIL("header value out of range");
++   for (unsigned k = 0; k < ns; k++)
++      if (bti_val[k] > UINT32_MAX)
++         PACK_FAIL("binding table index out of range");
++
++   *out_size = ANV_CM_HEADER_SIZE + code.n;
++   out = calloc(1, *out_size);
++   if (!out)
++      PACK_FAIL("out of memory");
++   memcpy(out, "CMK2", 4);
++   const uint64_t hdr[9] = { code.n, grf, slm, barriers, lws[0], lws[1], lws[2], cross_size, per_size };
++   for (unsigned k = 0; k < 9; k++)
++      anv_cm_wr32(out + 4 + 4 * k, hdr[k]);
++   memcpy(out + 40, cross, sizeof(cross));
++   anv_cm_wr32(out + 168, 0xffffffffu);   /* heap set: found at pipeline creation; binding and table base 0 */
++   anv_cm_wr32(out + 180, ns);
++   for (unsigned k = 0; k < ns; k++) {
++      anv_cm_wr32(out + 184 + 4 * k, bti_val[k]);
++      anv_cm_wr32(out + 280 + 4 * k, k);    /* table k, element 0 */
++   }
++   memcpy(out + ANV_CM_HEADER_SIZE, code.p, code.n);
++   free(s);
++   return out;
++fail:
++   free(s);
++   free(out);
++   return NULL;
++#undef PACK_FAIL
++}
++
++/* The work-group size in the compile options, read as tools/cm-compile.sh reads it (NUL bytes dropped, the first
++ * "LWS_SIZE_X=<n> -DLWS_SIZE_Y=<n> -DLWS_SIZE_Z=<n>"), else 1,1,1. */
++static void
++anv_cm_opt_lws(const uint8_t *opt, size_t n, uint64_t lws[3])
++{
++   lws[0] = lws[1] = lws[2] = 1;
++   char *t = malloc(n + 1);
++   if (!t)
++      return;
++   size_t m = 0;
++   for (size_t i = 0; i < n; i++)
++      if (opt[i])
++         t[m++] = opt[i];
++   const struct anv_cm_sv s = { t, m };
++   for (size_t i = anv_cm_sv_find(s, 0, "LWS_SIZE_X="); i != ANV_CM_NPOS; i = anv_cm_sv_find(s, i + 1, "LWS_SIZE_X=")) {
++      size_t j = i + strlen("LWS_SIZE_X=");
++      uint64_t v[3];
++      if (anv_cm_re_num(s, &j, &v[0]) && anv_cm_re_lit(s, &j, " -DLWS_SIZE_Y=") && anv_cm_re_num(s, &j, &v[1]) &&
++          anv_cm_re_lit(s, &j, " -DLWS_SIZE_Z=") && anv_cm_re_num(s, &j, &v[2])) {
++         memcpy(lws, v, sizeof(v));
++         break;
++      }
++   }
++   free(t);
++}
++/* ---- end of the .cmk packer ---- */
++
++/* Appends a line to the compile log: CM_LOG, else ~/.cache/xess-xmx/compile.log (as tools/cm-compile.sh) */
++static void PRINTFLIKE(1, 2)
++anv_cm_log(const char *fmt, ...)
++{
++   char path[600];
++   const char *log = getenv("CM_LOG"), *xdg = getenv("XDG_CACHE_HOME");
++   if (log && log[0])
++      snprintf(path, sizeof(path), "%s", log);
++   else if (xdg && xdg[0])
++      snprintf(path, sizeof(path), "%s/xess-xmx/compile.log", xdg);
++   else
++      snprintf(path, sizeof(path), "%s/.cache/xess-xmx/compile.log", getenv("HOME") ? getenv("HOME") : "/tmp");
++   FILE *f = fopen(path, "a");
++   if (!f)
++      return;
++   va_list ap;
++   va_start(ap, fmt);
++   vfprintf(f, fmt, ap);
++   va_end(ap);
++   fclose(f);
++}
++
++/* Packs the zebin in outdir (k_*.bin, as ocloc names it) with the work-group size of the options file opt into
++ * path, through a private temporary name (two threads may compile the same kernel). */
++static bool
++anv_cm_pack_dir(struct anv_device *device, const char *outdir, const char *opt, const char *path,
++                uint64_t lws[3], char *err, size_t errlen)
++{
++   char bin[700] = "";
++   DIR *dir = opendir(outdir);
++   if (dir) {
++      struct dirent *e;
++      char best[256] = "";
++      while ((e = readdir(dir))) {
++         const size_t len = strlen(e->d_name);
++         if (len > 6 && strncmp(e->d_name, "k_", 2) == 0 && strcmp(e->d_name + len - 4, ".bin") == 0 &&
++             (!best[0] || strcmp(e->d_name, best) < 0))
++            snprintf(best, sizeof(best), "%s", e->d_name);
++      }
++      closedir(dir);
++      if (best[0])
++         snprintf(bin, sizeof(bin), "%s/%s", outdir, best);
++   }
++   if (!bin[0]) {
++      snprintf(err, errlen, "no zebin");
++      return false;
++   }
++   size_t zn, on;
++   uint8_t *z = anv_cm_read_file(bin, &zn), *o = anv_cm_read_file(opt, &on);
++   bool ok = false;
++   if (z && o) {
++      anv_cm_opt_lws(o, on, lws);
++      size_t cn;
++      uint8_t *cmk = anv_cm_pack(z, zn, lws, device->info->grf_size, &cn, err, errlen);
++      if (cmk) {
++         static int seq;
++         char tmp[800];
++         snprintf(tmp, sizeof(tmp), "%s.%d.%d.tmp", path, (int)getpid(), p_atomic_inc_return(&seq));
++         FILE *f = fopen(tmp, "wb");
++         ok = f && fwrite(cmk, 1, cn, f) == cn;
++         if (f && fclose(f) != 0)
++            ok = false;
++         if (ok && rename(tmp, path) != 0)
++            ok = false;
++         if (!ok) {
++            snprintf(err, errlen, "cannot write %s: %s", tmp, strerror(errno));
++            unlink(tmp);
++         }
++         free(cmk);
++      }
++   } else {
++      snprintf(err, errlen, "cannot read %s", z ? opt : bin);
++   }
++   free(z);
++   free(o);
++   return ok;
++}
++
++/* Runs the compiler helper for <name>.spv (the kernel's hash, or dyn_<id> from an older shim) and packs its output
++ * into path; true when the packed kernel exists afterwards. */
++static bool
++anv_cm_compile(struct anv_device *device, const char *sdir, const char *name, const char *hash, const char *cdir,
++               const char *path)
 +{
 +   char spv[600], opt[600];
-+   snprintf(spv, sizeof(spv), "%s/dyn_%d.spv", sdir, id);
-+   snprintf(opt, sizeof(opt), "%s/dyn_%d.opt", sdir, id);
++   snprintf(spv, sizeof(spv), "%s/%s.spv", sdir, name);
++   snprintf(opt, sizeof(opt), "%s/%s.opt", sdir, name);
 +   if (access(spv, R_OK) != 0 || access(opt, R_OK) != 0) {
-+      fprintf(stderr, "ANV CM: kernel %d: no %s\n", id, spv);
++      fprintf(stderr, "ANV CM: kernel %s: no %s\n", hash, spv);
 +      return false;
 +   }
 +   anv_cm_mkdirs(cdir);
 +   char helper[600];
 +   if (!anv_cm_helper_path(helper, sizeof(helper)))
 +      return false;
++   /* ocloc writes into a private folder, the driver packs the result. The helper of an older package ignores
++    * CM_OUT_DIR and packs into path itself, which is accepted as well. */
++   char outdir[600];
++   const char *tmpdir = getenv("TMPDIR");
++   snprintf(outdir, sizeof(outdir), "%s/cmk.XXXXXX", tmpdir && tmpdir[0] ? tmpdir : "/tmp");
++   if (!mkdtemp(outdir)) {
++      fprintf(stderr, "ANV CM: kernel %s: no temporary folder %s: %s\n", hash, outdir, strerror(errno));
++      return false;
++   }
 +   /* posix_spawn instead of system(): no fork of the (multi-GB) game process for every kernel */
-+   char pci[32];
++   char pci[32], grf[32], out[640];
 +   snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", device->info->pci_device_id);
++   snprintf(grf, sizeof(grf), "CM_GRF_BYTES=%u", (unsigned)device->info->grf_size);
++   snprintf(out, sizeof(out), "CM_OUT_DIR=%s", outdir);
 +   extern char **environ;
 +   unsigned nenv = 0;
 +   while (environ[nenv])
 +      nenv++;
-+   char **envp = calloc(nenv + 2, sizeof(char *));
-+   if (!envp)
++   char **envp = calloc(nenv + 4, sizeof(char *));
++   if (!envp) {
++      rmdir(outdir);
 +      return false;
++   }
++   unsigned ne = 0;
 +   for (unsigned e = 0; e < nenv; e++)
-+      envp[e] = environ[e];
-+   envp[nenv] = pci;
++      if (strncmp(environ[e], "CM_PCI_ID=", 10) != 0 && strncmp(environ[e], "CM_GRF_BYTES=", 13) != 0 &&
++          strncmp(environ[e], "CM_OUT_DIR=", 11) != 0)
++         envp[ne++] = environ[e];
++   envp[ne++] = pci;
++   envp[ne++] = grf;
++   envp[ne++] = out;
 +   char *argv[] = { (char *)"/bin/sh", (char *)helper, spv, opt, (char *)path, NULL };
-+   fprintf(stderr, "ANV CM: compiling kernel %d (%s)\n", id, hash);
++   fprintf(stderr, "ANV CM: compiling kernel %s (%s.spv)\n", hash, name);
++   struct timespec t0, t1;
++   clock_gettime(CLOCK_MONOTONIC, &t0);
 +   pid_t pid;
 +   int rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, envp);
 +   free(envp);
@@ -414,36 +963,62 @@ index 7f2c77b..4ea58f7 100644
 +         ;
 +      rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 +   }
-+   if (rc != 0 || access(path, R_OK) != 0) {
-+      fprintf(stderr, "ANV CM: kernel %d (%s): compile failed (rc %d)\n", id, hash, rc);
++   bool ok = false;
++   char err[300] = "";
++   if (rc == 0) {
++      uint64_t lws[3];
++      if (anv_cm_pack_dir(device, outdir, opt, path, lws, err, sizeof(err))) {
++         clock_gettime(CLOCK_MONOTONIC, &t1);
++         /* device and flags as the helper chose them (CM_OUT_DIR/info) */
++         char info[700], dev[64] = "?", flags[512] = "";
++         snprintf(info, sizeof(info), "%s/info", outdir);
++         FILE *fi = fopen(info, "r");
++         if (fi) {
++            if (!fgets(dev, sizeof(dev), fi))
++               snprintf(dev, sizeof(dev), "?");
++            if (!fgets(flags, sizeof(flags), fi))
++               flags[0] = 0;
++            dev[strcspn(dev, "\n")] = 0;
++            flags[strcspn(flags, "\n")] = 0;
++            fclose(fi);
++         }
++         const char *ob = strrchr(path, '/'), *sb = strrchr(spv, '/');
++         anv_cm_log("cm-compile ok: %s from %s device %s lws %" PRIu64 "x%" PRIu64 "x%" PRIu64 " flags [%s] in %.1f s\n",
++                    ob ? ob + 1 : path, sb ? sb + 1 : spv, dev, lws[0], lws[1], lws[2], flags,
++                    (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
++         ok = true;
++      } else if (access(path, R_OK) == 0) {
++         ok = true;   /* packed by the helper of an older package */
++      } else {
++         anv_cm_log("cm-compile PACK FAILED: %s: %s\n", spv, err);
++      }
++   }
++   DIR *dir = opendir(outdir);
++   if (dir) {
++      struct dirent *e;
++      char f[900];
++      while ((e = readdir(dir))) {
++         if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) {
++            snprintf(f, sizeof(f), "%s/%s", outdir, e->d_name);
++            unlink(f);
++         }
++      }
++      closedir(dir);
++   }
++   rmdir(outdir);
++   if (!ok) {
++      fprintf(stderr, "ANV CM: kernel %s: compile failed (rc %d%s%s)\n", hash, rc, err[0] ? ", " : "", err);
 +      return false;
 +   }
 +   return true;
 +}
 +
-+/* Resolves a dynamic id to its packed kernel, compiling it on a cache miss. */
++/* The packed kernel of a placeholder, compiled from <sdir>/<name>.spv on a cache miss. name is the kernel's hash
++ * (placeholders that carry it) or dyn_<id> (the id placeholders of an older shim, id >= 0). */
 +static bool
-+anv_cm_dyn_kernel(struct anv_device *device, int id, char *path, size_t pathlen)
++anv_cm_kernel_path(struct anv_device *device, const char *sdir, int id, const char *name, const char *hash,
++                   char *path, size_t pathlen)
 +{
-+   char sdir[512];
-+   if (!anv_cm_spv_dir(sdir, sizeof(sdir)))
-+      return false;
-+   /* kernel hash from the shim's map ("<id> <hash>") */
-+   char mappath[600], hash[32] = "";
-+   snprintf(mappath, sizeof(mappath), "%s/map.txt", sdir);
-+   FILE *mf = fopen(mappath, "r");
-+   if (mf) {
-+      char line[128], h[32];
-+      int i;
-+      while (fgets(line, sizeof(line), mf))
-+         if (sscanf(line, "%d %31s", &i, h) == 2 && i == id)
-+            snprintf(hash, sizeof(hash), "%s", h);
-+      fclose(mf);
-+   }
-+   if (!hash[0]) {
-+      fprintf(stderr, "ANV CM: dynamic kernel %d not in %s\n", id, mappath);
-+      return false;
-+   }
 +   char cdir[512];
 +   anv_cm_cache_path(device, hash, cdir, sizeof(cdir), path, pathlen);
 +   if (access(path, R_OK) == 0)
@@ -460,13 +1035,14 @@ index 7f2c77b..4ea58f7 100644
 +   simple_mtx_unlock(&failed_mtx);
 +   if (known)
 +      return false;
-+   if (anv_cm_compile(device, sdir, id, hash, cdir, path))
++   if (anv_cm_compile(device, sdir, name, hash, cdir, path))
 +      return true;
 +   simple_mtx_lock(&failed_mtx);
 +   if (nfailed < ARRAY_SIZE(failed))
 +      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
 +   simple_mtx_unlock(&failed_mtx);
-+   /* tells the shim to fall back to XeSS' DP4a path on the next launch; retried by anv_cm_retry_failed() */
++   /* tells the shim to fall back to XeSS' DP4a path on the next launch; retried by anv_cm_retry_failed(). The line is
++    * "<id> <hash>", id -1 for a kernel named by its hash. */
 +   char mark[600];
 +   snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
 +   FILE *ff = fopen(mark, "a");
@@ -477,6 +1053,128 @@ index 7f2c77b..4ea58f7 100644
 +   return false;
 +}
 +
++/* An id placeholder of an older shim: the kernel hash comes from the shim's map ("<id> <hash>"). */
++static bool
++anv_cm_dyn_kernel(struct anv_device *device, int id, char *path, size_t pathlen)
++{
++   char sdir[512];
++   if (!anv_cm_spv_dir(sdir, sizeof(sdir), true))
++      return false;
++   char mappath[600], hash[32] = "";
++   snprintf(mappath, sizeof(mappath), "%s/map.txt", sdir);
++   FILE *mf = fopen(mappath, "r");
++   if (mf) {
++      char line[128], h[32];
++      int i;
++      while (fgets(line, sizeof(line), mf))
++         if (sscanf(line, "%d %31s", &i, h) == 2 && i == id)
++            snprintf(hash, sizeof(hash), "%s", h);
++      fclose(mf);
++   }
++   if (!hash[0]) {
++      fprintf(stderr, "ANV CM: dynamic kernel %d not in %s\n", id, mappath);
++      return false;
++   }
++   char name[32];
++   snprintf(name, sizeof(name), "dyn_%d", id);
++   return anv_cm_kernel_path(device, sdir, id, name, hash, path, pathlen);
++}
++
++/* The 32-bit constants of a shader in instruction order: vector components in order, a 64-bit constant as its low and
++ * high half. Returns how many were found (at most max). */
++static unsigned
++anv_cm_shader_consts(nir_shader *nir, uint32_t *v, unsigned max)
++{
++   unsigned n = 0;
++   nir_foreach_function_impl(impl, nir) {
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_load_const)
++               continue;
++            nir_load_const_instr *lc = nir_instr_as_load_const(instr);
++            for (unsigned c = 0; c < lc->def.num_components; c++) {
++               if (lc->def.bit_size == 32 && n < max) {
++                  v[n++] = lc->value[c].u32;
++               } else if (lc->def.bit_size == 64 && n + 1 < max) {
++                  v[n++] = (uint32_t)lc->value[c].u64;
++                  v[n++] = (uint32_t)(lc->value[c].u64 >> 32);
++               }
++            }
++         }
++      }
++   }
++   return n;
++}
++
++/* The kernel hash a placeholder of the hash format carries in its store of (magic, hash low, hash high). Which
++ * constants hold the halves after vkd3d-proton and NIR depends on the path the store took: one vector, or one scalar
++ * store per dword with the offsets in between. So the candidates are tried in that order - the two values after the
++ * magic, then every pair after it, then every pair - and the first hash the shim wrote a kernel for (<hash>.spv) or
++ * that is in the kernel cache wins. */
++static bool
++anv_cm_placeholder_hash(struct anv_device *device, nir_shader *nir, const char *sdir, char *hash, size_t hashlen)
++{
++   uint32_t v[64];
++   const unsigned n = anv_cm_shader_consts(nir, v, ARRAY_SIZE(v));
++   unsigned m = 0;
++   while (m < n && v[m] != ANV_CM_DUMMY_MAGIC)
++      m++;
++   for (unsigned pass = 0; pass < 3; pass++) {
++      const unsigned from = pass < 2 ? m + 1 : 0;
++      for (unsigned i = from; i < n; i++) {
++         for (unsigned j = from; j < n; j++) {
++            if (pass == 0 && (i != m + 1 || j != m + 2))
++               continue;
++            if (v[i] == ANV_CM_DUMMY_MAGIC || v[j] == ANV_CM_DUMMY_MAGIC)
++               continue;
++            snprintf(hash, hashlen, "%08x%08x", v[j], v[i]);
++            char spv[700], cdir[512], cmk[700];
++            snprintf(spv, sizeof(spv), "%s/%s.spv", sdir, hash);
++            anv_cm_cache_path(device, hash, cdir, sizeof(cdir), cmk, sizeof(cmk));
++            if (access(spv, R_OK) == 0 || access(cmk, R_OK) == 0)
++               return true;
++         }
++      }
++   }
++   fprintf(stderr, "ANV CM: placeholder with no known kernel hash (%u constants) - did the shim write its kernels "
++           "to %s?\n", n, sdir);
++   return false;
++}
++
++/* True if a self-test placeholder of the hash format carries ANV_CM_CANARY_LO/HI: the hash halves of a kernel
++ * placeholder take the same way, so this proves they reach the driver. */
++static bool
++anv_cm_canary_ok(nir_shader *nir)
++{
++   uint32_t v[64];
++   const unsigned n = anv_cm_shader_consts(nir, v, ARRAY_SIZE(v));
++   bool lo = false, hi = false;
++   for (unsigned i = 0; i < n; i++) {
++      lo |= v[i] == ANV_CM_CANARY_LO;
++      hi |= v[i] == ANV_CM_CANARY_HI;
++   }
++   return lo && hi;
++}
++
++/* Every placeholder of the hash format has the same workgroup size, but logs and the debug switches name a kernel by
++ * the x,y of cm_id. So each hash gets the next x,y (1..16 each) in the order this process first sees it. */
++static uint32_t
++anv_cm_log_id(const char *hash)
++{
++   static char seen[256][20];
++   static unsigned nseen;
++   static simple_mtx_t mtx = SIMPLE_MTX_INITIALIZER;
++   simple_mtx_lock(&mtx);
++   unsigned i = 0;
++   while (i < nseen && strcmp(seen[i], hash) != 0)
++      i++;
++   if (i == nseen && nseen < ARRAY_SIZE(seen))
++      snprintf(seen[nseen++], sizeof(seen[0]), "%s", hash);
++   simple_mtx_unlock(&mtx);
++   i = MIN2(i, ARRAY_SIZE(seen) - 1);
++   return (i % 16 + 1) | ((i / 16 + 1) << 8) | (ANV_CM_HASH_WG_Z << 16);
++}
++
 +/* Called when a device is created (before the game's XeSS asks the shim which path to take): every kernel listed in
 + * compile_failed.txt is compiled again (once; see below); when all of them succeed the marker is removed and XeSS goes
 + * back to XMX, so a transient failure (disk full, interrupted first launch) heals at the next launch. */
@@ -484,7 +1182,7 @@ index 7f2c77b..4ea58f7 100644
 +anv_cm_retry_failed(struct anv_device *device)
 +{
 +   char sdir[512], mark[600];
-+   if (!anv_cm_spv_dir(sdir, sizeof(sdir)))
++   if (!anv_cm_spv_dir(sdir, sizeof(sdir), false))
 +      return;
 +   snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
 +   struct stat ms;
@@ -549,7 +1247,12 @@ index 7f2c77b..4ea58f7 100644
 +         done |= strncmp(keep[k], line, sizeof(keep[k]) - 1) == 0;
 +      if (done)
 +         continue;
-+      if (access(path, R_OK) == 0 || anv_cm_compile(device, sdir, id, hash, cdir, path))
++      char name[32];
++      if (id >= 0)
++         snprintf(name, sizeof(name), "dyn_%d", id);   /* an older shim's id */
++      else
++         snprintf(name, sizeof(name), "%s", hash);
++      if (access(path, R_OK) == 0 || anv_cm_compile(device, sdir, name, hash, cdir, path))
 +         ok++;
 +      else if (nkeep < 64)
 +         snprintf(keep[nkeep++], sizeof(keep[0]), "%d %s\n", id, hash);
@@ -586,7 +1289,7 @@ index 7f2c77b..4ea58f7 100644
 +            continue;
 +         for (uint32_t e = 0; e < bl->array_size; e++) {
 +            const uint32_t *s = bl->samplers[e].immutable_sampler ?
-+                                bl->samplers[e].immutable_sampler->state[0] :
++                                ANV_CM_SAMPLER_STATE(bl->samplers[e].immutable_sampler) :
 +                                bl->samplers[e].embedded_key.sampler;
 +            if (count++ == 0)
 +               memcpy(state, s, 4 * sizeof(uint32_t));
@@ -596,24 +1299,24 @@ index 7f2c77b..4ea58f7 100644
 +   return count;
 +}
 +
-+enum anv_cm_result {
-+   ANV_CM_NOT_PLACEHOLDER,
-+   ANV_CM_INJECTED,
-+   ANV_CM_FAILED,        /* placeholder whose kernel is missing: compiled as the (no-op) placeholder, not cached */
-+};
-+
-+static enum anv_cm_result
++enum anv_cm_result
 +anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
 +                      struct anv_shader_data *shader_data, nir_shader *nir)
 +{
 +   const struct anv_cm_env *env = anv_cm_env();
 +   const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
++   uint32_t cm_id = wx | (wy << 8) | (wz << 16);
 +   char path[512] = "";
-+   if (wx == 1 && wy == 1 && wz == 17 && anv_cm_is_placeholder(nir)) {
++   if (wx == 1 && wy == 1 && (wz == ANV_CM_CANARY_WG_Z || wz == ANV_CM_LEGACY_CANARY_WG_Z) &&
++       anv_cm_is_placeholder(nir)) {
 +      /* the shim's self-test: proves to it that this process runs the patched driver and that placeholders still
-+       * reach the driver recognisably (a vkd3d-proton change could break that); the shim checks the time stamp */
++       * reach the driver recognisably (a vkd3d-proton change could break that); the shim checks the time stamp. The
++       * test placeholder of the hash format also has to bring its two test values along. */
 +      char sdir[512], mark[600];
-+      if (anv_cm_spv_dir(sdir, sizeof(sdir))) {
++      if (wz == ANV_CM_CANARY_WG_Z && !anv_cm_canary_ok(nir)) {
++         fprintf(stderr, "ANV CM: the self-test placeholder reached the driver without its test values: kernel "
++                 "hashes would not either, so the shim gets no answer and XeSS uses its generic paths\n");
++      } else if (anv_cm_spv_dir(sdir, sizeof(sdir), true)) {
 +         anv_cm_mkdirs(sdir);
 +         snprintf(mark, sizeof(mark), "%s/anv_canary", sdir);
 +         FILE *cf = fopen(mark, "w");
@@ -624,6 +1327,18 @@ index 7f2c77b..4ea58f7 100644
 +      }
 +      return ANV_CM_FAILED;
 +   }
++   if (!path[0] && wx == 1 && wy == 1 && wz == ANV_CM_HASH_WG_Z && anv_cm_is_placeholder(nir)) {
++      /* a placeholder that carries its kernel's hash */
++      char sdir[512], hash[32];
++      if (!anv_cm_spv_dir(sdir, sizeof(sdir), true) || !anv_cm_placeholder_hash(device, nir, sdir, hash, sizeof(hash)))
++         return ANV_CM_FAILED;
++      cm_id = anv_cm_log_id(hash);
++      if (env->debug)
++         fprintf(stderr, "ANV CM: kernel %s is %u,%u in this process's log\n", hash, cm_id & 0xff, (cm_id >> 8) & 0xff);
++      if (!anv_cm_kernel_path(device, sdir, -1, hash, hash, path, sizeof(path)))
++         return ANV_CM_FAILED;
++   }
++   /* the id placeholders of an older shim */
 +   const int dyn = anv_cm_dyn_id(wx, wy, wz);
 +   if (!path[0]) {
 +      if (dyn < 0)
@@ -643,7 +1358,7 @@ index 7f2c77b..4ea58f7 100644
 +         if (!ci->set_layouts[i])
 +            continue;
 +         const struct anv_descriptor_set_layout *l = (const struct anv_descriptor_set_layout *)ci->set_layouts[i];
-+         fprintf(stderr, "ANV CM:   set %u: type %d bindings %u descriptors %u\n", i, (int)l->type, l->binding_count, l->descriptor_count);
++         fprintf(stderr, "ANV CM:   set %u: type %d bindings %u descriptors %u\n", i, ANV_CM_SET_LAYOUT_MODE(l), l->binding_count, l->descriptor_count);
 +      }
 +   }
 +   FILE *f = fopen(path, "rb");
@@ -694,7 +1409,7 @@ index 7f2c77b..4ea58f7 100644
 +   cs->prog_offset[2] = 0;
 +   cs->uses_cm_kernel = true;
 +   cs->cm_no_cache = true;
-+   cs->cm_id = wx | (wy << 8) | (wz << 16);
++   cs->cm_id = cm_id;
 +   memcpy(cs->cm_local, h.lws, sizeof(h.lws));
 +   cs->cm_cross_thread_size = h.cross_size;
 +   cs->cm_per_thread_size = h.per_thread_size;
@@ -758,7 +1473,7 @@ index 7f2c77b..4ea58f7 100644
 +      }
 +      if (env->debug)
 +         fprintf(stderr, "ANV CM: heap set %u binding %u: descriptor offset %u stride %u (set layout type %d)\n",
-+                 h.heap_set, h.heap_binding, cs->cm_heap_desc_off, cs->cm_heap_stride, (int)l->type);
++                 h.heap_set, h.heap_binding, cs->cm_heap_desc_off, cs->cm_heap_stride, ANV_CM_SET_LAYOUT_MODE(l));
 +   }
 +
 +   shader_data->bind_map.inline_dwords_count = 0;
@@ -772,11 +1487,166 @@ index 7f2c77b..4ea58f7 100644
 +              path, h.code_size, h.grf_count, h.lws[0], h.lws[1], h.lws[2]);
 +   return ANV_CM_INJECTED;
 +}
+diff --git a/src/intel/vulkan/anv_cm.h b/src/intel/vulkan/anv_cm.h
+new file mode 100644
+index 0000000..42f978e
+--- /dev/null
++++ b/src/intel/vulkan/anv_cm.h
+@@ -0,0 +1,69 @@
++/*
++ * Copyright © 2026 xess-xmx-linux contributors
++ * SPDX-License-Identifier: MIT
++ */
 +
- static void
- anv_shader_compile_cs(struct anv_device *device,
-                       void *mem_ctx,
-@@ -1214,6 +1842,12 @@ anv_shader_compile_cs(struct anv_device *device,
++/* C-for-Metal kernel injection (xess-xmx-linux). anv_cm.c holds the generation-independent part (placeholders,
++ * kernel cache, run-time compile, .cmk loading), genX_cm.c the per-generation part (binding table, walker payload).
++ * The upstream files only call into them. What differs between the Mesa versions the patches support is hidden
++ * behind the ANV_CM_* macros and anv_cm_bind_state in anv_private.h, so that these three files are the same in
++ * every patch series. */
++#ifndef ANV_CM_H
++#define ANV_CM_H
++
++#include "anv_private.h"
++
++/* environment of the C-for-Metal kernel injection, read once */
++struct anv_cm_env {
++   const char *kernel_dir;   /* ANV_CM_KERNEL_DIR */
++   bool debug;               /* ANV_CM_DEBUG */
++   int trace;                /* ANV_CM_TRACE=1|2 */
++};
++const struct anv_cm_env *anv_cm_env(void);
++void anv_cm_retry_failed(struct anv_device *device);
++
++enum anv_cm_result {
++   ANV_CM_NOT_PLACEHOLDER,
++   ANV_CM_INJECTED,
++   ANV_CM_FAILED,        /* placeholder whose kernel is missing: compiled as the (no-op) placeholder, not cached */
++};
++
++struct anv_shader_data;
++
++enum anv_cm_result
++anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
++                      struct anv_shader_data *shader_data, nir_shader *nir);
++
++/* An injected kernel whose binding table genX(cm_emit_binding_table) builds from the descriptor heap */
++static inline bool
++anv_cm_has_binding_table(const struct anv_shader *shader)
++{
++   const struct brw_cs_prog_data *cm = (const struct brw_cs_prog_data *)shader->prog_data;
++   return shader->vk.stage == MESA_SHADER_COMPUTE && cm->uses_cm_kernel && cm->cm_nsurf > 0;
++}
++
++
++#ifdef genX
++/* genX_cm.c; only visible to the per-generation files that include this header after genxml/gen_macros.h */
++VkResult
++genX(cm_emit_binding_table)(struct anv_cmd_buffer *cmd_buffer,
++                            anv_cm_bind_state *bind_state,
++                            const struct anv_shader *shader,
++                            struct anv_state *bt_state);
++
++void
++genX(cm_before_walker)(struct anv_cmd_buffer *cmd_buffer,
++                       const struct brw_cs_prog_data *prog_data,
++                       uint32_t num_wg[3], uint32_t threads);
++
++#if GFX_VERx10 >= 125
++void
++genX(cm_setup_walker)(struct anv_device *device,
++                      struct anv_shader *shader,
++                      const struct brw_cs_prog_data *cs_prog_data,
++                      uint32_t threads,
++                      struct GENX(COMPUTE_WALKER_BODY) *walker);
++#endif
++#endif /* genX */
++
++#endif /* ANV_CM_H */
+diff --git a/src/intel/vulkan/anv_device.c b/src/intel/vulkan/anv_device.c
+index 0b743bc..ae2d969 100644
+--- a/src/intel/vulkan/anv_device.c
++++ b/src/intel/vulkan/anv_device.c
+@@ -32,6 +32,7 @@
+ #include "anv_private.h"
+ #include "anv_measure.h"
+ #include "anv_shader.h"
++#include "anv_cm.h"
+ #include "anv_slab_bo.h"
+ #include "util/u_debug.h"
+ #include "util/os_file.h"
+@@ -1115,6 +1116,9 @@ VkResult anv_CreateDevice(
+ 
+    simple_mtx_init(&device->accel_struct_build.mutex, mtx_plain);
+ 
++   /* xess-xmx-linux: retry kernels whose run-time compile failed earlier (lifts the shim's DP4a fallback) */
++   anv_cm_retry_failed(device);
++
+    *pDevice = anv_device_to_handle(device);
+ 
+    return VK_SUCCESS;
+diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
+index 3b57e0c..d38edcf 100644
+--- a/src/intel/vulkan/anv_private.h
++++ b/src/intel/vulkan/anv_private.h
+@@ -1314,6 +1314,12 @@ struct anv_shader_group_rt_replay {
+    uint64_t intersection;
+ };
+ 
++/* xess-xmx-linux: what the C-for-Metal kernel injection (anv_cm.c, genX_cm.c) uses and this Mesa version names
++ * differently from the others the patches support */
++typedef struct anv_cmd_pipeline_state anv_cm_bind_state;      /* bound descriptor sets + push constants */
++#define ANV_CM_SAMPLER_STATE(s) ((s)->state[0])      /* SAMPLER_STATE dwords of a struct anv_sampler */
++#define ANV_CM_SET_LAYOUT_MODE(l) ((int)(l)->type)    /* set layout kind, for logs */
++
+ struct anv_shader {
+    struct vk_shader vk;
+ 
+@@ -1340,6 +1346,9 @@ struct anv_shader {
+ 
+    struct anv_pipeline_bind_map bind_map;
+ 
++   /* CM kernel walker indirect payload (general state pool) */
++   struct anv_state cm_indirect;
++
+    uint32_t instance_multiplier;
+ 
+    /* Not saved in the pipeline cache.
+diff --git a/src/intel/vulkan/anv_shader.c b/src/intel/vulkan/anv_shader.c
+index 5efe5ac..ee4df4e 100644
+--- a/src/intel/vulkan/anv_shader.c
++++ b/src/intel/vulkan/anv_shader.c
+@@ -23,6 +23,8 @@ anv_shader_destroy(struct vk_device *vk_device,
+    for (uint32_t i = 0; i < shader->bind_map.embedded_sampler_count; i++)
+       anv_embedded_sampler_unref(device, shader->embedded_samplers[i]);
+ 
++   if (shader->cm_indirect.map)
++      anv_state_pool_free(&device->general_state_pool, shader->cm_indirect);
+    anv_shader_heap_free(&device->shader_heap, shader->kernel);
+    if (shader->replay_kernel.alloc_size != 0)
+       anv_shader_heap_free(&device->shader_heap, shader->replay_kernel);
+@@ -757,6 +759,9 @@ anv_shader_create(struct anv_device *device,
+    }
+    shader->vk.scratch_size = shader->prog_data->total_scratch;
+    shader->vk.ray_queries = shader->prog_data->ray_queries;
++   if (shader->vk.stage == MESA_SHADER_COMPUTE &&
++       ((const struct brw_cs_prog_data *)shader->prog_data)->cm_no_cache)
++      shader->vk.no_cache = true;
+ 
+    result =
+       anv_reloc_list_init(&shader->relocs, &device->vk.alloc,
+diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
+index 7f2c77b..7d330fc 100644
+--- a/src/intel/vulkan/anv_shader_compile.c
++++ b/src/intel/vulkan/anv_shader_compile.c
+@@ -5,6 +5,7 @@
+ #include "anv_private.h"
+ #include "anv_nir.h"
+ #include "anv_shader.h"
++#include "anv_cm.h"
+ 
+ #include "vk_nir_convert_ycbcr.h"
+ #include "vk_pipeline.h"
+@@ -1214,6 +1215,12 @@ anv_shader_compile_cs(struct anv_device *device,
     const struct intel_device_info *devinfo = compiler->devinfo;
     nir_shader *nir = shader_data->info->nir;
  
@@ -789,7 +1659,7 @@ index 7f2c77b..4ea58f7 100644
     shader_data->num_stats = 1;
  
     struct brw_compile_cs_params params = {
-@@ -1245,6 +1879,9 @@ anv_shader_compile_cs(struct anv_device *device,
+@@ -1245,6 +1252,9 @@ anv_shader_compile_cs(struct anv_device *device,
     }
  
     *error_str = params.base.error_str;
@@ -799,122 +1669,217 @@ index 7f2c77b..4ea58f7 100644
  }
  
  static bool
+diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
+new file mode 100644
+index 0000000..1d58ccb
+--- /dev/null
++++ b/src/intel/vulkan/genX_cm.c
+@@ -0,0 +1,168 @@
++/*
++ * Copyright © 2026 xess-xmx-linux contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* C-for-Metal kernel injection (xess-xmx-linux), per hardware generation: the binding table of an injected kernel
++ * built at each dispatch, the trace of its walker and the walker's indirect payload. See anv_cm.c. */
++#include <stdio.h>
++
++#include "anv_private.h"
++
++#include "genxml/gen_macros.h"
++#include "genxml/genX_pack.h"
++
++#include "anv_cm.h"
++
++VkResult
++genX(cm_emit_binding_table)(struct anv_cmd_buffer *cmd_buffer,
++                            anv_cm_bind_state *bind_state,
++                            const struct anv_shader *shader,
++                            struct anv_state *bt_state)
++{
++   uint32_t state_offset;
++
++   /* xess-xmx-linux: binding table of an injected C-for-Metal kernel, built per dispatch from the vkd3d-style
++    * descriptor heap (surface k = heap index push_constant[table] + element) */
++   const struct brw_cs_prog_data *cm = (const struct brw_cs_prog_data *)shader->prog_data;
++   const struct anv_cm_env *env = anv_cm_env();
++   const unsigned kx = cm->cm_id & 0xff, ky = (cm->cm_id >> 8) & 0xff, kz = cm->cm_id >> 16;
++   const uint32_t nent = cm->cm_max_bti + 1;
++   *bt_state = anv_cmd_buffer_alloc_binding_table(cmd_buffer, nent, &state_offset);
++   if (bt_state->map == NULL)
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   uint32_t *cm_bt = bt_state->map;
++   if (cm->cm_has_sampler) {
++      struct anv_state sst = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 16, 32);
++      if (sst.map == NULL)
++         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      if (cm->cm_sampler_from_layout) {
++         /* the static sampler of the D3D12 root signature (an immutable sampler of the pipeline layout) */
++         memcpy(sst.map, cm->cm_sampler_state, 16);
++      } else {
++         /* no static sampler found: XeSS' own is MIN_MAG_MIP_LINEAR, CLAMP on all axes, normalised coordinates */
++         struct GENX(SAMPLER_STATE) smp = {
++            .SamplerDisable = false,
++            .TextureBorderColorMode = DX10OGL,
++#if GFX_VER >= 11
++            .CPSLODCompensationEnable = cmd_buffer->device->info->ver < 20,
++#endif
++            .LODPreClampMode = CLAMP_MODE_OGL,
++            .MipModeFilter = MIPFILTER_LINEAR,
++            .MagModeFilter = MAPFILTER_LINEAR,
++            .MinModeFilter = MAPFILTER_LINEAR,
++            .TextureLODBias = 0,
++            .AnisotropicAlgorithm = LEGACY,
++            .MinLOD = 0,
++            .MaxLOD = 14,
++            .ShadowFunction = PREFILTEROP_NEVER,
++            .CubeSurfaceControlMode = OVERRIDE,
++            .LODClampMagnificationMode = MIPNONE,
++            .MaximumAnisotropy = RATIO21,
++            .RAddressMinFilterRoundingEnable = true,
++            .RAddressMagFilterRoundingEnable = true,
++            .VAddressMinFilterRoundingEnable = true,
++            .VAddressMagFilterRoundingEnable = true,
++            .UAddressMinFilterRoundingEnable = true,
++            .UAddressMagFilterRoundingEnable = true,
++            .TrilinearFilterQuality = 0,
++            .NonnormalizedCoordinateEnable = false,
++            .TCXAddressControlMode = TCM_CLAMP,
++            .TCYAddressControlMode = TCM_CLAMP,
++            .TCZAddressControlMode = TCM_CLAMP,
++         };
++         GENX(SAMPLER_STATE_pack)(NULL, sst.map, &smp);
++      }
++      cmd_buffer->state.samplers[MESA_SHADER_COMPUTE] = sst;
++   }
++   memset(cm_bt, 0, nent * sizeof(uint32_t));
++   const uint32_t *pc = (const uint32_t *)bind_state->push_constants.client_data;
++   const struct anv_descriptor_set *hs = bind_state->descriptors[cm->cm_heap_set];
++   if (hs == NULL || hs->layout == NULL) {
++      /* heap set not bound: every surface gets the null surface instead of a wild pointer */
++      static bool warned;
++      if (!warned) {
++         warned = true;
++         fprintf(stderr, "ANV CM: kernel %u,%u,%u dispatched without its descriptor heap (set %u) bound\n",
++                 kx, ky, kz, cm->cm_heap_set);
++      }
++      const struct anv_state ns = anv_null_surface_state_for_binding_table(cmd_buffer->device);
++      for (uint32_t k = 0; k < cm->cm_nsurf; k++)
++         cm_bt[cm->cm_bti[k]] = ns.offset + state_offset;
++      return VK_SUCCESS;
++   }
++   if (env->trace)
++      fprintf(stderr, "ANV CM: dispatch kernel %u,%u,%u idx:", kx, ky, kz);
++   for (uint32_t k = 0; k < cm->cm_nsurf; k++) {
++      const uint32_t idx = pc[cm->cm_table_pc_off[k] / 4] + cm->cm_elem[k];
++      if (env->trace)
++         fprintf(stderr, " %u", idx);
++      if (idx >= hs->layout->descriptor_count) {
++         struct anv_state ns = anv_null_surface_state_for_binding_table(cmd_buffer->device);
++         cm_bt[cm->cm_bti[k]] = ns.offset + state_offset;
++         fprintf(stderr, "ANV CM: kernel %u,%u,%u surface %u heap index %u out of range (%u), null surface used\n",
++                 kx, ky, kz, k, idx, hs->layout->descriptor_count);
++         continue;
++      }
++      cm_bt[cm->cm_bti[k]] = hs->desc_offset + cm->cm_heap_desc_off +
++                             idx * cm->cm_heap_stride + state_offset;
++      if (env->trace == 2) {
++         const uint32_t *ss = (const uint32_t *)((const char *)hs->desc_surface_mem.map +
++                              cm->cm_heap_desc_off + idx * cm->cm_heap_stride);
++         fprintf(stderr, "\nANV CM:   surf %u heap %u state:", k, idx);
++         for (int d = 0; d < 16; d++)
++            fprintf(stderr, " %08x", ss[d]);
++      }
++   }
++   if (env->trace)
++      fprintf(stderr, "\n");
++   return VK_SUCCESS;
++}
++
++void
++genX(cm_before_walker)(struct anv_cmd_buffer *cmd_buffer,
++                       const struct brw_cs_prog_data *prog_data,
++                       uint32_t num_wg[3], uint32_t threads)
++{
++   const struct anv_cm_env *env = anv_cm_env();
++   if (env->trace)
++      fprintf(stderr, "ANV CM: walker kernel %u,%u,%u groups %u,%u,%u threads %u\n",
++              prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
++              num_wg[0], num_wg[1], num_wg[2], threads);
++}
++
++#if GFX_VERx10 >= 125
++void
++genX(cm_setup_walker)(struct anv_device *device,
++                      struct anv_shader *shader,
++                      const struct brw_cs_prog_data *cs_prog_data,
++                      uint32_t threads,
++                      struct GENX(COMPUTE_WALKER_BODY) *walker)
++{
++   /* NEO-style payload: [cross-thread data][per-thread data * threads], loaded by the walker from the
++    * indirect object heap (base address 0, so the general state pool offset is the address). */
++   const uint32_t cross = cs_prog_data->cm_cross_thread_size;
++   const uint32_t per = cs_prog_data->cm_per_thread_size;
++   const uint32_t total = cross + per * threads;
++   shader->cm_indirect = anv_state_pool_alloc(&device->general_state_pool,
++                                              align(total, 64), 64);
++   memset(shader->cm_indirect.map, 0, align(total, 64));
++   memcpy(shader->cm_indirect.map, cs_prog_data->cm_cross_thread_data,
++          MIN2(cross, sizeof(cs_prog_data->cm_cross_thread_data)));
++   const uint32_t lx = cs_prog_data->cm_local[0];
++   const uint32_t ly = cs_prog_data->cm_local[1];
++   /* packed local ids, only if the kernel takes them (per == 0: no per-thread argument, nothing to write) */
++   for (uint32_t t = 0; per >= 6 && t < threads; t++) {
++      uint16_t *ids = (uint16_t *)((char *)shader->cm_indirect.map + cross + t * per);
++      ids[0] = t % lx;
++      ids[1] = (t / lx) % ly;
++      ids[2] = t / (lx * ly);
++   }
++   walker->IndirectDataLength = total;
++   if (cs_prog_data->cm_has_sampler)
++      walker->InterfaceDescriptor.SamplerCount = 1;
++   if (cs_prog_data->cm_nsurf > 0)
++      walker->InterfaceDescriptor.BindingTableEntryCount = MIN2(cs_prog_data->cm_max_bti + 1, 31);
++   walker->IndirectDataStartAddress = shader->cm_indirect.offset;
++}
++#endif
 diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
-index 1e8aa36..5b7a690 100644
+index 1e8aa36..fdaa4aa 100644
 --- a/src/intel/vulkan/genX_cmd_buffer.c
 +++ b/src/intel/vulkan/genX_cmd_buffer.c
-@@ -2694,6 +2694,106 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
+@@ -36,6 +36,8 @@
+ #include "genxml/gen_macros.h"
+ #include "genxml/genX_pack.h"
+ 
++#include "anv_cm.h"
++
+ #include "ds/intel_tracepoints.h"
+ 
+ #include "genX_mi_builder.h"
+@@ -2694,6 +2696,10 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
  {
     uint32_t state_offset;
  
-+   if (shader->vk.stage == MESA_SHADER_COMPUTE) {
-+      /* xess-xmx-linux: binding table of an injected C-for-Metal kernel, built per dispatch from the vkd3d-style
-+       * descriptor heap (surface k = heap index push_constant[table] + element) */
-+      const struct brw_cs_prog_data *cm = (const struct brw_cs_prog_data *)shader->prog_data;
-+      if (cm->uses_cm_kernel && cm->cm_nsurf > 0) {
-+         const struct anv_cm_env *env = anv_cm_env();
-+         const unsigned kx = cm->cm_id & 0xff, ky = (cm->cm_id >> 8) & 0xff, kz = cm->cm_id >> 16;
-+         const uint32_t nent = cm->cm_max_bti + 1;
-+         *bt_state = anv_cmd_buffer_alloc_binding_table(cmd_buffer, nent, &state_offset);
-+         if (bt_state->map == NULL)
-+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-+         uint32_t *cm_bt = bt_state->map;
-+         if (cm->cm_has_sampler) {
-+            struct anv_state sst = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 16, 32);
-+            if (sst.map == NULL)
-+               return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-+            if (cm->cm_sampler_from_layout) {
-+               /* the static sampler of the D3D12 root signature (an immutable sampler of the pipeline layout) */
-+               memcpy(sst.map, cm->cm_sampler_state, 16);
-+            } else {
-+               /* no static sampler found: XeSS' own is MIN_MAG_MIP_LINEAR, CLAMP on all axes, normalised coordinates */
-+               struct GENX(SAMPLER_STATE) smp = {
-+                  .SamplerDisable = false,
-+                  .TextureBorderColorMode = DX10OGL,
-+#if GFX_VER >= 11
-+                  .CPSLODCompensationEnable = cmd_buffer->device->info->ver < 20,
-+#endif
-+                  .LODPreClampMode = CLAMP_MODE_OGL,
-+                  .MipModeFilter = MIPFILTER_LINEAR,
-+                  .MagModeFilter = MAPFILTER_LINEAR,
-+                  .MinModeFilter = MAPFILTER_LINEAR,
-+                  .TextureLODBias = 0,
-+                  .AnisotropicAlgorithm = LEGACY,
-+                  .MinLOD = 0,
-+                  .MaxLOD = 14,
-+                  .ShadowFunction = PREFILTEROP_NEVER,
-+                  .CubeSurfaceControlMode = OVERRIDE,
-+                  .LODClampMagnificationMode = MIPNONE,
-+                  .MaximumAnisotropy = RATIO21,
-+                  .RAddressMinFilterRoundingEnable = true,
-+                  .RAddressMagFilterRoundingEnable = true,
-+                  .VAddressMinFilterRoundingEnable = true,
-+                  .VAddressMagFilterRoundingEnable = true,
-+                  .UAddressMinFilterRoundingEnable = true,
-+                  .UAddressMagFilterRoundingEnable = true,
-+                  .TrilinearFilterQuality = 0,
-+                  .NonnormalizedCoordinateEnable = false,
-+                  .TCXAddressControlMode = TCM_CLAMP,
-+                  .TCYAddressControlMode = TCM_CLAMP,
-+                  .TCZAddressControlMode = TCM_CLAMP,
-+               };
-+               GENX(SAMPLER_STATE_pack)(NULL, sst.map, &smp);
-+            }
-+            cmd_buffer->state.samplers[MESA_SHADER_COMPUTE] = sst;
-+         }
-+         memset(cm_bt, 0, nent * sizeof(uint32_t));
-+         const uint32_t *pc = (const uint32_t *)pipe_state->push_constants.client_data;
-+         const struct anv_descriptor_set *hs = pipe_state->descriptors[cm->cm_heap_set];
-+         if (hs == NULL || hs->layout == NULL) {
-+            /* heap set not bound: every surface gets the null surface instead of a wild pointer */
-+            static bool warned;
-+            if (!warned) {
-+               warned = true;
-+               fprintf(stderr, "ANV CM: kernel %u,%u,%u dispatched without its descriptor heap (set %u) bound\n",
-+                       kx, ky, kz, cm->cm_heap_set);
-+            }
-+            const struct anv_state ns = anv_null_surface_state_for_binding_table(cmd_buffer->device);
-+            for (uint32_t k = 0; k < cm->cm_nsurf; k++)
-+               cm_bt[cm->cm_bti[k]] = ns.offset + state_offset;
-+            return VK_SUCCESS;
-+         }
-+         if (env->trace)
-+            fprintf(stderr, "ANV CM: dispatch kernel %u,%u,%u idx:", kx, ky, kz);
-+         for (uint32_t k = 0; k < cm->cm_nsurf; k++) {
-+            const uint32_t idx = pc[cm->cm_table_pc_off[k] / 4] + cm->cm_elem[k];
-+            if (env->trace)
-+               fprintf(stderr, " %u", idx);
-+            if (idx >= hs->layout->descriptor_count) {
-+               struct anv_state ns = anv_null_surface_state_for_binding_table(cmd_buffer->device);
-+               cm_bt[cm->cm_bti[k]] = ns.offset + state_offset;
-+               fprintf(stderr, "ANV CM: kernel %u,%u,%u surface %u heap index %u out of range (%u), null surface used\n",
-+                       kx, ky, kz, k, idx, hs->layout->descriptor_count);
-+               continue;
-+            }
-+            cm_bt[cm->cm_bti[k]] = hs->desc_offset + cm->cm_heap_desc_off +
-+                                   idx * cm->cm_heap_stride + state_offset;
-+            if (env->trace == 2) {
-+               const uint32_t *ss = (const uint32_t *)((const char *)hs->desc_surface_mem.map +
-+                                    cm->cm_heap_desc_off + idx * cm->cm_heap_stride);
-+               fprintf(stderr, "\nANV CM:   surf %u heap %u state:", k, idx);
-+               for (int d = 0; d < 16; d++)
-+                  fprintf(stderr, " %08x", ss[d]);
-+            }
-+         }
-+         if (env->trace)
-+            fprintf(stderr, "\n");
-+         return VK_SUCCESS;
-+      }
-+   }
++   /* xess-xmx-linux: an injected C-for-Metal kernel gets its binding table from the vkd3d-style descriptor heap */
++   if (anv_cm_has_binding_table(shader))
++      return genX(cm_emit_binding_table)(cmd_buffer, pipe_state, shader, bt_state);
 +
     const struct anv_pipeline_bind_map *map = &shader->bind_map;
     if (map->surface_count == 0) {
        *bt_state = (struct anv_state) { 0, };
 diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
-index 120f6cc..5b36b54 100644
+index 120f6cc..35f3943 100644
 --- a/src/intel/vulkan/genX_cmd_compute.c
 +++ b/src/intel/vulkan/genX_cmd_compute.c
-@@ -174,6 +174,10 @@ cmd_buffer_flush_compute_state(struct anv_cmd_buffer *cmd_buffer)
+@@ -33,6 +33,7 @@
+ #include "genxml/gen_macros.h"
+ #include "genxml/genX_pack.h"
+ #include "genxml/genX_rt_pack.h"
++#include "anv_cm.h"
+ #include "common/intel_genX_state_brw.h"
+ 
+ #include "ds/intel_tracepoints.h"
+@@ -174,6 +175,10 @@ cmd_buffer_flush_compute_state(struct anv_cmd_buffer *cmd_buffer)
                                                &cmd_buffer->state.compute.base),
        "dirty compute descriptor");
  
@@ -925,60 +1890,60 @@ index 120f6cc..5b36b54 100644
     if (cmd_buffer->state.descriptors_dirty & VK_SHADER_STAGE_COMPUTE_BIT) {
        cmd_buffer->state.descriptors_pointers_dirty |=
           genX(cmd_buffer_flush_descriptor_sets)(
-@@ -552,6 +556,14 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
+@@ -552,6 +557,9 @@ emit_compute_walker(struct anv_cmd_buffer *cmd_buffer,
  
     compute_update_async_threads_limit(cmd_buffer, prog_data, &dispatch);
  
-+   if (prog_data->uses_cm_kernel) {
-+      const struct anv_cm_env *env = anv_cm_env();
-+      if (env->trace)
-+         fprintf(stderr, "ANV CM: walker kernel %u,%u,%u groups %u,%u,%u threads %u\n",
-+                 prog_data->cm_id & 0xff, (prog_data->cm_id >> 8) & 0xff, prog_data->cm_id >> 16,
-+                 num_wg[0], num_wg[1], num_wg[2], dispatch.threads);
-+   }
++   if (prog_data->uses_cm_kernel)
++      genX(cm_before_walker)(cmd_buffer, prog_data, num_wg, dispatch.threads);
 +
     uint32_t num_workgroup_data[3];
     if (!anv_address_is_null(indirect_addr)) {
        uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
 diff --git a/src/intel/vulkan/genX_shader.c b/src/intel/vulkan/genX_shader.c
-index 5f16826..b4a1406 100644
+index 5f16826..8671fb8 100644
 --- a/src/intel/vulkan/genX_shader.c
 +++ b/src/intel/vulkan/genX_shader.c
-@@ -1212,6 +1212,34 @@ emit_cs_shader(struct anv_batch *batch,
+@@ -9,6 +9,8 @@
+ #include "genxml/genX_pack.h"
+ #include "genxml/genX_rt_pack.h"
+ 
++#include "anv_cm.h"
++
+ #include "common/intel_compute_slm.h"
+ 
+ #include "nir/nir_xfb_info.h"
+@@ -1212,6 +1214,9 @@ emit_cs_shader(struct anv_batch *batch,
        .EmitInlineParameter            = cs_prog_data->uses_inline_push_addr,
     };
  
-+   if (cs_prog_data->uses_cm_kernel) {
-+      /* NEO-style payload: [cross-thread data][per-thread data * threads], loaded by the walker from the
-+       * indirect object heap (base address 0, so the general state pool offset is the address). */
-+      const uint32_t cross = cs_prog_data->cm_cross_thread_size;
-+      const uint32_t per = cs_prog_data->cm_per_thread_size;
-+      const uint32_t total = cross + per * dispatch.threads;
-+      shader->cm_indirect = anv_state_pool_alloc(&device->general_state_pool,
-+                                                 align(total, 64), 64);
-+      memset(shader->cm_indirect.map, 0, align(total, 64));
-+      memcpy(shader->cm_indirect.map, cs_prog_data->cm_cross_thread_data,
-+             MIN2(cross, sizeof(cs_prog_data->cm_cross_thread_data)));
-+      const uint32_t lx = cs_prog_data->cm_local[0];
-+      const uint32_t ly = cs_prog_data->cm_local[1];
-+      /* packed local ids, only if the kernel takes them (per == 0: no per-thread argument, nothing to write) */
-+      for (uint32_t t = 0; per >= 6 && t < dispatch.threads; t++) {
-+         uint16_t *ids = (uint16_t *)((char *)shader->cm_indirect.map + cross + t * per);
-+         ids[0] = t % lx;
-+         ids[1] = (t / lx) % ly;
-+         ids[2] = t / (lx * ly);
-+      }
-+      walker.IndirectDataLength = total;
-+      if (cs_prog_data->cm_has_sampler)
-+         walker.InterfaceDescriptor.SamplerCount = 1;
-+      if (cs_prog_data->cm_nsurf > 0)
-+         walker.InterfaceDescriptor.BindingTableEntryCount = MIN2(cs_prog_data->cm_max_bti + 1, 31);
-+      walker.IndirectDataStartAddress = shader->cm_indirect.offset;
-+   }
++   if (cs_prog_data->uses_cm_kernel)
++      genX(cm_setup_walker)(device, shader, cs_prog_data, dispatch.threads, &walker);
 +
     assert(ARRAY_SIZE(shader->cs.gfx125.compute_walker_body) >=
            GENX(COMPUTE_WALKER_BODY_length));
     GENX(COMPUTE_WALKER_BODY_pack)(NULL,
+diff --git a/src/intel/vulkan/meson.build b/src/intel/vulkan/meson.build
+index c01a590..5e0034c 100644
+--- a/src/intel/vulkan/meson.build
++++ b/src/intel/vulkan/meson.build
+@@ -88,6 +88,7 @@ devenv.append('VK_DRIVER_FILES', _dev_icd.full_path())
+ libanv_per_hw_ver_libs = []
+ anv_per_hw_ver_files = files(
+   'genX_blorp_exec.c',
++  'genX_cm.c',
+   'genX_cmd_buffer.c',
+   'genX_cmd_compute.c',
+   'genX_cmd_draw.c',
+@@ -157,6 +158,8 @@ libanv_files = files(
+   'anv_blorp.c',
+   'anv_buffer.c',
+   'anv_buffer_view.c',
++  'anv_cm.c',
++  'anv_cm.h',
+   'anv_cmd_buffer.c',
+   'anv_descriptor_set.c',
+   'anv_device.c',
 diff --git a/src/vulkan/runtime/vk_pipeline.c b/src/vulkan/runtime/vk_pipeline.c
 index c4acd59..68833d4 100644
 --- a/src/vulkan/runtime/vk_pipeline.c
@@ -1006,6 +1971,3 @@ index 4e0d4dc..18194df 100644
     /* Used for the generic VkPipeline implementation */
     struct {
        struct vk_pipeline_cache_object cache_obj;
--- 
-2.43.0
-

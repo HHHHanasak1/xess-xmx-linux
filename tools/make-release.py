@@ -14,7 +14,7 @@ name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration_dx12.dll", "ffxfg/amd_fidelityfx_upscaler_dx12.dll", "ffxfg/dxgi.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-# what a user's install needs; developer tools (gen_dyn_dummies.py, check_dyn_ids.py, build-deps.sh, split_patch.py)
+# what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py)
 # stay in the repository
 tools = ["cm-compile.sh", "cmk_pack.py", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh",
          "steam-libraries.sh", "session-check.sh", "rebuild-driver.sh", "switch-driver.sh", "xell-probe.sh"]

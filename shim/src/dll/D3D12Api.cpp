@@ -12,7 +12,8 @@ static const unsigned char kDummyCS[] = {
 static const unsigned char kDummyUAV[] = {
 #include "dummy_uav_bytes.inc"
 };
-#include "dyn_dummies.inc"
+#include "placeholders.inc"
+#include "DxbcChecksum.h"
 static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_t nb)
 {
     unsigned long long h = 14695981039346656037ull;
@@ -21,14 +22,14 @@ static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_
     return h;
 }
 
-// Every CM kernel gets a persistent id per prefix (C:\igdext_kernels\map.txt: "<id> <hash>"), its SPIR-V and compile options
-// are written next to it as dyn_<id>.spv / dyn_<id>.opt, and the placeholder pipeline for that id is returned. The patched
-// ANV finds the files through $WINEPREFIX/drive_c/igdext_kernels, looks the hash up in ~/.cache/xess-xmx/kernels and
-// compiles the kernel there on a miss. When all ids are taken the map starts over (the compiled kernels are keyed by hash,
-// so nothing is lost but the id assignment).
+// Every CM kernel's SPIR-V and compile options are written to C:\igdext_kernels\<hash>.spv / <hash>.opt (hash: FNV-1a of
+// both, 16 hex digits), and a placeholder pipeline that carries the hash is returned. The patched ANV reads the hash
+// from the placeholder, finds the files through $WINEPREFIX/drive_c/igdext_kernels, looks the kernel up in
+// ~/.cache/xess-xmx/kernels and compiles it there on a miss.
 static const char* kDynDir = "C:\\igdext_kernels";
-static CRITICAL_SECTION g_dynCs; static INIT_ONCE g_dynOnce = INIT_ONCE_STATIC_INIT;
-static BOOL CALLBACK DynInit(PINIT_ONCE, PVOID, PVOID*) { InitializeCriticalSection(&g_dynCs); return TRUE; }
+static std::mutex g_dynMutex;
+static std::vector<unsigned long long> g_dynWritten;   // hashes whose files this process has confirmed on disk
+
 static bool WriteFileOnce(const char* path, const void* data, size_t size)
 {
     if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return true;
@@ -38,92 +39,34 @@ static bool WriteFileOnce(const char* path, const void* data, size_t size)
     if (!ok || !MoveFileExA(tmp, path, 0)) { DeleteFileA(tmp); return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
     return true;
 }
-// The map is read into memory once (and again when its size changed, see below); lookups and the ids this process has
-// already written its files for cost no file access. All of this runs under g_dynCs.
-static const int kNDyn = (int)(sizeof(kDynDummies) / sizeof(kDynDummies[0]));
-struct DynMapLine { int id; unsigned long long hash; };
-static std::vector<DynMapLine> g_dynMap;   // map.txt in file order
-static int g_dynMaxId = -1;
-static unsigned long long g_dynMapSize = 0;   // size of map.txt the table was read from, plus the lines appended since
-static bool g_dynMapLoaded = false;
-static bool g_dynWritten[kNDyn];              // dyn_<id>.spv / .opt confirmed on disk by this process
 
-static unsigned long long DynMapFileSize(const char* mapPath)
+static bool DynKernelFiles(unsigned long long hash, const void* spv, size_t spvLen, const char* opts)
 {
-    WIN32_FILE_ATTRIBUTE_DATA fa;
-    if (!GetFileAttributesExA(mapPath, GetFileExInfoStandard, &fa)) return 0;
-    return ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+    std::lock_guard<std::mutex> lock(g_dynMutex);
+    for (unsigned long long h : g_dynWritten) if (h == hash) return true;
+    CreateDirectoryA(kDynDir, nullptr);
+    char p[MAX_PATH];
+    snprintf(p, sizeof(p), "%s\\%016llx.spv", kDynDir, hash); const bool a = WriteFileOnce(p, spv, spvLen);
+    snprintf(p, sizeof(p), "%s\\%016llx.opt", kDynDir, hash); const bool b = WriteFileOnce(p, opts, strlen(opts));
+    if (a && b) g_dynWritten.push_back(hash);
+    return a && b;
 }
 
-static void DynReadMap(const char* mapPath)
+// A placeholder: a copy of one of the templates of placeholders.inc (tools/gen_placeholders.py) with lo and hi in its
+// store (low dword first) and the container checksum recomputed for it.
+static std::vector<unsigned char> MakePlaceholder(const unsigned char* tmpl, size_t size, size_t at, uint32_t lo, uint32_t hi)
 {
-    g_dynMap.clear(); g_dynMaxId = -1;
-    g_dynMapSize = DynMapFileSize(mapPath);   // taken before the read: a line added in between is read now and re-read later, never missed
-    if (FILE* f = nullptr; fopen_s(&f, mapPath, "rb") == 0 && f)
-    {
-        int i; unsigned long long h; char line[128];
-        while (fgets(line, sizeof(line), f))
-            if (sscanf(line, "%d %llx", &i, &h) == 2) { g_dynMap.push_back({ i, h }); if (i > g_dynMaxId) g_dynMaxId = i; }
-        fclose(f);
-    }
-    g_dynMapLoaded = true;
+    std::vector<unsigned char> b(tmpl, tmpl + size);
+    dxbc_checksum::Put32(&b[at], lo);
+    dxbc_checksum::Put32(&b[at + 4], hi);
+    dxbc_checksum::Update(b.data(), b.size());
+    return b;
 }
 
-static int DynLookup(unsigned long long hash)
-{
-    int id = -1;
-    for (const DynMapLine& l : g_dynMap) if (l.hash == hash) id = l.id;   // the last line wins, as when the file was scanned
-    return id;
-}
+// the self-test values (the driver's ANV_CM_CANARY_LO / _HI; tools/check_placeholders.py compares them)
+static const uint32_t kCanaryLo = 0x00414e43u;
+static const uint32_t kCanaryHi = 0x7fa15952u;
 
-static int DynKernelId(unsigned long long hash, const void* spv, size_t spvLen, const char* opts)
-{
-    InitOnceExecuteOnce(&g_dynOnce, DynInit, nullptr, nullptr);
-    EnterCriticalSection(&g_dynCs);
-    char mapPath[MAX_PATH]; snprintf(mapPath, sizeof(mapPath), "%s\\map.txt", kDynDir);
-    if (!g_dynMapLoaded) { CreateDirectoryA(kDynDir, nullptr); DynReadMap(mapPath); }
-    int id = DynLookup(hash);
-    // another process sharing the prefix may have appended ids since the map was read (unprotected, as before): before a
-    // new id is taken, a map.txt of a different size is read again, so its ids are not handed out a second time
-    if (id < 0 && DynMapFileSize(mapPath) != g_dynMapSize) { DynReadMap(mapPath); id = DynLookup(hash); }
-    if (id < 0)
-    {
-        id = g_dynMaxId + 1;
-        if (id >= kNDyn)
-        {
-            // all placeholders in use: start a new map (old one kept as map.old.txt); ids are only names for this prefix
-            char oldPath[MAX_PATH]; snprintf(oldPath, sizeof(oldPath), "%s\\map.old.txt", kDynDir);
-            MoveFileExA(mapPath, oldPath, MOVEFILE_REPLACE_EXISTING);
-            for (int i = 0; i < kNDyn; ++i)
-            {
-                char q[MAX_PATH];
-                snprintf(q, sizeof(q), "%s\\dyn_%d.spv", kDynDir, i); DeleteFileA(q);
-                snprintf(q, sizeof(q), "%s\\dyn_%d.opt", kDynDir, i); DeleteFileA(q);
-            }
-            TraceF("  all %d placeholder ids used: map restarted", kNDyn);
-            g_dynMap.clear(); g_dynMaxId = -1; g_dynMapSize = 0;
-            memset(g_dynWritten, 0, sizeof(g_dynWritten));
-            id = 0;
-        }
-        // the line goes into the table only once it is in the file: a failed append is tried again at the next call
-        char line[64]; const int len = snprintf(line, sizeof(line), "%d %016llx\n", id, hash);
-        if (FILE* f = nullptr; fopen_s(&f, mapPath, "ab") == 0 && f)
-        {
-            const bool ok = fputs(line, f) >= 0;
-            fclose(f);
-            if (ok) { g_dynMapSize += len; g_dynMap.push_back({ id, hash }); g_dynMaxId = id; }
-        }
-    }
-    if (!g_dynWritten[id])
-    {
-        char p[MAX_PATH];
-        snprintf(p, sizeof(p), "%s\\dyn_%d.spv", kDynDir, id); const bool a = WriteFileOnce(p, spv, spvLen);
-        snprintf(p, sizeof(p), "%s\\dyn_%d.opt", kDynDir, id); const bool b = WriteFileOnce(p, opts, strlen(opts));
-        g_dynWritten[id] = a && b;
-    }
-    LeaveCriticalSection(&g_dynCs);
-    return id;
-}
 static ID3D12Device* DevOf(INTCExtensionContext* c) { return (c && c->m_pD3D12ExtensionContext) ? c->m_pD3D12ExtensionContext->m_pAppDevice.Get() : nullptr; }
 
 
@@ -258,18 +201,26 @@ HRESULT _INTC_D3D12_CreateComputePipelineState(INTCExtensionContext* ctx, const 
     }
     if (dev && d->pD3D12Desc)
     {
-        // a CM kernel: the pipeline handed back is the placeholder for the kernel's id (same root signature), which the
-        // patched driver replaces by the compiled kernel; anything else gets a no-op so XeSS keeps requesting its kernels
+        // a CM kernel: the pipeline handed back is the placeholder that carries the kernel's hash (same root signature),
+        // which the patched driver replaces by the compiled kernel; anything else gets a no-op so XeSS keeps requesting
+        // its kernels
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc = *d->pD3D12Desc;
         desc.CS.pShaderBytecode = kDummyUAV; desc.CS.BytecodeLength = sizeof(kDummyUAV);
+        std::vector<unsigned char> placeholder;   // must outlive CreateComputePipelineState
         {
             const char* opts = d->CompileOptions ? (const char*)d->CompileOptions : "";
             const unsigned long long h = Fnv1a64(d->CS.pShaderBytecode, d->CS.BytecodeLength, opts, strlen(opts));
             if (d->ShaderInputType == CM_SPIRV)
             {
-                const int dyn = DynKernelId(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts);
-                if (dyn >= 0) { desc.CS.pShaderBytecode = kDynDummies[dyn].bytes; desc.CS.BytecodeLength = kDynDummies[dyn].size; TraceF("  kernel hash %016llx -> dynamic id %d", h, dyn); }
-                else TraceF("  WARNING: no dynamic id for kernel hash %016llx: this kernel runs as a no-op", h);
+                if (DynKernelFiles(h, d->CS.pShaderBytecode, d->CS.BytecodeLength, opts))
+                {
+                    placeholder = MakePlaceholder(kPlaceholderKernel, sizeof(kPlaceholderKernel), kPlaceholderKernelHashAt,
+                                                  (uint32_t)h, (uint32_t)(h >> 32));
+                    desc.CS.pShaderBytecode = placeholder.data(); desc.CS.BytecodeLength = placeholder.size();
+                    TraceF("  kernel hash %016llx -> placeholder", h);
+                }
+                else
+                    TraceF("  WARNING: cannot write %s\\%016llx.spv: this kernel runs as a no-op", kDynDir, h);
             }
             else
                 TraceF("  WARNING: shader input type %d is not handled (only CM SPIR-V is): this kernel runs as a no-op", (int)d->ShaderInputType);
@@ -314,11 +265,13 @@ static bool CalledFromXeFG()
     return false;
 }
 
-// Self-test, once per process, before XeSS is told to use CM kernels: a placeholder pipeline with workgroup (1, 1, 17)
-// is created on the game's device; the patched ANV recognises it (magic value) and writes C:\igdext_kernels\anv_canary.
-// If the file is not newer than this process, placeholders would not be replaced - the stock driver is in use (the
-// session check fell back, the variables are missing) or vkd3d-proton changed how placeholders reach the driver - and
-// XeSS must use its DP4a path instead of producing noise. IGDEXT_SKIP_SELFTEST=1 skips it.
+// Self-test, once per process, before XeSS is told to use CM kernels: a placeholder pipeline with workgroup (1, 1, 19)
+// that carries the test values kCanaryLo / kCanaryHi where a kernel placeholder carries its hash is created on the
+// game's device; the patched ANV recognises it (magic value and both test values) and writes
+// C:\igdext_kernels\anv_canary. If the file is not newer than this process, placeholders would not be replaced - the
+// stock driver is in use (the session check fell back, the variables are missing), the driver is one of an older
+// package that does not read hashes, or vkd3d-proton changed how placeholders reach the driver - and XeSS must use its
+// DP4a path instead of producing noise. IGDEXT_SKIP_SELFTEST=1 skips it.
 static bool SelfTestOk(ID3D12Device* dev)
 {
     static int result = -1;
@@ -343,8 +296,10 @@ static bool SelfTestOk(ID3D12Device* dev)
     if (SUCCEEDED(hr)) hr = dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), __uuidof(ID3D12RootSignature), (void**)&rs);
     if (SUCCEEDED(hr))
     {
+        const std::vector<unsigned char> canary =
+            MakePlaceholder(kPlaceholderCanary, sizeof(kPlaceholderCanary), kPlaceholderCanaryHashAt, kCanaryLo, kCanaryHi);
         D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
-        pd.pRootSignature = rs; pd.CS.pShaderBytecode = kCanaryDummy; pd.CS.BytecodeLength = sizeof(kCanaryDummy);
+        pd.pRootSignature = rs; pd.CS.pShaderBytecode = canary.data(); pd.CS.BytecodeLength = canary.size();
         hr = dev->CreateComputePipelineState(&pd, __uuidof(ID3D12PipelineState), (void**)&pso);
     }
     if (pso) pso->Release();

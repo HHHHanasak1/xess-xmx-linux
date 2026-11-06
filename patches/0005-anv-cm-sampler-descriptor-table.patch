@@ -1,4 +1,4 @@
-From af86bb1124c947ef2642b19db730a2a3a5cb92da Mon Sep 17 00:00:00 2001
+From 2142b9ff810f5af1f9b003b8c656e5ea00073f5e Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 30 Oct 2026 21:27:50 +0900
 Subject: [PATCH] anv: CM kernels with a sampler descriptor table
@@ -6,9 +6,10 @@ Subject: [PATCH] anv: CM kernels with a sampler descriptor table
 
 ---
  src/intel/compiler/brw/brw_compiler.h |  5 +++++
- src/intel/vulkan/anv_shader_compile.c | 26 +++++++++++++++++++++++++-
- src/intel/vulkan/genX_cmd_buffer.c    |  8 ++++++++
- 3 files changed, 38 insertions(+), 1 deletion(-)
+ src/intel/vulkan/anv_cm.c             | 26 +++++++++++++++++++++++++-
+ src/intel/vulkan/anv_private.h        |  1 +
+ src/intel/vulkan/genX_cm.c            |  8 ++++++++
+ 4 files changed, 39 insertions(+), 1 deletion(-)
 
 diff --git a/src/intel/compiler/brw/brw_compiler.h b/src/intel/compiler/brw/brw_compiler.h
 index 5451798..9baf835 100644
@@ -26,11 +27,11 @@ index 5451798..9baf835 100644
     uint32_t cm_local[3];
     uint32_t cm_cross_thread_size;
     uint32_t cm_per_thread_size;
-diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
-index ff91cdf..09a9429 100644
---- a/src/intel/vulkan/anv_shader_compile.c
-+++ b/src/intel/vulkan/anv_shader_compile.c
-@@ -1802,7 +1802,7 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
+index e9e1105..60cc629 100644
+--- a/src/intel/vulkan/anv_cm.c
++++ b/src/intel/vulkan/anv_cm.c
+@@ -1393,7 +1393,7 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
        cs->cm_sampler_from_layout = ns > 0;
        if (ns != 1)
           fprintf(stderr, "ANV CM: %s samples but the pipeline layout has %u static samplers (%s)\n", path, ns,
@@ -39,7 +40,7 @@ index ff91cdf..09a9429 100644
     }
  
     if (h.nsurf > 0) {
-@@ -1835,6 +1835,30 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1426,6 +1426,30 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
           for (uint32_t r = 0; r < ci->push_constant_range_count; r++)
              push_size = MAX2(push_size, ci->push_constant_ranges[r].offset + ci->push_constant_ranges[r].size);
           h.table_pc_base = push_size >= 4 * h.nsurf ? push_size - 4 * h.nsurf : ~0u;
@@ -49,7 +50,7 @@ index ff91cdf..09a9429 100644
 +            for (uint32_t i = 0; i < ci->set_layout_count && !cs->cm_sampler_from_heap; i++) {
 +               const struct anv_descriptor_set_layout *cand =
 +                  (const struct anv_descriptor_set_layout *)ci->set_layouts[i];
-+               if (!cand || cand->type != ANV_PIPELINE_DESCRIPTOR_SET_LAYOUT_TYPE_DIRECT)
++               if (!cand || !ANV_CM_SET_LAYOUT_IS_DIRECT(cand))
 +                  continue;
 +               for (uint32_t b = 0; b < cand->binding_count; b++) {
 +                  if (cand->binding[b].type == VK_DESCRIPTOR_TYPE_SAMPLER && cand->binding[b].array_size >= 1000) {
@@ -70,28 +71,37 @@ index ff91cdf..09a9429 100644
        }
        if (!l || h.heap_binding >= l->binding_count || h.nsurf > 24 || h.table_pc_base == ~0u) {
           fprintf(stderr, "ANV CM: %s: no vkd3d-style descriptor heap in the pipeline layout (%u sets) - "
-diff --git a/src/intel/vulkan/genX_cmd_buffer.c b/src/intel/vulkan/genX_cmd_buffer.c
-index c321ec1..bcd0da9 100644
---- a/src/intel/vulkan/genX_cmd_buffer.c
-+++ b/src/intel/vulkan/genX_cmd_buffer.c
-@@ -2711,9 +2711,17 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
-             struct anv_state sst = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 16, 32);
-             if (sst.map == NULL)
-                return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-+            const struct anv_descriptor_set *shs = cm->cm_sampler_from_heap ?
-+               pipe_state->descriptors[cm->cm_sampler_heap_set] : NULL;
-+            const uint32_t sidx = cm->cm_sampler_from_heap ?
-+               ((const uint32_t *)pipe_state->push_constants.client_data)[cm->cm_sampler_pc_off / 4] : 0;
-             if (cm->cm_sampler_from_layout) {
-                /* the static sampler of the D3D12 root signature (an immutable sampler of the pipeline layout) */
-                memcpy(sst.map, cm->cm_sampler_state, 16);
-+            } else if (shs && shs->layout && shs->desc_sampler_mem.map && sidx < shs->layout->descriptor_count) {
-+               /* a sampler descriptor table: the sampler state vkd3d wrote into its sampler heap */
-+               memcpy(sst.map, (const char *)shs->desc_sampler_mem.map + cm->cm_sampler_heap_off +
-+                      sidx * cm->cm_sampler_heap_stride, 16);
-             } else {
-                /* no static sampler found: XeSS' own is MIN_MAG_MIP_LINEAR, CLAMP on all axes, normalised coordinates */
-                struct GENX(SAMPLER_STATE) smp = {
--- 
-2.53.0
-
+diff --git a/src/intel/vulkan/anv_private.h b/src/intel/vulkan/anv_private.h
+index 02acea8..37fdd8a 100644
+--- a/src/intel/vulkan/anv_private.h
++++ b/src/intel/vulkan/anv_private.h
+@@ -1319,6 +1319,7 @@ struct anv_shader_group_rt_replay {
+ typedef struct anv_cmd_pipeline_state anv_cm_bind_state;      /* bound descriptor sets + push constants */
+ #define ANV_CM_SAMPLER_STATE(s) ((s)->state[0])      /* SAMPLER_STATE dwords of a struct anv_sampler */
+ #define ANV_CM_SET_LAYOUT_MODE(l) ((int)(l)->type)    /* set layout kind, for logs */
++#define ANV_CM_SET_LAYOUT_IS_DIRECT(l) ((l)->type == ANV_PIPELINE_DESCRIPTOR_SET_LAYOUT_TYPE_DIRECT)  /* a classic (vkd3d-heap) set layout */
+ 
+ struct anv_shader {
+    struct vk_shader vk;
+diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
+index b7400b5..17f9983 100644
+--- a/src/intel/vulkan/genX_cm.c
++++ b/src/intel/vulkan/genX_cm.c
+@@ -38,9 +38,17 @@ genX(cm_emit_binding_table)(struct anv_cmd_buffer *cmd_buffer,
+       struct anv_state sst = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, 16, 32);
+       if (sst.map == NULL)
+          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      const struct anv_descriptor_set *shs = cm->cm_sampler_from_heap ?
++         bind_state->descriptors[cm->cm_sampler_heap_set] : NULL;
++      const uint32_t sidx = cm->cm_sampler_from_heap ?
++         ((const uint32_t *)bind_state->push_constants.client_data)[cm->cm_sampler_pc_off / 4] : 0;
+       if (cm->cm_sampler_from_layout) {
+          /* the static sampler of the D3D12 root signature (an immutable sampler of the pipeline layout) */
+          memcpy(sst.map, cm->cm_sampler_state, 16);
++      } else if (shs && shs->layout && shs->desc_sampler_mem.map && sidx < shs->layout->descriptor_count) {
++         /* a sampler descriptor table: the sampler state vkd3d wrote into its sampler heap */
++         memcpy(sst.map, (const char *)shs->desc_sampler_mem.map + cm->cm_sampler_heap_off +
++                sidx * cm->cm_sampler_heap_stride, 16);
+       } else {
+          /* no static sampler found: XeSS' own is MIN_MAG_MIP_LINEAR, CLAMP on all axes, normalised coordinates */
+          struct GENX(SAMPLER_STATE) smp = {

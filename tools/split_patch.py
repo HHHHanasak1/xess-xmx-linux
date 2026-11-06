@@ -10,6 +10,10 @@ import os, re, subprocess, sys
 tree, base, outdir = sys.argv[1:4]
 os.makedirs(outdir, exist_ok=True)
 files = subprocess.run(["git", "-C", tree, "diff", "--name-only", base], capture_output=True, text=True, check=True).stdout.split()
+# files the change set adds (src/intel/vulkan/anv_cm.[ch], genX_cm.c) are untracked in the tree, unless added with
+# `git add -N`; `git diff` alone would leave them out of 0001
+files += [f for f in subprocess.run(["git", "-C", tree, "ls-files", "--others", "--exclude-standard", "src/"],
+                                    capture_output=True, text=True, check=True).stdout.split() if f not in files]
 BEGIN = re.compile(r"^\s*/\* XMX-DEBUG-BEGIN \*/\s*$")
 END = re.compile(r"^\s*/\* XMX-DEBUG-END \*/\s*$")
 

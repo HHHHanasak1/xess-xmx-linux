@@ -13,14 +13,22 @@ XeSS (and XeSS frame generation, `libxess_fg.dll`) loads `igdext64.dll` from the
 
 * detects the GPU (Wine lists it under `HKLM\System\CurrentControlSet\Enum\PCI`) and describes it like the Windows
   driver would: graphics IP version, XMX support, and whether the GPU is SIMD16-native (see section 3);
-* for every CM kernel XeSS submits (SPIR-V plus compile options), assigns a persistent id in that prefix
-  (`C:\igdext_kernels\map.txt`: id and FNV-1a hash of SPIR-V + options), writes the SPIR-V and the options next to it
-  (`dyn_<id>.spv/.opt`) and returns a **placeholder** D3D12 compute pipeline instead of the kernel.
+* for every CM kernel XeSS submits (SPIR-V plus compile options), writes the SPIR-V and the options to
+  `C:\igdext_kernels\<hash>.spv` / `.opt` (hash: FNV-1a of SPIR-V + options, 16 hex digits) and returns a
+  **placeholder** D3D12 compute pipeline instead of the kernel.
 
-A placeholder is a trivial DXBC compute shader that stores the magic value `0x584D5843`. Its `numthreads` encode the
-id: planes z = 7, 11 and 13 (primes no game is known to use), and inside a plane every (x, y) with x * y * z <= 1024,
-ordered by y then x - 1549 ids. When they run out the map starts over; compiled kernels are keyed by hash, so only the
-id assignment is lost. `tools/check_dyn_ids.py` verifies that the shim table, its generator and the driver agree.
+A placeholder is a trivial DXBC compute shader with `numthreads(1, 1, 23)` (a prime no game is known to use) whose one
+`store_raw` writes the magic value `0x584D5843` and the kernel's 64-bit hash as two dwords. The shim has one fxc-built
+template of it (`shim/src/dll/placeholders.inc`, written by `tools/gen_placeholders.py`), writes the hash into a copy
+and recomputes the DXBC checksum (MD5 with DXBC's own end-of-message layout, `shim/src/dll/DxbcChecksum.h`). The driver
+reads the hash back from the constants of the shader. vkd3d-proton does not verify the checksum (neither its own DXBC
+parser up to 2.14 nor dxbc-spirv, which 3.x uses), it keys its caches by a hash of the whole blob, and it keeps the
+three values as 32-bit constants: one vector store in 3.x, one store per dword in 2.x. `tools/check_placeholders.py`
+verifies that the templates (shape, magic, checksum, where the hash goes) and the shim's self-test values match the
+driver.
+
+Shims before this format numbered the kernels instead (`map.txt`, `dyn_<id>.spv`, the id encoded in `numthreads`
+on the planes z = 7, 11 and 13); the driver still understands those placeholders.
 
 XeSS could also be pointed at the shim's folder through `INTC_ALT_DRIVER_EXTENSIONS_PATH`, without a copy in each
 prefix, but GE-Proton sets that variable to `C:\Windows\System32` for every game, so the copies stay. The variable
@@ -29,18 +37,25 @@ never find the folder on its own.
 
 ## 2. The driver
 
-The patched Mesa ANV (`patches/0001`) looks at every compute shader it compiles. A shader whose workgroup size lies on
-a reserved plane *and* which stores the magic value is a placeholder; any other shader, even with the same workgroup
-size, is compiled normally (on Mesa 26.3 by Jay or brw; the placeholder never reaches either). For a placeholder the
+The patched Mesa ANV (`patches/0001`) looks at every compute shader it compiles. A shader with a placeholder's
+workgroup size (1, 1, 23), or one on the id planes of an older shim, *and* which stores the magic value is a
+placeholder; any other shader, even with the same workgroup size, is compiled normally (on Mesa 26.3 by Jay or brw; the placeholder never reaches either). For a placeholder the
 driver
 
-1. reads the kernel's hash from the prefix's `map.txt` and looks for
-   `~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk` (the toolchain part comes from the compiler in `igc/`
-   and the packer, so a compiler update or a new `.cmk` format leads to recompiles);
+1. reads the kernel's hash from the placeholder (the two constants next to the magic value; as their order after
+   vkd3d-proton and NIR depends on the store's path, it takes the first pair the shim wrote a `.spv` for or that is
+   in the cache) and looks for
+   `~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk` (the toolchain part comes from the compiler file names
+   in `igc/`, the contents of the compile scripts and the packer version, so a compiler update, a changed script or a
+   new `.cmk` format leads to recompiles);
 2. on a miss, runs `tools/cm-compile.sh` (ocloc from Intel's compute-runtime with **IGC 2.10.10**, fetched into `igc/`
-   by `tools/get-igc.sh`; `-vc-codegen` plus the options XeSS passes, `-doubleGRF`, `-ze-exp-register-file-size`),
-   which packs the result with `tools/cmk_pack.py`. That takes 0.2-0.3 s per kernel; Wuthering Waves' 90 kernels take
-   65-70 s in total at the first launch, about 31 s of it in the compiler itself;
+   by `tools/get-igc.sh`; `-vc-codegen` plus the options XeSS passes, `-doubleGRF`, `-ze-exp-register-file-size`)
+   into a temporary folder, and packs the zebin into the `.cmk` itself (a C port of `tools/cmk_pack.py`, byte for
+   byte the same output). Besides ocloc the script starts no program; the driver passes it the PCI id and the GRF
+   size. With a driver of an older package, which does not ask for that, the script still packs with
+   `tools/cmk_pack.py`. Before the driver packed itself a kernel took 0.2-0.3 s; Wuthering Waves' 90 kernels took
+   65-70 s in total at the first launch, about 31 s of it in the compiler itself. The kernels are still compiled one
+   after the other, inside `vkCreateComputePipelines`;
 3. replaces the shader by that native binary: the `.cmk` holds the ISA, GRF count, SLM size, barrier and sampler use,
    the walker payload (cross-thread data such as `local_size` and `group_count`, per-thread packed local ids with a
    stride of one GRF) and how the kernel's surfaces map to D3D12 descriptor tables;
@@ -77,8 +92,11 @@ the marker if they all succeed. After a second failure it tries again only when 
 ### Self-test
 
 Before the shim accepts an extension context it creates one extra placeholder pipeline on the game's device:
-workgroup (1, 1, 17), outside the id planes, with the magic value. The patched driver recognises it and writes
-`C:\igdext_kernels\anv_canary`. Only if that file is newer than the game process does the shim accept the context;
+workgroup (1, 1, 19), from the second template, with the magic value and two test values where a kernel's
+placeholder has its hash (as floats a denormal and a signaling NaN, so a translation step that flushed or canonicalized
+them shows up here too). The patched driver recognises it, checks that both test values arrived, and writes
+`C:\igdext_kernels\anv_canary`. A driver of an older package does not know this shape, so with a newer shim it fails
+the test (DP4a instead of noise); the old test shape (1, 1, 17) is still answered for older shims. Only if that file is newer than the game process does the shim accept the context;
 otherwise it declines it and XeSS behaves as on a system without the Intel extension: DP4a super resolution and
 generic frame generation, which is limited to 2x. (Answering `LSCSupported=0` instead would switch XeSS frame
 generation off altogether.) This catches every way placeholders could silently stay placeholders: the stock driver in
