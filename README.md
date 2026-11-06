@@ -15,6 +15,8 @@ vkd3d-proton:
   in its launch options ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)). A game that has XeSS itself
   should use that: this route can flicker more. With `dxgi.dll`, a game with FSR upscaling and no FSR frame generation
   gets XeSS frame generation as well: `FSR=xess FSR_FG=inject`.
+* Experimental: XeSS frame generation for any DX12 game, with motion vectors from optical flow on the final image, as
+  a driver-level frame generation works: `OFLOW_FG=1` ([docs/optical-flow-frame-generation.md](docs/optical-flow-frame-generation.md)).
 
 Developed on an ONEXPLAYER 3 (Arc B390, Xe3) with SteamOS, Mesa 26.1.2 / 26.3 and GE-Proton 11-6 / Proton
 Experimental; tested by users on Xe2 (Arc B580) and Xe-HPG (Arc A310). Super resolution renders correctly and is
@@ -179,8 +181,10 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
                                   amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
-                                  dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject);
-                                  get-headers.sh fetches the AMD / Intel headers they are built against
+                                  dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject, and
+                                  for any DX12 game from optical flow, OFLOW_FG=1); get-headers.sh fetches the AMD /
+                                  Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
+                                  optical flow libraries
     tools/cm-compile.sh           run-time compiler helper called by the driver
     tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
     tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)

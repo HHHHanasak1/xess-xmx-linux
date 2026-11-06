@@ -112,10 +112,17 @@ jobs:
       - name: FSR headers
         run: bash ffxfg/get-headers.sh
         shell: bash
+      # OFLOW_FG=1: the optical flow (FidelityFX SDK 1.1.4, MIT) is linked into the frame generation DLL
+      - name: FidelityFX SDK 1.1.4 optical flow libraries
+        run: ffxfg\build-ffxsdk.bat
+        shell: cmd
       - name: amd_fidelityfx_framegeneration_dx12.dll
         run: |
           mkdir ffxfg\build
-          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll /link dxguid.lib
+          dxc -nologo -T cs_6_0 -E main -Vn g_oflowExpandCs -Fh ffxfg\build\oflow_expand_cs.h ffxfg\oflow_expand.hlsl || exit /b 1
+          dxc -nologo -T cs_6_0 -E main -Vn g_oflowDownCs -Fh ffxfg\build\oflow_down_cs.h ffxfg\oflow_down.hlsl || exit /b 1
+          cl /nologo /c /O2 /W3 /MT /EHsc /std:c++17 /I ffxfg\build /I ffxfg\ffxsdk\sdk\include ffxfg\ffx_oflow.cpp /Foffxfg\build\ || exit /b 1
+          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\ffx_xefg.cpp ffxfg\build\ffx_oflow.obj /Foffxfg\build\ /Fe:ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll /link dxguid.lib d3d12.lib ffxfg\ffxsdk\sdk\bin\ffx_sdk\ffx_opticalflow_x64.lib ffxfg\ffxsdk\sdk\bin\ffx_sdk\ffx_backend_dx12_x64.lib || exit /b 1
           dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"ffxConfigure" /c:"ffxCreateContext" /c:"ffxDestroyContext" /c:"ffxDispatch" /c:"ffxQuery"
           dumpbin /exports ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll | findstr /c:"XefgBridgeCreateSwapChain" /c:"XefgBridgeFrame"
         shell: cmd

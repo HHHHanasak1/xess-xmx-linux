@@ -16,6 +16,9 @@
 #   FSR_FG=xess %command%   only the frame generation (the game's own FSR upscaler stays)
 #   FSR=xess FSR_FG=inject %command%   for a game with FSR 3.1+ upscaling and no FSR frame generation: dxgi.dll next to
 #                           the game gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/)
+#   OFLOW_FG=1 %command%    experimental, any DX12 game: the same dxgi.dll next to the game's executable, XeSS-FG fed
+#                           with motion vectors from optical flow on the final image (FFX_XEFG_OFLOW=1,
+#                           docs/optical-flow-frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame
 # Debug: FSR_VENDOR=amd (DXVK reports the GPU as AMD's, for a game that offers FSR only on AMD GPUs; XeSS still gets
 # Intel's vendor id from the package's DLLs).
 # (XESS_FG=<n>, the frame generation override, needs no hook: ControlLib.dll and the shim read it in the game)
@@ -282,6 +285,42 @@ def inject_fg(top, swaps, ours_fg):
         say("FSR_FG=inject: XeSS-FG swap chain through %s" % f)
 
 
+def oflow_fg(swaps):
+    """OFLOW_FG=1: frame generation for any DX12 game, from optical flow on the final image. dxgi.dll and the frame
+    generation DLL (as ffx_xefg_bridge.dll) with the SDK's libxess_fg.dll and libxell.dll go next to the executable
+    Proton starts (its path is Proton's second argument). Returns True when it is set up."""
+    exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    if sys.argv[1] != "waitforexitandrun":   # Steam's install scripts and redistributables run with "run"
+        return False
+    ours_fg, dxgi = os.path.join(FFXFG, FG_DLL), os.path.join(FFXFG, "dxgi.dll")
+    if not (os.path.isfile(ours_fg) and os.path.isfile(dxgi) and os.path.isfile(os.path.join(STORE, "libxess_fg.dll"))):
+        say("OFLOW_FG: %s, %s or the XeSS SDK (%s, tools/get-xess.sh) missing; no frame generation"
+            % (ours_fg, dxgi, STORE))
+        return False
+    if not exe.lower().endswith(".exe") or not os.path.isfile(exe):
+        say("OFLOW_FG: Proton was not given a game executable (%s); no frame generation" % (exe or "nothing"))
+        return False
+    top = os.path.dirname(os.path.realpath(exe))
+    game = os.path.realpath(os.environ.get("STEAM_COMPAT_INSTALL_PATH", ""))
+    if not game or os.path.commonpath([top, game]) != game:
+        say("OFLOW_FG: %s is not in the game folder; no frame generation" % exe)
+        return False
+    # anything there already (the game's own, or a link a killed run left that clean_left_over could not tell as
+    # ours): left alone, as linking over a link would turn it into a lasting copy
+    for name in ("dxgi.dll", "ffx_xefg_bridge.dll"):
+        if os.path.lexists(os.path.join(top, name)):
+            say("OFLOW_FG: %s already has a %s; no frame generation" % (top, name))
+            return False
+    if os.path.lexists(os.path.join(top, FG_DLL)) or os.path.lexists(os.path.join(top, SINGLE_DLL)):
+        say("OFLOW_FG: the game has FSR frame generation of its own (FSR=xess runs it on XeSS-FG with the game's inputs)")
+    swaps.link(os.path.join(top, "dxgi.dll"), dxgi)
+    swaps.link(os.path.join(top, "ffx_xefg_bridge.dll"), ours_fg)
+    xess_libs(top, swaps, ["libxess_fg.dll", "libxell.dll"])
+    SETTINGS["FFX_XEFG_OFLOW"] = "1"
+    say("OFLOW_FG: XeSS-FG from optical flow next to %s" % os.path.basename(exe))
+    return True
+
+
 def fsr(game, swaps, fg, sr, inject=False, found=None):
     """FSR=xess (upscaling on XeSS SR and frame generation on XeSS-FG) and FSR_FG=xess (frame generation only) in
     every folder with FidelityFX DLLs. FSR 3.1.4+ has a loader with the providers next to it, and only those are
@@ -407,6 +446,7 @@ def main():
     want = os.environ.get("XESS", "")
     fg = os.environ.get("FSR_FG", "")
     sr = os.environ.get("FSR", "")
+    oflow = os.environ.get("OFLOW_FG", "") not in ("", "0")
     game = os.environ.get("STEAM_COMPAT_INSTALL_PATH", "")
     clean_left_over()
     # a session started before install.sh disabled present wait 2 as well (frame generation crashed in
@@ -436,7 +476,10 @@ def main():
         sr = ""
     if sr == "xess":
         fg = "xess"
-    if want != "latest" and fg != "xess" and not sr:
+    if oflow and (fg or sr):
+        say("OFLOW_FG=1 with FSR / FSR_FG: OFLOW_FG is left out (the game's own inputs are better than optical flow)")
+        oflow = False
+    if want != "latest" and fg != "xess" and not sr and not oflow:
         return
     if not game or not os.path.isdir(game):
         say("XESS / FSR: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
@@ -478,6 +521,8 @@ def main():
         else:
             say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
                 % (STORE, PKG))
+    if oflow:
+        oflow_fg(swaps)
     if fsr(game, swaps, fg == "xess", sr, inject, found) and os.environ.get("FSR_VENDOR", "") == "amd":
         # debug, for a game that offers FSR only on AMD GPUs; XeSS still gets Intel's vendor id from the package's DLLs
         add_env("DXVK_CONFIG", "dxgi.customVendorId = 1002", "customVendorId")
