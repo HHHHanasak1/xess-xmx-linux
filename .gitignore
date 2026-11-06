@@ -16,3 +16,4 @@ ffxfg/inc/
 ffx/
 layer/out/
 layer/tests/out/
+layer/libVkLayer_xess_xmx.so
