@@ -639,6 +639,26 @@ x_DestroyShaderModule(VkDevice device, VkShaderModule m, const VkAllocationCallb
 
 /* ---- pipelines ---- */
 static atomic_uint replaced_count;   /* replaced pipelines alive: none, no lookup on a compute bind */
+
+/* The replaced kernel of a pipeline (NULL for any other), on every compute bind: each recording thread keeps the
+ * last lookups. Every change of `pipelines` bumps pipe_epoch after it, which empties every thread's cache, so a
+ * destroyed pipeline's handle reused for another pipeline is looked up again. */
+static atomic_uint pipe_epoch;
+#define PIPE_CACHE 8
+static _Thread_local struct { VkPipeline p; struct xkernel *k; unsigned epoch; } pipe_cache[PIPE_CACHE];
+static struct xkernel *
+kernel_of(VkPipeline p)
+{
+   const unsigned e = atomic_load_explicit(&pipe_epoch, memory_order_acquire);
+   const unsigned s = (unsigned)((HKEY(p) * 0x9e3779b97f4a7c15ull) >> 61) & (PIPE_CACHE - 1);
+   if (pipe_cache[s].p == p && pipe_cache[s].epoch == e)
+      return pipe_cache[s].k;
+   struct xkernel *k = xmap_get(&pipelines, HKEY(p));
+   pipe_cache[s].p = p;
+   pipe_cache[s].k = k;
+   pipe_cache[s].epoch = e;
+   return k;
+}
 static void
 answer_canary(struct xdevice *d, const struct xmx_placeholder *ph)
 {
@@ -843,6 +863,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    kr->lset = ls->layout;
    xmap_put(&pipelines, HKEY(p), kr);
    atomic_fetch_add(&replaced_count, 1);
+   atomic_fetch_add(&pipe_epoch, 1);
    xlog("kernel %s: replaced (%u surfaces, heap set %u binding %u, sampler %s, layer set %u)", ph->hash, nsurf,
         kr->heap_set, kr->heap_binding,
         !kr->sampler ? "none" : kr->sampler_mode == 0 ? "static" : kr->sampler_mode == 1 ? "heap" : "default",
@@ -908,6 +929,7 @@ x_DestroyPipeline(VkDevice device, VkPipeline p, const VkAllocationCallbacks *al
    struct xkernel *kr = p ? xmap_take(&pipelines, HKEY(p)) : NULL;
    if (kr) {
       atomic_fetch_sub(&replaced_count, 1);
+      atomic_fetch_add(&pipe_epoch, 1);
       free(kr);
    }
    d->DestroyPipeline(device, p, alloc);
@@ -1177,7 +1199,7 @@ x_CmdBindPipeline(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeline p)
    struct xcmd *c = cmd_of(cb);
    struct xdevice *d = c ? c->dev : dev_of(cb);
    if (c) {
-      c->bound = atomic_load_explicit(&replaced_count, memory_order_relaxed) ? xmap_get(&pipelines, HKEY(p)) : NULL;
+      c->bound = atomic_load_explicit(&replaced_count, memory_order_relaxed) ? kernel_of(p) : NULL;
       if (!c->bound)
          prof_run_end(c);
    }
@@ -1384,6 +1406,7 @@ x_DestroyDevice(VkDevice device, const VkAllocationCallbacks *alloc)
    xmap_take_if(&set_layouts, of_dev, free_entry, d);
    xmap_take_if(&pipe_layouts, of_dev, free_entry, d);
    xmap_take_if(&pipelines, of_dev, free_kernel, d);
+   atomic_fetch_add(&pipe_epoch, 1);
    /* command pools: collected under the map's lock, their descriptor pools destroyed outside it */
    struct pool_purge pp = { d, NULL };
    xmap_take_if(&cmdpools, pool_of_dev, pool_collect, &pp);
