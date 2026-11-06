@@ -11,7 +11,8 @@ if not exist ffxsdk\sdk (
 )
 for /f %%c in ('git -C ffxsdk rev-parse HEAD') do set HEAD=%%c
 if not "%HEAD%"=="%COMMIT%" (echo ffxsdk is at %HEAD%, expected %COMMIT% & exit /b 1)
-cmake -S ffxsdk\sdk -B ffxsdk\sdk\build-of -G "Visual Studio 17 2022" -A x64 -DFFX_API_BACKEND=DX12_X64 -DFFX_ALL=OFF ^
+rem no -G: cmake takes the newest Visual Studio there is (GitHub's windows-latest has no 2022 any more)
+cmake -S ffxsdk\sdk -B ffxsdk\sdk\build-of -A x64 -DFFX_API_BACKEND=DX12_X64 -DFFX_ALL=OFF ^
   -DFFX_FSR3=ON -DFFX_FSR3UPSCALER=OFF -DFFX_FI=OFF -DFFX_OF=ON -DFFX_BUILD_AS_DLL=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ^
   -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded || exit /b 1
 cmake --build ffxsdk\sdk\build-of --config Release -- /m /v:minimal || exit /b 1
