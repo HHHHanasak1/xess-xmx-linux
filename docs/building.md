@@ -125,6 +125,13 @@ lowering only works with brw, and since Jay is the default on Xe2 and Xe3 those 
 in `jay_opt_propagate_forwards`. The patch compiles the workgroup-stage shaders of those games with brw and leaves Jay
 on for everything else. Drop it once the Mesa tag the series is based on includes the fix.
 
+`0006` (26.3 only) is a Mesa bug fix too. The cooperative matrix lowering leaves function_temp variables behind (in a
+compute shader of Cyberpunk 2077, dead stores into its vectors) and runs nothing that removes them, so the derefs reach
+Jay, which has no case for them: an `UNREACHABLE` that a release build turns into a jump into unrelated code. Whether
+that crashes depends on the build (26.3.0-rc3 with this series built with GCC 15 crashes in `jay_emit_fb_write` while
+Cyberpunk 2077 compiles the shader; GCC 16 happened not to); an assert build stops at "All derefs should've been
+lowered". The patch lowers them to SSA and removes the dead ones right after the lowering.
+
 `0005` (both series; there is no `0004` in the 26.1.2 one) handles CM kernels whose sampler is a descriptor table
 rather than a static sampler, as in the FSR 4 on XMX plugin ([games.md](games.md)). vkd3d puts one push-constant
 dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the
@@ -134,5 +141,5 @@ samplers and does not take this path.
 `0001` and `0002` are generated from one source tree in which the debug-only code sits between
 `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines: `tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>`
 writes `0001` without those blocks and `0002` with them (new files such as `anv_cm.c` may stay untracked in that
-tree; the script picks them up). `0003` and `0005` are single commits on top, rebased when `0001` changes. CI checks
+tree; the script picks them up). `0003`, `0005` and `0006` are single commits on top, rebased when `0001` changes. CI checks
 that no debug code ends up in `0001`.
