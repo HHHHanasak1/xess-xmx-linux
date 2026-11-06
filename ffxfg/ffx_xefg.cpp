@@ -8,7 +8,9 @@
 // from it, as AMD's frame generation separates the UI that way. The game's own interpolation dispatch is a no-op:
 // XeSS-FG interpolates inside the proxy swap chain.
 //
-// The same DLL, as ffx_xefg_bridge.dll, serves a game without FSR frame generation (FSR_FG=inject, xefg_bridge.h).
+// The same DLL, as ffx_xefg_bridge.dll, serves a game without FSR frame generation (FSR_FG=inject, xefg_bridge.h),
+// and with FFX_XEFG_OFLOW=1 (OFLOW_FG=1) any DX12 game: the motion vectors come from FidelityFX optical flow on the
+// final image (ffx_oflow.cpp), the bridge makes a frame on every present itself.
 //
 // Environment:
 //   FFX_XEFG_MULT=n   frames shown per rendered frame (2 = one interpolated frame; default: XESS_FG, else 2)
@@ -19,6 +21,15 @@
 //   FFX_XEFG_PACE=1        release our waitable object when the GPU finished the frame, not when Present returns
 //   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
+//   FFX_XEFG_OFLOW=1       motion vectors from FidelityFX optical flow on the final image instead of the game's,
+//                          constant depth (FFX_XEFG_OFLOW_DEPTH, default 1.0), no camera, no HUD-less color or UI: what
+//                          a driver-level frame generation has (ffx_oflow.cpp; tools/proton-hook.py sets it for OFLOW_FG=1)
+//   FFX_XEFG_OFLOW_DIV=n   the optical flow sees the image at 1/n size (1..4, default 1)
+//   FFX_XEFG_CAP=us|auto|0 the interval of a real frame in microseconds through XeLL, for even frames; auto (the default
+//                          with FFX_XEFG_OFLOW) follows the GPU time of a frame; 0 = none. FFX_XEFG_CAP_PAD=ms is auto's
+//                          first guess of what a frame needs beyond that (default 1.5, then learned), FFX_XEFG_REFRESH=Hz
+//                          the display's refresh rate when Windows reports a wrong one
+//   FFX_XEFG_TIMES=1       frame time, time in Present and XeLL's sleep (percentiles) in the log every 300 frames
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
 #define WIN32_LEAN_AND_MEAN
@@ -34,6 +45,8 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <algorithm>
+#include <vector>
 
 #pragma warning(disable : 4996)
 #include "inc/ffx/api/include/ffx_api.h"
@@ -46,6 +59,7 @@
 #include "inc/xess/xess_fg/xefg_swapchain_d3d12.h"
 #include "inc/xess/xell/xell.h"
 #include "inc/xess/xell/xell_d3d12.h"
+#include "ffx_oflow.h"
 
 #pragma comment(lib, "dxgi.lib")
 
@@ -122,6 +136,10 @@ static bool g_sleep = true;
 static bool g_ownWait = true;
 static bool g_pace = false;     // FFX_XEFG_PACE=1: the waitable object is released when the GPU finished the frame, not when Present returns
 static bool g_noExclusive = true;
+static int g_oflow = 0;          // FFX_XEFG_OFLOW=1 (see the top)
+static float g_oflowDepth = 1.0f;
+static bool g_times = false;     // FFX_XEFG_TIMES=1
+static bool g_capAuto = false;   // FFX_XEFG_CAP=auto (the default with FFX_XEFG_OFLOW)
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
@@ -302,6 +320,20 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
     g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
     g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
+    g_oflow = EnvInt("FFX_XEFG_OFLOW", 0);
+    g_times = EnvInt("FFX_XEFG_TIMES", 0) != 0;
+    if (GetEnvironmentVariableA("FFX_XEFG_CAP", env, MAX_PATH))
+        g_capAuto = !_stricmp(env, "auto");
+    else
+        g_capAuto = g_oflow != 0;
+    if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
+        g_oflowDepth = (float)atof(env);
+    if (g_oflow) {
+        g_oflowLog = Log;
+        g_hudless = false;
+        Log("optical flow motion vectors (depth %.3f), the game's depth, motion vectors, camera and UI unused; cap %s",
+            g_oflowDepth, g_capAuto ? "auto" : "as set");
+    }
     snprintf(g_dir, MAX_PATH, "%s", dir);
     Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
         GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
@@ -455,6 +487,23 @@ struct ScState {
     ID3D12Device* device = nullptr;
     FgSwapChain* wrapper = nullptr;
     FgSwapChain* contextRef = nullptr;  // the context's own reference to the wrapper, as FFX's context holds one
+    Oflow* oflow = nullptr;             // FFX_XEFG_OFLOW
+    uint64_t oflowLastQpc = 0;          // FFX_XEFG_OFLOW with FSR_FG=inject: the last present, for the frame time
+    uint64_t oflowTags = 0;
+    // FFX_XEFG_TIMES=1: frame times at the present, reported every 300 frames
+    uint64_t tStart = 0, tLastEnd = 0;
+    std::vector<float> tFrame, tPresent, tSleep;
+    // FFX_XEFG_CAP=auto: the real frame interval follows what the game needs (its frame time without XeLL's sleep)
+    std::vector<float> capWork, capFrame, capSleep, capPresent;
+    double capFreqSum = 0;    // MHz of the busy samples in this window
+    int capFreqN = 0;
+    float capFreqRef = 0;     // the clock the GPU reaches when it is kept busy (slowly forgotten)
+    float capPad = -1;        // learned extra ms per frame (CapAdjust)
+    float capFloor = 0;       // us, the last GPU-bound interval, slowly forgotten
+    bool capOff = false;      // an outside limiter paces, no cap of ours
+    uint32_t capUs = 0;       // per real frame, 0 = none
+    uint64_t capLastEnd = 0;
+    int capCalm = 0;          // windows in a row that would allow a shorter interval
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t maxInterpolations = 1;
@@ -523,6 +572,8 @@ struct FgCtx {
 
 static std::mutex g_globalLock;
 static ScState* g_currentSc;     // the last created live swap chain context
+static std::atomic<ID3D12CommandQueue*> g_timedQueue{nullptr};   // FFX_XEFG_CAP=auto (HookEcl)
+static std::atomic<ScState*> g_timedSc{nullptr};
 static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
 static bool g_haveFgFlags;
 
@@ -548,6 +599,12 @@ static void TearDown(ScState* st)
         xell_result_t r = p_xellDestroyContext(st->xell);
         Log("  xellDestroyContext -> %d", (int)r);
     }
+    if (g_timedSc.load() == st) {
+        g_timedQueue = nullptr;
+        g_timedSc = nullptr;
+    }
+    OflowDestroy(st->oflow);
+    st->oflow = nullptr;
     if (st->cmdList)
         st->cmdList->Release();
     if (st->alloc)
@@ -686,12 +743,122 @@ static void XellStartFrame(ScState* st, uint32_t id)
     XellFlush(st, f);
 }
 
+// --- FFX_XEFG_OFLOW ---
+
+// Our textures for frame `id`, written right before its present (BeforePresent): depth, motion vectors, an identity
+// camera, no jitter. Called with st->lock held.
+static void OflowTag(ScState* st, uint32_t id, bool reset, float frameTimeMs)
+{
+    xefg_swapchain_d3d12_resource_data_t od = {};
+    od.validity = XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
+    od.resourceSize = {st->width, st->height};
+    od.incomingState = kOflowOutState;
+    od.type = XEFG_SWAPCHAIN_RES_DEPTH;
+    od.pResource = OflowDepth(st->oflow);
+    xefg_swapchain_result_t o1 = p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, id, &od);
+    od.type = XEFG_SWAPCHAIN_RES_MOTION_VECTOR;
+    od.pResource = OflowMotionVectors(st->oflow);
+    xefg_swapchain_result_t o2 = p_xefgSwapChainD3D12TagFrameResource(st->xefg, nullptr, id, &od);
+    xefg_swapchain_frame_constant_data_t oc = {};
+    for (int i = 0; i < 4; ++i)
+        oc.viewMatrix[i * 5] = oc.projectionMatrix[i * 5] = 1.0f;
+    oc.motionVectorScaleX = oc.motionVectorScaleY = 1.0f;
+    oc.resetHistory = reset ? 1 : 0;
+    oc.frameRenderTime = frameTimeMs;
+    xefg_swapchain_result_t o3 = p_xefgSwapChainTagFrameConstants(st->xefg, id, &oc);
+    st->oflowTags++;
+    if (st->oflowTags <= 5 || st->oflowTags % 600 == 0 || o1 || o2 || o3)
+        Log("oflow tag #%llu frame %u (%.2f ms) -> depth %d mv %d const %d", (unsigned long long)st->oflowTags, id,
+            frameTimeMs, (int)o1, (int)o2, (int)o3);
+}
+
 // --- Present ---
+
+// FFX_XEFG_CAP=auto with the optical flow: the GPU time of a frame runs from the game's first submission after a present
+// (a time stamp put in front of it here) to our optical flow right before the next present. The game queue's
+// ExecuteCommandLists (vtable slot 10, shared by vkd3d's queues) is patched once; our own submissions pass through.
+typedef void(STDMETHODCALLTYPE* PFN_ExecuteCommandLists)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+static PFN_ExecuteCommandLists g_origEcl;
+static std::atomic<bool> g_wantFrameStart{false};
+static thread_local bool t_ownSubmit = false;
+
+static void STDMETHODCALLTYPE HookEcl(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
+{
+    if (!t_ownSubmit && q == g_timedQueue.load() && g_wantFrameStart.exchange(false)) {
+        ScState* st = g_timedSc.load();
+        if (st) {
+            std::lock_guard<std::mutex> lk(st->lock);
+            if (st->oflow) {
+                t_ownSubmit = true;
+                OflowFrameStart(st->oflow, q);
+                t_ownSubmit = false;
+            }
+        }
+    }
+    g_origEcl(q, n, lists);
+}
+
+static void HookQueue(ScState* st)
+{
+    if (!g_origEcl) {
+        void** vt = *(void***)st->queue;
+        DWORD old;
+        if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_EXECUTE_READWRITE, &old))
+            return;
+        g_origEcl = (PFN_ExecuteCommandLists)vt[10];
+        vt[10] = (void*)HookEcl;
+        VirtualProtect(&vt[10], sizeof(void*), old, &old);
+        Log("cap auto: game queue %p timed (ExecuteCommandLists hooked)", (void*)st->queue);
+    }
+    g_timedSc = st;
+    g_timedQueue = st->queue;
+}
+
+static uint64_t Qpc()
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (uint64_t)t.QuadPart;
+}
+static float QpcMs(uint64_t a, uint64_t b) { return (float)((double)(b - a) * 1000.0 / (double)g_qpf.QuadPart); }
+
+static void TimesReport(ScState* st)
+{
+    auto pct = [](std::vector<float> v, char* out, size_t n) {
+        std::sort(v.begin(), v.end());
+        size_t c = v.size();
+        double sum = 0;
+        for (float x : v)
+            sum += x;
+        snprintf(out, n, "mean %.2f p50 %.2f p95 %.2f p99 %.2f max %.2f", sum / c, v[c / 2], v[c * 95 / 100],
+                 v[c * 99 / 100], v[c - 1]);
+    };
+    char a[128], b[128], c[128];
+    pct(st->tFrame, a, sizeof a);
+    pct(st->tPresent, b, sizeof b);
+    pct(st->tSleep, c, sizeof c);
+    Log("times over %zu frames (ms): frame %s | in Present %s | XeLL sleep %s", st->tFrame.size(), a, b, c);
+    st->tFrame.clear(), st->tPresent.clear(), st->tSleep.clear();
+}
 
 static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
-    if (st->bridge) {
+    st->tStart = Qpc();
+    if (st->bridge && st->oflow) {
+        st->pending.clear();
+        st->frameId = ++st->nextId;
+        st->havePrepare = true;
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        bool first = !st->oflowLastQpc;
+        float ms = first ? 16.7f
+                         : (float)((double)(now.QuadPart - st->oflowLastQpc) * 1000.0 / (double)g_qpf.QuadPart);
+        st->oflowLastQpc = now.QuadPart;
+        XellMarker(st, st->frameId, XELL_SIMULATION_END);
+        XellMarker(st, st->frameId, XELL_RENDERSUBMIT_START);
+        OflowTag(st, st->frameId, first || ms > 250.0f, ms);
+    } else if (st->bridge) {
         st->havePrepare = !st->pending.empty();
         if (st->havePrepare) {
             st->frameId = st->pending.front();
@@ -706,7 +873,17 @@ static uint32_t BeforePresent(ScState* st)
     Order(st->havePrepare ? "present" : "present (no prepare)", id);
     SetXefgEnabled(st, st->gameEnabled && st->havePrepare);
 
-    if (st->havePrepare && st->ui.resource) {
+    if (st->oflow && st->havePrepare) {
+        UINT bi = st->proxy->GetCurrentBackBufferIndex();
+        ID3D12Resource* bb = nullptr;
+        if (SUCCEEDED(st->proxy->GetBuffer(bi, IID_PPV_ARGS(&bb)))) {
+            t_ownSubmit = true;
+            OflowRun(st->oflow, st->queue, bb, D3D12_RESOURCE_STATE_PRESENT, false, false);
+            t_ownSubmit = false;
+            bb->Release();
+        }
+    }
+    if (st->havePrepare && st->ui.resource && !st->oflow) {
         xefg_swapchain_d3d12_resource_data_t rd = {};
         rd.type = XEFG_SWAPCHAIN_RES_UI;
         rd.validity = XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT;
@@ -723,6 +900,180 @@ static uint32_t BeforePresent(ScState* st)
     return id;
 }
 
+// FFX_XEFG_CAP=auto, every 30 real frames with st->lock held. The real frame interval = the 90th percentile of the GPU
+// time of a frame (or, without the optical flow's timer, of the frame without XeLL's sleep) + FFX_XEFG_CAP_PAD ms (the
+// interpolation and the present, default 3) + 3 %. Frames over 3x the median are left out (a paused game). If XeLL hardly
+// slept while frames took longer than the interval, the GPU could not keep up: the interval becomes that frame time.
+// Longer at once; shorter after 2 windows in a row, 2 % a step at most and not below the last GPU-bound interval, which
+// is forgotten at 0.1 % a window (back up to it + 1 %); at least one frame of the display per frame shown.
+// The GPU's actual frequency from the xe driver (MHz, 0 while idle), read through Wine's Z: drive. A capped frame
+// lets the GPU idle, its governor lowers the clock and the same work takes longer: without this the cap would chase its
+// own tail down (2026-11-06 RE4: 49 -> 35 fps).
+static int GpuFreqMhz()
+{
+    static HANDLE h = INVALID_HANDLE_VALUE;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        for (int c = 0; c < 4 && h == INVALID_HANDLE_VALUE; ++c) {
+            char path[128];
+            snprintf(path, sizeof path, "Z:\\sys\\class\\drm\\card%d\\device\\tile0\\gt0\\freq0\\act_freq", c);
+            h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE)
+                Log("cap auto: GPU frequency from %s", path);
+        }
+        if (h == INVALID_HANDLE_VALUE)
+            Log("cap auto: no GPU frequency (xe sysfs not readable), GPU times taken as they are");
+    }
+    if (h == INVALID_HANDLE_VALUE)
+        return -1;
+    char b[32] = {};
+    DWORD n = 0;
+    SetFilePointer(h, 0, nullptr, FILE_BEGIN);
+    if (!ReadFile(h, b, sizeof b - 1, &n, nullptr) || !n)
+        return -1;
+    return atoi(b);
+}
+
+#pragma comment(lib, "user32.lib")   // EnumDisplaySettingsA
+
+// The display's refresh rate (FFX_XEFG_REFRESH overrides; Wine reports gamescope's output), checked again every
+// 120 calls for a display that changed; 144 when nothing is known.
+static double DisplayHz()
+{
+    static double hz = 0;
+    static int calls = 0;
+    if (hz > 0 && calls++ % 120)
+        return hz;
+    double h = 0;
+    char e[32];
+    if (GetEnvironmentVariableA("FFX_XEFG_REFRESH", e, sizeof e))
+        h = atof(e);
+    if (h <= 0) {
+        DEVMODEA dm = {};
+        dm.dmSize = sizeof dm;
+        if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1)
+            h = dm.dmDisplayFrequency;
+    }
+    if (h < 24 || h > 600)
+        h = 144;
+    if (h != hz)
+        Log("cap auto: display %.0f Hz", h);
+    hz = h;
+    return hz;
+}
+
+static void CapAdjust(ScState* st)
+{
+    auto med = [](std::vector<float> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
+    std::vector<float>& w = st->capWork;
+    std::sort(w.begin(), w.end());
+    float m = w[w.size() / 2];
+    std::vector<float> kept;
+    for (float x : w)
+        if (x <= 3.0f * m)
+            kept.push_back(x);
+    float p90 = kept[kept.size() * 90 / 100];
+    float frameMed = med(st->capFrame), sleepMed = med(st->capSleep), presentMed = med(st->capPresent);
+    w.clear(), st->capFrame.clear(), st->capSleep.clear(), st->capPresent.clear();
+    int mult = g_mult > 1 ? g_mult : 1;
+    static float pad = -1;
+    if (pad < 0) {
+        char e[32];
+        pad = GetEnvironmentVariableA("FFX_XEFG_CAP_PAD", e, sizeof e) ? (float)atof(e) : 1.5f;
+    }
+    // the GPU time at the clock it reaches when kept busy: p90 x (this window's clock / that clock)
+    float fNow = st->capFreqN ? (float)(st->capFreqSum / st->capFreqN) : 0;
+    st->capFreqSum = 0, st->capFreqN = 0;
+    float scale = 1.0f;
+    if (fNow > 0) {
+        st->capFreqRef = st->capFreqRef * 0.998f;   // about 6 % a minute at 2 windows a second
+        if (fNow > st->capFreqRef)
+            st->capFreqRef = fNow;
+        scale = fNow / st->capFreqRef;
+    }
+    float p90n = p90 * scale;
+    // what the frame needs beyond the measured GPU time (the interpolation, the present): learned from the windows in
+    // which the GPU could not keep up (XeLL hardly slept), starting from FFX_XEFG_CAP_PAD
+    if (st->capPad < 0)
+        st->capPad = pad;
+    // only when the GPU was busy for most of the frame (a menu at the game's own 60 fps has long frames and an idle GPU);
+    // with room to spare (XeLL sleeping) it shrinks slowly, so a wrong value cannot stick
+    if (st->oflow && st->capUs && sleepMed < 0.3f && frameMed > p90n && p90n > 0.7f * frameMed) {
+        float off = frameMed - p90n;
+        if (off > 8.0f)
+            off = 8.0f;
+        st->capPad = 0.7f * st->capPad + 0.3f * off;
+    } else if (st->oflow && sleepMed > 2.0f) {
+        st->capPad = st->capPad * 0.95f;
+        if (st->capPad < 0.5f)
+            st->capPad = 0.5f;
+    }
+    float needMs = st->oflow ? p90n + st->capPad : p90n;
+    uint32_t want = (uint32_t)(needMs * 1030.0f);
+    // GPU-bound: XeLL hardly slept, frames took longer than the interval and the GPU's own need explains it (in a menu
+    // the game's own 60 fps limit gives long frames with an idle GPU)
+    if (st->capUs && sleepMed < 0.3f && frameMed * 1000.0f > st->capUs * 1.02f && needMs > 0.85f * frameMed &&
+        (uint32_t)(frameMed * 1010.0f) > want) {
+        want = (uint32_t)(frameMed * 1010.0f);
+        st->capFloor = (float)want;   // where the GPU last fell behind: the interval creeps back down from there only
+    }
+    // an outside limiter (gamescope's frame limit): the game waits in Present, XeLL hardly sleeps and the GPU has room.
+    // XeLL cannot take that wait over (XeSS-FG's second present waits for the limiter anyway) and a cap fighting it made
+    // XeSS-FG drop generated frames (2026-11-06 Viewfinder at gamescope 120: dips to 50 every few seconds). So the cap goes
+    // off and the limiter paces, until the game stops waiting in Present (it no longer reaches the limit).
+    bool outside = st->oflow && sleepMed < 0.3f && presentMed > 0.3f * frameMed && needMs < 0.7f * frameMed;
+    if (st->capOff) {
+        if (presentMed > 0.15f * frameMed)
+            return;
+        st->capOff = false;
+        st->capUs = 0;
+        Log("cap auto: the outside limiter no longer paces (in Present %.2f of %.2f ms), cap back on", presentMed, frameMed);
+    } else if (outside) {
+        st->capOff = true;
+        st->capUs = 0;
+        st->capFloor = 0;
+        xell_sleep_params_t off = {};
+        off.bLowLatencyMode = 1;
+        xell_result_t ro = st->xell ? p_xellSetSleepMode(st->xell, &off) : XELL_RESULT_SUCCESS;
+        Log("cap auto: outside limiter at %.2f ms (in Present %.2f, GPU %.2f), cap off -> %d", frameMed, presentMed,
+            needMs, (int)ro);
+        return;
+    }
+    st->capFloor *= 0.999f;
+    if (want < (uint32_t)st->capFloor)
+        want = (uint32_t)st->capFloor;
+    uint32_t lo = (uint32_t)(1e6 / DisplayHz() * mult) + 1;
+    if (want < lo)
+        want = lo;
+    if (want > 50000)
+        want = 50000;
+    uint32_t cap = st->capUs;
+    if (!cap || want > cap * 1.04f) {
+        cap = want;
+        st->capCalm = 0;
+    } else if (want < cap * 0.96f) {
+        if (++st->capCalm >= 2) {
+            cap = want > (uint32_t)(cap * 0.98f) ? want : (uint32_t)(cap * 0.98f);
+            st->capCalm = 0;
+        }
+    } else {
+        st->capCalm = 0;
+    }
+    if (cap == st->capUs)
+        return;
+    st->capUs = cap;
+    xell_sleep_params_t sp = {};
+    sp.bLowLatencyMode = 1;
+    sp.minimumIntervalUs = cap / mult;   // XeLL counts every frame shown
+    xell_result_t r = st->xell ? p_xellSetSleepMode(st->xell, &sp) : XELL_RESULT_SUCCESS;
+    static int logged;
+    if (logged++ < 300 || logged % 20 == 0)
+        Log("cap auto: %s p90 %.2f ms at %.0f MHz (ref %.0f) = %.2f + %.2f, frame %.2f, sleep %.2f -> %u us per real frame "
+            "(%.1f fps) -> %d",
+            st->oflow ? "GPU" : "CPU", p90, fNow, st->capFreqRef, p90n, st->capPad, frameMed, sleepMed, cap, 1e6 / cap, (int)r);
+}
+
 // `id` is what BeforePresent returned: a prepare for the next frame may have changed st->frameId during the present.
 static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags)
 {
@@ -731,7 +1082,10 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
         std::lock_guard<std::mutex> lk(st->lock);
         XellMarker(st, id, XELL_PRESENT_END);
         st->presents++;
-        if (st->presents <= 10 || st->presents % 600 == 0) {
+        // only the first presents: a later present sometimes stalled 560-580 ms around this query (Viewfinder with
+        // OFLOW_FG at the display's limit while our cap fought that limit; not seen in Forza Horizon 6 at a frame limit),
+        // and the status is only for the log
+        if (st->presents <= 10) {
             xefg_swapchain_present_status_t ps = {};
             p_xefgSwapChainGetLastPresentStatus(st->xefg, &ps);
             Log("present #%llu frame %u sync %u flags 0x%x hr 0x%08lx: presented %u fgResult %d fgEnabled %u, %zu waiting",
@@ -744,7 +1098,53 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
         next = st->bridge ? st->nextId + 1 : id + 1;
     }
     // without the lock: the sleep can block
+    if (g_capAuto && st->oflow) {
+        int f = GpuFreqMhz();
+        if (f > 0) {
+            std::lock_guard<std::mutex> lk(st->lock);
+            st->capFreqSum += f;
+            st->capFreqN++;
+        }
+    }
+    if (g_capAuto && g_timedQueue.load() == st->queue)
+        g_wantFrameStart = true;   // the game's next submission starts the next frame on the GPU (HookEcl)
+    uint64_t t0 = Qpc();
     XellStartFrame(st, next);
+    if (g_capAuto) {
+        uint64_t t1 = Qpc();
+        std::lock_guard<std::mutex> lk(st->lock);
+        float sl = QpcMs(t0, t1);
+        if (st->oflow) {
+            // the GPU time of each frame, measured on the game's queue (HookEcl .. OflowRun)
+            if (g_timedQueue.load() != st->queue)
+                HookQueue(st);
+            float g[64];
+            int n = OflowTakeGpuFrames(st->oflow, g, 64);
+            st->capWork.insert(st->capWork.end(), g, g + n);
+        } else if (st->capLastEnd) {
+            st->capWork.push_back(QpcMs(st->capLastEnd, t1) - sl);   // no GPU timer: the frame without the sleep
+        }
+        if (st->capLastEnd) {
+            st->capFrame.push_back(QpcMs(st->capLastEnd, t1));
+            st->capSleep.push_back(sl);
+            st->capPresent.push_back(QpcMs(st->tStart, t0));   // in Present: an outside limiter (gamescope) waits here
+        }
+        st->capLastEnd = t1;
+        if (st->capWork.size() >= 30 && st->capFrame.size() >= 30)
+            CapAdjust(st);
+    }
+    if (g_times) {
+        uint64_t t1 = Qpc();
+        std::lock_guard<std::mutex> lk(st->lock);
+        if (st->tLastEnd) {
+            st->tFrame.push_back(QpcMs(st->tLastEnd, t1));
+            st->tPresent.push_back(QpcMs(st->tStart, t0));
+            st->tSleep.push_back(QpcMs(t0, t1));
+        }
+        st->tLastEnd = t1;
+        if (st->tFrame.size() >= 300)
+            TimesReport(st);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -972,8 +1372,28 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         HRESULT hr = sc->ResizeBuffers(n, w, h, f, fl);
         Log("ResizeBuffers %u %ux%u fmt %d flags 0x%x -> 0x%08lx", n, w, h, (int)f, fl, (unsigned long)hr);
+        if (SUCCEEDED(hr))
+            Resized();
         Recheck();
         return hr;
+    }
+    // the size the swap chain has now (0x0 in ResizeBuffers means the window's); FFX_XEFG_OFLOW's textures follow it
+    void Resized()
+    {
+        DXGI_SWAP_CHAIN_DESC1 d = {};
+        if (FAILED(sc->GetDesc1(&d)))
+            return;
+        std::lock_guard<std::mutex> lk(st->lock);
+        if (d.Width == st->width && d.Height == st->height)
+            return;
+        st->width = d.Width;
+        st->height = d.Height;
+        if (st->oflow) {
+            OflowDestroy(st->oflow);
+            st->oflow = OflowCreate(st->device, d.Width, d.Height, g_oflowDepth);
+            st->oflowLastQpc = 0;   // the next frame resets XeSS-FG's history
+            Log("oflow: remade for %ux%u -> %p", d.Width, d.Height, (void*)st->oflow);
+        }
     }
     // After a mode change XeSS-FG must be asked again: it checks fullscreen only when interpolation is enabled.
     void Recheck()
@@ -1065,6 +1485,8 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         HRESULT hr = sc->ResizeBuffers1(n, w, h, f, fl, mask, queues);
         Log("ResizeBuffers1 %u %ux%u fmt %d -> 0x%08lx", n, w, h, (int)f, (unsigned long)hr);
+        if (SUCCEEDED(hr))
+            Resized();
         Recheck();
         return hr;
     }
@@ -1149,6 +1571,10 @@ static void SaveFlags(uint32_t flags)
 static uint32_t XefgInitFlags()
 {
     uint32_t f = XEFG_SWAPCHAIN_INIT_FLAG_UITEXTURE_NOT_PREMUL_ALPHA;
+    if (g_oflow) {   // our display-size motion vectors in pixels, depth not inverted
+        Log("XeSS-FG set up for the optical flow inputs (display-size motion vectors)");
+        return f | XEFG_SWAPCHAIN_INIT_FLAG_HIGH_RES_MV;
+    }
     uint32_t ffx;
     bool have;
     {
@@ -1278,6 +1704,13 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
     }
     xell_sleep_params_t sp = {};
     sp.bLowLatencyMode = 1;
+    // FFX_XEFG_CAP: microseconds per real frame, for a steady real frame rate. XeLL's minimum interval counts every
+    // frame shown, the generated ones too (27000 gave 54 ms per real frame at 2x), so it gets the interval per frame shown
+    int cap = EnvInt("FFX_XEFG_CAP", 0);
+    if (cap > 0) {
+        sp.minimumIntervalUs = (uint32_t)(cap / (g_mult > 1 ? g_mult : 1));
+        Log("XeLL: one real frame per %d us (%.1f fps), %u us per frame shown", cap, 1e6 / cap, sp.minimumIntervalUs);
+    }
     xr = p_xellSetSleepMode(st->xell, &sp);
     if (xr != XELL_RESULT_SUCCESS)
         Log("xellSetSleepMode -> %d", (int)xr);
@@ -1285,6 +1718,19 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
     if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         return fail("xefgSwapChainSetLatencyReduction", r);
 
+    // a swap chain made in exclusive fullscreen: XeSS-FG interpolates only windowed, so it starts windowed and the
+    // game is told it is fullscreen (as SetFullscreenState below; under gamescope both look the same)
+    DXGI_SWAP_CHAIN_FULLSCREEN_DESC fsWin = {};
+    if (pfs && !pfs->Windowed && g_noExclusive) {
+        fsWin = *pfs;
+        fsWin.Windowed = TRUE;
+        pfs = &fsWin;
+        st->fakeFullscreen = TRUE;
+    }
+    Log("swap chain %ux%u format %d buffers %u effect %d flags 0x%x scaling %d alpha %d, %s%s", d1.Width, d1.Height,
+        (int)d1.Format, d1.BufferCount, (int)d1.SwapEffect, d1.Flags, (int)d1.Scaling, (int)d1.AlphaMode,
+        pfs ? (pfs->Windowed ? "windowed" : "exclusive fullscreen") : "no fullscreen desc",
+        st->fakeFullscreen ? " (asked for exclusive fullscreen, made windowed)" : "");
     ip.initFlags = XefgInitFlags();
     ip.maxInterpolatedFrames = XEFG_SWAPCHAIN_USE_MAX_SUPPORTED_INTERPOLATED_FRAMES;
     ip.uiMode = XEFG_SWAPCHAIN_UI_MODE_AUTO;
@@ -1303,6 +1749,7 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         r = p_xefgSwapChainD3D12InitFromSwapChainDesc(st->xefg, hwnd, &d1, pfs, queue, f2, &ip);
         f2->Release();
     }
+    Log("xefgSwapChainD3D12InitFromSwapChain(Desc) -> %d", (int)r);
     if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         return fail("xefgSwapChainD3D12InitFromSwapChain(Desc)", r);
     r = p_xefgSwapChainD3D12GetSwapChainPtr(st->xefg, IID_PPV_ARGS(&st->proxy));
@@ -1320,6 +1767,8 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         Log("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", want, (int)r);
     }
 
+    if (g_oflow && !(st->oflow = OflowCreate(st->device, st->width, st->height, g_oflowDepth)))
+        Log("oflow: not available, the game's motion vectors are used");
     st->wrapper = new FgSwapChain(st);
     // FFX's context keeps a reference to the swap chain until ffxDestroyContext; Wuthering Waves (FSR 3.1.1) drops
     // its own reference before that and still presents
@@ -1436,6 +1885,8 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
         return;
     ScRef ref{st};   // released after the lock below
     std::lock_guard<std::mutex> lk(st->lock);
+    if (st->bridge && st->oflow)   // BeforePresent makes the frames
+        return;
     uint32_t id = (uint32_t)frameID;
     if (st->bridge) {
         id = ++st->nextId;
@@ -1448,6 +1899,14 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
     // SIMULATION_START went out with the sleep after the last present when the id was the expected one, else now
     XellMarker(st, id, XELL_SIMULATION_END);
     XellMarker(st, id, XELL_RENDERSUBMIT_START);
+
+    if (st->oflow) {
+        OflowTag(st, id, reset, frameTimeDelta);
+        st->frameId = id;
+        st->havePrepare = true;
+        fg->prepares++;
+        return;
+    }
 
     xefg_swapchain_d3d12_resource_data_t rd = {};
     // ONLY_NOW: XeSS-FG records a copy on the game's command list; UNTIL_NEXT_PRESENT (FFX_XEFG_VALIDITY=0, for

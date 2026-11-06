@@ -70,6 +70,8 @@ static HRESULT Bridge(IDXGIFactory* f, IUnknown* dev, HWND hwnd, const DXGI_SWAP
     if (g_creating.load() || !dev || !d || !out || FAILED(dev->QueryInterface(IID_PPV_ARGS(&queue))))
         return E_NOINTERFACE;
     HRESULT hr = E_NOINTERFACE;
+    Log("swap chain %ux%u format %d flags 0x%x%s: to XeSS-FG", d->Width, d->Height, (int)d->Format, d->Flags,
+        fs && !fs->Windowed ? ", exclusive fullscreen" : "");
     char path[MAX_PATH];
     snprintf(path, MAX_PATH, "%sffx_xefg_bridge.dll", g_dir);
     HMODULE m = LoadLibraryA(path);
