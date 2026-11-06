@@ -1037,11 +1037,15 @@ static void CapAdjust(ScState* st)
     // off and the limiter paces, until the game stops waiting in Present (it no longer reaches the limit).
     bool outside = st->oflow && sleepMed < 0.3f && presentMed > 0.3f * frameMed && needMs < 0.7f * frameMed;
     if (st->capOff) {
-        if (presentMed > 0.15f * frameMed)
+        // still paced from outside while the game waits in Present and the GPU has room; a GPU that needs most of the
+        // frame means the game itself is the limit again (XeSS-FG's own Present takes a few ms then, so the wait in
+        // Present alone kept the cap off for minutes in RE4 after its menu had looked like an outside limit)
+        if (presentMed > 0.15f * frameMed && needMs < 0.8f * frameMed)
             return;
         st->capOff = false;
         st->capUs = 0;
-        Log("cap auto: the outside limiter no longer paces (in Present %.2f of %.2f ms), cap back on", presentMed, frameMed);
+        Log("cap auto: the outside limiter no longer paces (in Present %.2f of %.2f ms, GPU %.2f), cap back on", presentMed,
+            frameMed, needMs);
     } else if (outside) {
         st->capOff = true;
         st->capUs = 0;
