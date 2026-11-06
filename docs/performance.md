@@ -12,7 +12,7 @@
   without frame generation only.
 - **26.1.2 / 26.3**: this project's patched drivers of release 20261104 (Mesa 26.1.2 / 26.3.0-rc3).
 - **Unpatched + layer**: Mesa 26.3.0-rc3 as Mesa ships it, with a Vulkan layer of this project that runs the same
-  kernels on it. The layer is not in a release yet.
+  kernels on it (`xmx-stock.sh`, experimental, from release 20261107).
 - All runs use the libraries of Intel's XeSS SDK 3.0.2 (`XESS=latest`).
 
 ---
@@ -60,6 +60,8 @@ latter (`FSR_FG=inject`).
   measurable.
 - Unpatched + layer gives 103 fps, the patched driver 98; the GPU frame rate is about the same, 74 stutters against
   162.
+- Unpatched + layer against the patched driver: the same in Cyberpunk 2077, faster in Forza Horizon 6. Other games
+  can also run slower on it; it needs more testing.
 
 ## 3. Latency (the low latency mode with frame generation)
 

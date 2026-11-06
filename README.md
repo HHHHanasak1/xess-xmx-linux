@@ -148,8 +148,8 @@ path; 26.3 is this project's patched Mesa 26.3.0-rc3 (release 20261104):
   than its GPU.
 * With frame generation on, the shim's low latency mode (built on the XeLL API) cuts the latency of the frame queue
   by 36–50% at the same frame rate (Wuthering Waves; a game's own XeSS frame generation, not the FSR routes).
-* Mesa 26.3.0-rc3 unpatched, with this project's Vulkan layer (`xmx-stock.sh`, experimental), runs as fast as the
-  patched driver.
+* Mesa 26.3.0-rc3 unpatched, with this project's Vulkan layer (`xmx-stock.sh`, experimental), performs like the
+  patched driver in Cyberpunk 2077 and better in Forza Horizon 6; other games may run slower, it needs more testing.
 
 Settings, every run and the latency tests: [docs/performance.md](docs/performance.md). #19 has a Final Fantasy VII
 Rebirth comparison (about +15%, half of it from Jay). Not measured yet: image quality and the cost of disabling
