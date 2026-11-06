@@ -109,8 +109,10 @@ anvbin_parse(const struct anv_layout *L, const uint8_t *d, size_t n, size_t hdr_
    memcpy(b->input_att, rbytes(&r, L->input_att_size), L->input_att_size);
    memcpy(b->push_ranges, rbytes(&r, L->push_ranges_size), L->push_ranges_size);
    b->inline_count = r8(&r);
-   if (b->inline_count > L->max_inline)
-      r.bad = true;
+   if (b->inline_count > L->max_inline) {
+      snprintf(err, errlen, "%u inline dwords, at most %u", b->inline_count, L->max_inline);
+      return false;
+   }
    memcpy(b->inline_dwords, rbytes(&r, b->inline_count), b->inline_count);
    b->used_surface_sets = r8(&r);
    b->used_sampler_sets = r8(&r);
