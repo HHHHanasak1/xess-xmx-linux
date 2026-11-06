@@ -3,7 +3,7 @@
 Texture2D<int2> g_blocks : register(t0);
 RWTexture2D<float2> g_mv : register(u0);
 RWTexture2D<float> g_depth : register(u1);
-cbuffer C : register(b0) { uint2 g_size; float g_depthValue; uint g_block; float g_scale; };  // g_block in display pixels; g_scale: vectors to display pixels
+cbuffer C : register(b0) { uint2 g_size; float g_depthValue; uint g_block; float g_scale; uint g_writeDepth; };  // g_block in display pixels; g_scale: vectors to display pixels
 
 float2 Block(int2 p, int2 n) { return float2(g_blocks[clamp(p, int2(0, 0), n - 1)]); }
 
@@ -21,5 +21,6 @@ void main(uint3 id : SV_DispatchThreadID)
     float2 v = lerp(lerp(Block(b, n), Block(b + int2(1, 0), n), t.x),
                     lerp(Block(b + int2(0, 1), n), Block(b + int2(1, 1), n), t.x), t.y);
     g_mv[id.xy] = v * g_scale;
-    g_depth[id.xy] = g_depthValue;
+    if (g_writeDepth)   // constant: written by the first run only
+        g_depth[id.xy] = g_depthValue;
 }

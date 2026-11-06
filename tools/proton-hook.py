@@ -239,6 +239,8 @@ def oflow_fg(swaps):
     generation DLL (as ffx_xefg_bridge.dll) with the SDK's libxess_fg.dll and libxell.dll go next to the executable
     Proton starts (its path is Proton's second argument). Returns True when it is set up."""
     exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    if sys.argv[1] != "waitforexitandrun":   # Steam's install scripts and redistributables run with "run"
+        return False
     ours_fg, dxgi = os.path.join(FFXFG, FG_DLL), os.path.join(FFXFG, "dxgi.dll")
     if not (os.path.isfile(ours_fg) and os.path.isfile(dxgi) and os.path.isfile(os.path.join(STORE, "libxess_fg.dll"))):
         say("OFLOW_FG: %s, %s or the XeSS SDK (%s, tools/get-xess.sh) missing; no frame generation"
@@ -247,10 +249,17 @@ def oflow_fg(swaps):
     if not exe.lower().endswith(".exe") or not os.path.isfile(exe):
         say("OFLOW_FG: Proton was not given a game executable (%s); no frame generation" % (exe or "nothing"))
         return False
-    top = os.path.dirname(exe)
-    if os.path.lexists(os.path.join(top, "dxgi.dll")) and not ours(os.path.join(top, "dxgi.dll")):
-        say("OFLOW_FG: %s already has a dxgi.dll; no frame generation" % top)
+    top = os.path.dirname(os.path.realpath(exe))
+    game = os.path.realpath(os.environ.get("STEAM_COMPAT_INSTALL_PATH", ""))
+    if not game or os.path.commonpath([top, game]) != game:
+        say("OFLOW_FG: %s is not in the game folder; no frame generation" % exe)
         return False
+    # anything there already (the game's own, or a link a killed run left that clean_left_over could not tell as
+    # ours): left alone, as linking over a link would turn it into a lasting copy
+    for name in ("dxgi.dll", "ffx_xefg_bridge.dll"):
+        if os.path.lexists(os.path.join(top, name)):
+            say("OFLOW_FG: %s already has a %s; no frame generation" % (top, name))
+            return False
     if os.path.lexists(os.path.join(top, FG_DLL)) or os.path.lexists(os.path.join(top, SINGLE_DLL)):
         say("OFLOW_FG: the game has FSR frame generation of its own (FSR=xess runs it on XeSS-FG with the game's inputs)")
     swaps.link(os.path.join(top, "dxgi.dll"), dxgi)

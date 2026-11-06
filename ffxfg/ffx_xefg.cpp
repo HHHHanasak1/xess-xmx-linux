@@ -574,6 +574,7 @@ static std::mutex g_globalLock;
 static ScState* g_currentSc;     // the last created live swap chain context
 static std::atomic<ID3D12CommandQueue*> g_timedQueue{nullptr};   // FFX_XEFG_CAP=auto (HookEcl)
 static std::atomic<ScState*> g_timedSc{nullptr};
+static std::mutex g_timedLock;   // g_timedSc against TearDown: HookEcl takes a reference under it
 static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
 static bool g_haveFgFlags;
 
@@ -599,9 +600,13 @@ static void TearDown(ScState* st)
         xell_result_t r = p_xellDestroyContext(st->xell);
         Log("  xellDestroyContext -> %d", (int)r);
     }
-    if (g_timedSc.load() == st) {
-        g_timedQueue = nullptr;
-        g_timedSc = nullptr;
+    {
+        // refs reached 0 before this: HookEcl, under the same lock, takes no reference any more (see there)
+        std::lock_guard<std::mutex> lk(g_timedLock);
+        if (g_timedSc.load() == st) {
+            g_timedQueue = nullptr;
+            g_timedSc = nullptr;
+        }
     }
     OflowDestroy(st->oflow);
     st->oflow = nullptr;
@@ -782,17 +787,34 @@ static PFN_ExecuteCommandLists g_origEcl;
 static std::atomic<bool> g_wantFrameStart{false};
 static thread_local bool t_ownSubmit = false;
 
+// The state is taken with a reference (only while it still has one: TearDown starts at 0 and then clears g_timedSc
+// under g_timedLock), and its lock only if free: the present thread may hold it while XeSS-FG submits on this queue,
+// and a missed time stamp costs one sample.
 static void STDMETHODCALLTYPE HookEcl(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
 {
     if (!t_ownSubmit && q == g_timedQueue.load() && g_wantFrameStart.exchange(false)) {
-        ScState* st = g_timedSc.load();
-        if (st) {
-            std::lock_guard<std::mutex> lk(st->lock);
-            if (st->oflow) {
-                t_ownSubmit = true;
-                OflowFrameStart(st->oflow, q);
-                t_ownSubmit = false;
+        ScState* st = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(g_timedLock);
+            ScState* s = g_timedSc.load();
+            if (s) {
+                int r = s->refs.load();
+                while (r > 0 && !s->refs.compare_exchange_weak(r, r + 1)) {
+                }
+                if (r > 0)
+                    st = s;
             }
+        }
+        if (st) {
+            {
+                std::unique_lock<std::mutex> lk(st->lock, std::try_to_lock);
+                if (lk.owns_lock() && st->oflow) {
+                    t_ownSubmit = true;
+                    OflowFrameStart(st->oflow, q);
+                    t_ownSubmit = false;
+                }
+            }
+            ScRelease(st);
         }
     }
     g_origEcl(q, n, lists);
@@ -810,6 +832,7 @@ static void HookQueue(ScState* st)
         VirtualProtect(&vt[10], sizeof(void*), old, &old);
         Log("cap auto: game queue %p timed (ExecuteCommandLists hooked)", (void*)st->queue);
     }
+    std::lock_guard<std::mutex> lk(g_timedLock);
     g_timedSc = st;
     g_timedQueue = st->queue;
 }
@@ -844,7 +867,6 @@ static void TimesReport(ScState* st)
 static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
-    st->tStart = Qpc();
     if (st->bridge && st->oflow) {
         st->pending.clear();
         st->frameId = ++st->nextId;
@@ -897,6 +919,7 @@ static uint32_t BeforePresent(ScState* st)
     XellMarker(st, id, XELL_RENDERSUBMIT_END);
     XellMarker(st, id, XELL_PRESENT_START);
     p_xefgSwapChainSetPresentId(st->xefg, id);
+    st->tStart = Qpc();   // "in Present" (FFX_XEFG_TIMES, the outside limiter test) without our own work above
     return id;
 }
 
@@ -1132,6 +1155,8 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
         st->capLastEnd = t1;
         if (st->capWork.size() >= 30 && st->capFrame.size() >= 30)
             CapAdjust(st);
+        else if (st->capFrame.size() >= 300)   // no GPU times arrive (no timer): nothing to adjust, keep it small
+            st->capFrame.clear(), st->capSleep.clear(), st->capPresent.clear(), st->capWork.clear();
     }
     if (g_times) {
         uint64_t t1 = Qpc();
@@ -1388,7 +1413,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
             return;
         st->width = d.Width;
         st->height = d.Height;
-        if (st->oflow) {
+        if (g_oflow) {   // also when there was none yet (a swap chain created at 0x0)
             OflowDestroy(st->oflow);
             st->oflow = OflowCreate(st->device, d.Width, d.Height, g_oflowDepth);
             st->oflowLastQpc = 0;   // the next frame resets XeSS-FG's history
@@ -1767,6 +1792,13 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         Log("xefgSwapChainSetNumInterpolatedFrames(%u) -> %d", want, (int)r);
     }
 
+    if (g_oflow && (!st->width || !st->height)) {   // 0x0 in the description: the window's size
+        DXGI_SWAP_CHAIN_DESC1 pd = {};
+        if (SUCCEEDED(st->proxy->GetDesc1(&pd))) {
+            st->width = pd.Width;
+            st->height = pd.Height;
+        }
+    }
     if (g_oflow && !(st->oflow = OflowCreate(st->device, st->width, st->height, g_oflowDepth)))
         Log("oflow: not available, the game's motion vectors are used");
     st->wrapper = new FgSwapChain(st);

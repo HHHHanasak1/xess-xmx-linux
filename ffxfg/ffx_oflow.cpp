@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
+#include <initializer_list>
+#include <stdlib.h>
 
 #include <FidelityFX/host/ffx_opticalflow.h>
 #include <FidelityFX/host/backends/dx12/ffx_dx12.h>
@@ -47,6 +49,8 @@ struct Oflow {
     UINT slot = 0;
     uint64_t runs = 0;
     float depthValue = 1.0f;
+    bool depthWritten = false;   // the constant depth is written by the first run only
+    bool times = false;          // FFX_XEFG_TIMES=1: the optical flow's own GPU time in the log
     // GPU time: 3 time stamps per slot (start, after the optical flow, after the expansion)
     ID3D12QueryHeap* qh = nullptr;
     ID3D12Resource* qrb = nullptr;
@@ -55,7 +59,7 @@ struct Oflow {
     double sumOf = 0, sumEx = 0, maxAll = 0;
     uint32_t nT = 0;
     // GPU frame time (OflowFrameStart .. OflowRun): 2 time stamps per frame, kFrames frames in flight
-    static const UINT kFrames = 4;
+    static const UINT kFrames = 8;   // more than a game runs ahead, so OflowFrameStart does not wait
     ID3D12QueryHeap* tq = nullptr;
     ID3D12Resource* trb = nullptr;
     ID3D12CommandAllocator* tAlloc[kFrames] = {};
@@ -64,6 +68,7 @@ struct Oflow {
     bool tPending[kFrames] = {};     // frame k has both time stamps
     uint64_t tFrame = 0;
     int tOpen = -1;                  // the frame started and not yet closed
+    bool tFailed = false;            // the timer could not be made: not tried again
     std::vector<float> gpuFrames;
 };
 
@@ -118,6 +123,30 @@ DXGI_FORMAT SrvFormat(DXGI_FORMAT f)
     }
 }
 
+struct Transition {
+    ID3D12Resource* r;
+    D3D12_RESOURCE_STATES a, b;
+};
+
+// several transitions in one ResourceBarrier call (vkd3d makes one pipeline barrier of it)
+void Barriers(ID3D12GraphicsCommandList* cl, std::initializer_list<Transition> ts)
+{
+    D3D12_RESOURCE_BARRIER b[4] = {};
+    UINT n = 0;
+    for (const Transition& t : ts) {
+        if (!t.r || t.a == t.b || n == 4)
+            continue;
+        b[n].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[n].Transition.pResource = t.r;
+        b[n].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b[n].Transition.StateBefore = t.a;
+        b[n].Transition.StateAfter = t.b;
+        n++;
+    }
+    if (n)
+        cl->ResourceBarrier(n, b);
+}
+
 template <class T> void Rel(T*& p)
 {
     if (p)
@@ -161,6 +190,7 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
     o->h = h;
     o->depthValue = depthValue;
     char env[32];
+    o->times = GetEnvironmentVariableA("FFX_XEFG_TIMES", env, sizeof env) && atoi(env) != 0;
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DIV", env, sizeof env))
         o->div = (uint32_t)atoi(env);
     if (o->div < 1 || o->div > 4)
@@ -275,7 +305,7 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
 
 void OflowFrameStart(Oflow* o, ID3D12CommandQueue* q)
 {
-    if (!o)
+    if (!o || o->tFailed)
         return;
     const UINT K = Oflow::kFrames;
     if (!o->tq) {
@@ -300,6 +330,9 @@ void OflowFrameStart(Oflow* o, ID3D12CommandQueue* q)
         if (!ok) {
             Log("oflow: no GPU frame timer");
             Rel(o->tq), Rel(o->trb), Rel(o->tCl);
+            for (auto& a : o->tAlloc)
+                Rel(a);
+            o->tFailed = true;
             return;
         }
         o->tCl->Close();
@@ -362,7 +395,7 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
         o->fence->SetEventOnCompletion(o->done[s], o->event);
         WaitForSingleObject(o->event, 1000);
     }
-    if (!o->qh) {   // made on the first run: the queue gives the tick rate
+    if (o->times && !o->qh) {   // made on the first run: the queue gives the tick rate
         UINT64 f = 0;
         D3D12_QUERY_HEAP_DESC qd = {D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 3 * kRing, 0};
         D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_READBACK};
@@ -376,6 +409,11 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
             SUCCEEDED(o->dev->CreateQueryHeap(&qd, IID_PPV_ARGS(&o->qh))) &&
             SUCCEEDED(o->dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST,
                                                       nullptr, IID_PPV_ARGS(&o->qrb))))
+            o->tickMs = 1000.0 / (double)f;
+    }
+    if (!o->tickMs) {   // the frame timer needs it too (OflowFrameStart sets it as well)
+        UINT64 f = 0;
+        if (SUCCEEDED(q->GetTimestampFrequency(&f)) && f)
             o->tickMs = 1000.0 / (double)f;
     }
     if (o->qpending[s] && o->qrb) {   // this slot's last run has finished (waited above)
@@ -418,9 +456,8 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
         D3D12_CPU_DESCRIPTOR_HANDLE hc = o->heap->GetCPUDescriptorHandleForHeapStart();
         hc.ptr += (SIZE_T)(3 + 3 * s) * o->inc;
         o->dev->CreateShaderResourceView(color, &sv, hc);
-        if (colorState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
-            Barrier(o->cl, color, colorState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Barrier(o->cl, o->lowres, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barriers(o->cl, {{color, colorState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE},
+                         {o->lowres, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS}});
         o->cl->SetDescriptorHeaps(1, &o->heap);
         o->cl->SetComputeRootSignature(o->rs);
         o->cl->SetPipelineState(o->down);
@@ -430,9 +467,8 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
         UINT c[6] = {o->sw, o->sh, o->div, 0, (UINT)cd.Width, cd.Height};
         o->cl->SetComputeRoot32BitConstants(1, 6, c, 0);
         o->cl->Dispatch((o->sw + 7) / 8, (o->sh + 7) / 8, 1);
-        Barrier(o->cl, o->lowres, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        if (colorState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
-            Barrier(o->cl, color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, colorState);
+        Barriers(o->cl, {{o->lowres, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE},
+                         {color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, colorState}});
         dd.color = ffxGetResourceDX12(o->lowres, ffxGetResourceDescriptionDX12(o->lowres), L"oflow_small",
                                       FFX_RESOURCE_STATE_COMPUTE_READ);
     } else {
@@ -449,24 +485,27 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
     dd.minMaxLuminance = {0.0f, 1000.0f};
     FfxErrorCode e = ffxOpticalflowContextDispatch(&o->ctx, &dd);
 
-    // expand the block vectors (8x8 blocks) into the display-size motion vectors, constant depth
-    Barrier(o->cl, o->vec, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(o->cl, o->mv, kOflowOutState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Barrier(o->cl, o->depth, kOflowOutState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    // expand the block vectors (8x8 blocks) into the display-size motion vectors; the constant depth only once (it
+    // stays in kOflowOutState, XeSS-FG only reads it)
+    bool writeDepth = !o->depthWritten;
+    ID3D12Resource* depthRes = writeDepth ? o->depth : nullptr;
+    Barriers(o->cl, {{o->vec, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE},
+                     {o->mv, kOflowOutState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS},
+                     {depthRes, kOflowOutState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS}});
     o->cl->SetDescriptorHeaps(1, &o->heap);
     o->cl->SetComputeRootSignature(o->rs);
     o->cl->SetPipelineState(o->pso);
     o->cl->SetComputeRootDescriptorTable(0, o->heap->GetGPUDescriptorHandleForHeapStart());
     float dv = o->depthValue;
     float sc = (float)o->div;
-    UINT c[5] = {o->w, o->h, *(UINT*)&dv, 8 * o->div, *(UINT*)&sc};
-    o->cl->SetComputeRoot32BitConstants(1, 5, c, 0);
+    UINT c[6] = {o->w, o->h, *(UINT*)&dv, 8 * o->div, *(UINT*)&sc, writeDepth ? 1u : 0u};
+    o->cl->SetComputeRoot32BitConstants(1, 6, c, 0);
     if (o->qh)
         o->cl->EndQuery(o->qh, D3D12_QUERY_TYPE_TIMESTAMP, 3 * s + 1);
     o->cl->Dispatch((o->w + 7) / 8, (o->h + 7) / 8, 1);
-    Barrier(o->cl, o->vec, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Barrier(o->cl, o->mv, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kOflowOutState);
-    Barrier(o->cl, o->depth, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kOflowOutState);
+    Barriers(o->cl, {{o->vec, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS},
+                     {o->mv, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kOflowOutState},
+                     {depthRes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kOflowOutState}});
     int tk = o->tOpen;
     if (tk >= 0 && o->tq) {   // the frame's end on the GPU: the game's work and ours are done
         o->cl->EndQuery(o->tq, D3D12_QUERY_TYPE_TIMESTAMP, 2 * tk + 1);
@@ -487,6 +526,7 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
     }
     ID3D12CommandList* l = o->cl;
     q->ExecuteCommandLists(1, &l);
+    o->depthWritten = true;
     o->done[s] = ++o->fenceValue;
     q->Signal(o->fence, o->fenceValue);
     if (tk >= 0) {
