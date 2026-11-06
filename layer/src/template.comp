@@ -1,0 +1,18 @@
+#version 450
+// The layer's template shader: uses every binding of the layer's descriptor set (set 7) - surfaces 0..31 and the
+// sampler at 32 - so that the driver's exported binary has a binding-table entry for each. The layer never runs it;
+// it takes the entries, the header and the wrapping from it (anvbin.h). The descriptor type in the shader does not
+// change the entry (E3b), so the surfaces are buffer images except binding 0, which the sampler is used with.
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(set = 7, binding = 0) uniform texture2D t0;
+layout(set = 7, binding = 32) uniform sampler s;
+#define B(n) layout(set = 7, binding = n, r32ui) uniform uimageBuffer b##n;
+B(1) B(2) B(3) B(4) B(5) B(6) B(7) B(8) B(9) B(10) B(11) B(12) B(13) B(14) B(15) B(16)
+B(17) B(18) B(19) B(20) B(21) B(22) B(23) B(24) B(25) B(26) B(27) B(28) B(29) B(30) B(31)
+void main() {
+   uint v = floatBitsToUint(textureLod(sampler2D(t0, s), vec2(0.5), 0.0).x);
+#define L(n) v += imageLoad(b##n, int(v & 7u)).x;
+   L(1) L(2) L(3) L(4) L(5) L(6) L(7) L(8) L(9) L(10) L(11) L(12) L(13) L(14) L(15) L(16)
+   L(17) L(18) L(19) L(20) L(21) L(22) L(23) L(24) L(25) L(26) L(27) L(28) L(29) L(30)
+   imageStore(b31, 0, uvec4(v));
+}

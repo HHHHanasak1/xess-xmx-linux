@@ -10,7 +10,10 @@
 # Environment: XMX_IGC_DIR (default <package>/igc); CM_DEVICE (ocloc -device, overrides the detection); CM_PCI_ID (PCI device
 # id, passed by the driver; otherwise the first Intel render node is used); CM_GRF_BYTES (GRF size in bytes, passed by
 # the driver; the cmk_pack.py path needs it); CM_OUT_DIR (see above); CM_LOG (append log path, default
-# ~/.cache/xess-xmx/compile.log).
+# ~/.cache/xess-xmx/compile.log); CM_NO_LOAD_PAYLOAD=1 (CM_OUT_DIR path only, set by the layer for an unpatched
+# driver): the kernel does not load its payload from indirect data but expects it in registers, where the layer's
+# prologue puts it. It goes in as an internal option because the embedded -vc-payload options of some kernels replace
+# whatever -options says.
 set -u
 SPV=$1; OPT=$2; OUT=$3
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac
@@ -51,7 +54,13 @@ set +f
 
 if [ -n "${CM_OUT_DIR:-}" ]; then
   W=$CM_OUT_DIR
-  "$OCLOC" compile -spirv_input -file "$SPV" -device "$DEV" -out_dir "$W" -output k -options "-vc-codegen $fl" > "$W/ocloc.log" 2>&1
+  if [ "${CM_NO_LOAD_PAYLOAD:-}" = 1 ]; then
+    "$OCLOC" compile -spirv_input -file "$SPV" -device "$DEV" -out_dir "$W" -output k -options "-vc-codegen $fl" \
+      -internal_options "-llvm-options -finalizer-opts=-noLoadPayload" > "$W/ocloc.log" 2>&1
+    fl="$fl-noLoadPayload "
+  else
+    "$OCLOC" compile -spirv_input -file "$SPV" -device "$DEV" -out_dir "$W" -output k -options "-vc-codegen $fl" > "$W/ocloc.log" 2>&1
+  fi
   printf '%s\n%s\n' "$DEV" "$fl" > "$W/info"
   for BIN in "$W"/k_*.bin; do break; done
   if [ ! -s "$BIN" ]; then

@@ -1,0 +1,15 @@
+#version 450
+// High register pressure (many live values), to find the prog_data field that follows the register count.
+layout(local_size_x = 1) in;
+layout(set = 7, binding = 1, r32ui) uniform uimageBuffer b1;
+layout(set = 7, binding = 2, r32ui) uniform uimageBuffer b2;
+void main() {
+   uvec4 a[N];
+   for (int i = 0; i < N; i++)
+      a[i] = imageLoad(b2, i) * uint(i + 3);
+   uvec4 s = uvec4(0);
+   for (int i = 0; i < N; i++)
+      for (int j = i; j < N; j++)
+         s += (a[i] ^ a[j]) >> uint(j & 7);
+   imageStore(b1, 0, s);
+}

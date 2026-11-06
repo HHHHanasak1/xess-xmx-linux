@@ -14,3 +14,5 @@ ffxfg/amd_fidelityfx_upscaler_dx12.dll
 ffxfg/dxgi.dll
 ffxfg/inc/
 ffx/
+layer/out/
+layer/tests/out/
