@@ -61,15 +61,66 @@ def version(path):
     """a.b.c.d from the file's VS_FIXEDFILEINFO, or None"""
     if path in _versions:
         return _versions[path]
+    sig = b"\xbd\x04\xef\xfe"
+    u16 = lambda b, o: int.from_bytes(b[o:o + 2], "little")
+    u32 = lambda b, o: int.from_bytes(b[o:o + 4], "little")
+
+    def resources(f):
+        """the resource section's bytes (VS_FIXEDFILEINFO lives there; libxess.dll is tens of MB, its resources a few
+        KB), or None when the file is not a PE image with one"""
+        h = f.read(64)
+        if len(h) < 64 or h[:2] != b"MZ":
+            return None
+        pe = u32(h, 0x3c)
+        f.seek(pe)
+        h = f.read(24 + 240)
+        if len(h) < 24 or h[:4] != b"PE\0\0":
+            return None
+        nsec, optsize = u16(h, 6), u16(h, 20)
+        opt = h[24:24 + optsize]
+        dirs = {0x10b: 92, 0x20b: 108}.get(u16(opt, 0))   # NumberOfRvaAndSizes, PE32 / PE32+
+        if dirs is None or len(opt) < dirs + 4 or u32(opt, dirs) < 3 or len(opt) < dirs + 4 + 24:
+            return None
+        rva, size = u32(opt, dirs + 4 + 16), u32(opt, dirs + 4 + 20)   # data directory 2: resources
+        if not rva or not size:
+            return None
+        f.seek(pe + 24 + optsize)
+        secs = f.read(40 * nsec)
+        for s in range(min(nsec, len(secs) // 40)):
+            va, raw, ptr = u32(secs, 40 * s + 12), u32(secs, 40 * s + 16), u32(secs, 40 * s + 20)
+            if va <= rva < va + max(raw, u32(secs, 40 * s + 8)):
+                f.seek(ptr + rva - va)
+                return f.read(min(size, 64 << 20))
+        return None
+
+    def scan(f):
+        """the first signature anywhere in the file, read in pieces (not a PE image: as before)"""
+        f.seek(0)
+        carry = b""
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                return None
+            buf = carry + chunk
+            i = buf.find(sig)
+            if i >= 0:
+                d = buf[i:i + 16]
+                return d + f.read(16 - len(d)) if len(d) < 16 else d
+            carry = buf[-(len(sig) - 1):]
+
     try:
         with open(path, "rb") as f:
-            d = f.read()
+            d = resources(f)
+            if d is not None:
+                i = d.find(sig)
+                d = d[i:i + 16] if i >= 0 else None
+            else:
+                d = scan(f)
     except OSError:
         return None   # not kept: the file may appear later in this run (a link of ours)
-    i = d.find(b"\xbd\x04\xef\xfe")
     v = None
-    if i >= 0:
-        ms, ls = int.from_bytes(d[i + 8:i + 12], "little"), int.from_bytes(d[i + 12:i + 16], "little")
+    if d is not None and len(d) >= 16:
+        ms, ls = u32(d, 8), u32(d, 12)
         v = (ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff)
     _versions[path] = v
     return v
