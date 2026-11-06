@@ -137,6 +137,7 @@ struct xdevice {
 };
 
 struct xsetlayout {
+   struct xdevice *dev;                    /* first in every per-handle struct: x_DestroyDevice purges by it */
    VkDescriptorSetLayoutCreateFlags flags;
    uint32_t heap_binding, heap_count;      /* the MUTABLE binding with >= 1000 descriptors, ~0 if none */
    VkDescriptorType mut_types[8];
@@ -147,6 +148,7 @@ struct xsetlayout {
 };
 
 struct xpipelayout {
+   struct xdevice *dev;
    uint32_t nsets;
    VkDescriptorSetLayout sets[8];
    uint32_t npc;
@@ -175,6 +177,7 @@ struct xtemplate {
 
 /* a replaced pipeline: what each dispatch needs */
 struct xkernel {
+   struct xdevice *dev;
    VkPipelineLayout layout;     /* vkd3d's layout + the layer's set */
    uint32_t set_index;          /* the layer's set */
    VkDescriptorSetLayout lset;
@@ -505,6 +508,7 @@ x_CreateDescriptorSetLayout(VkDevice device, const VkDescriptorSetLayoutCreateIn
    if (r)
       return r;
    struct xsetlayout *l = calloc(1, sizeof(*l));
+   l->dev = d;
    l->flags = ci->flags;
    l->heap_binding = l->sampler_heap_binding = ~0u;
    const VkMutableDescriptorTypeCreateInfoEXT *mci = NULL;
@@ -555,6 +559,7 @@ x_CreatePipelineLayout(VkDevice device, const VkPipelineLayoutCreateInfo *ci, co
    if (r || ci->setLayoutCount > 7 || ci->pushConstantRangeCount > 8)
       return r;
    struct xpipelayout *pl = calloc(1, sizeof(*pl));
+   pl->dev = d;
    pl->nsets = ci->setLayoutCount;
    memcpy(pl->sets, ci->pSetLayouts, pl->nsets * sizeof(VkDescriptorSetLayout));
    pl->npc = ci->pushConstantRangeCount;
@@ -578,6 +583,7 @@ x_DestroyPipelineLayout(VkDevice device, VkPipelineLayout l, const VkAllocationC
 
 /* ---- shader modules ---- */
 struct xmodule {
+   struct xdevice *dev;
    struct xmx_placeholder ph;
 };
 
@@ -612,8 +618,12 @@ x_CreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo *ci, const 
    classify_code(d, ci->pCode, ci->codeSize, &ph);
    if (ph.kind != XMX_PH_NONE) {
       struct xmodule *m = malloc(sizeof(*m));
+      m->dev = d;
       m->ph = ph;
+      free(xmap_take(&modules, HKEY(*out)));
       xmap_put(&modules, HKEY(*out), m);
+   } else if (xmap_get(&modules, HKEY(*out))) {
+      free(xmap_take(&modules, HKEY(*out)));   /* a stale entry of a reused handle */
    }
    return r;
 }
@@ -702,6 +712,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    struct xmx_cml k;
    xmx_cml_parse(img, in, &k);
    struct xkernel *kr = calloc(1, sizeof(*kr));
+   kr->dev = d;
    snprintf(kr->hash, sizeof(kr->hash), "%s", ph->hash);
    kr->prof = d->prof ? xprof_kernel(ph->hash) : -1;
    const uint32_t nsurf = xmx_rd32(k.hdr + XMX_H_NSURF);
@@ -1343,6 +1354,21 @@ x_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pi)
 }
 
 /* ---- device ---- */
+/* the per-handle entries of a device: their handles are reused once it is gone (each struct starts with its device) */
+static int of_dev(void *v, void *u) { return *(struct xdevice **)v == u; }
+static void free_entry(void *v, void *u) { (void)u; free(v); }
+static void free_kernel(void *v, void *u) { (void)u; atomic_fetch_sub(&replaced_count, 1); free(v); }
+struct pool_purge { struct xdevice *dev; struct xcmdpool *list; };
+static int pool_of_dev(void *v, void *u) { return ((struct xcmdpool *)v)->dev == ((struct pool_purge *)u)->dev; }
+static void
+pool_collect(void *v, void *u)
+{
+   struct xcmdpool *cp = v;
+   struct pool_purge *pp = u;
+   cp->next = pp->list;
+   pp->list = cp;
+}
+
 static VKAPI_ATTR void VKAPI_CALL
 x_DestroyDevice(VkDevice device, const VkAllocationCallbacks *alloc)
 {
@@ -1354,6 +1380,17 @@ x_DestroyDevice(VkDevice device, const VkAllocationCallbacks *alloc)
    struct xdevice *cached = d;
    atomic_compare_exchange_strong(&last_dev, &cached, NULL);
    PFN_vkDestroyDevice destroy = d->DestroyDevice;
+   xmap_take_if(&modules, of_dev, free_entry, d);
+   xmap_take_if(&set_layouts, of_dev, free_entry, d);
+   xmap_take_if(&pipe_layouts, of_dev, free_entry, d);
+   xmap_take_if(&pipelines, of_dev, free_kernel, d);
+   /* command pools: collected under the map's lock, their descriptor pools destroyed outside it */
+   struct pool_purge pp = { d, NULL };
+   xmap_take_if(&cmdpools, pool_of_dev, pool_collect, &pp);
+   for (struct xcmdpool *cp = pp.list, *n; cp; cp = n) {
+      n = cp->next;
+      cmdpool_free(cp);
+   }
    if (d->default_sampler)
       d->DestroySampler(device, d->default_sampler, NULL);
    for (struct xtemplate *t = d->templates, *n; t; t = n) {
