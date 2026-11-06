@@ -574,7 +574,7 @@ static std::mutex g_globalLock;
 static ScState* g_currentSc;     // the last created live swap chain context
 static std::atomic<ID3D12CommandQueue*> g_timedQueue{nullptr};   // FFX_XEFG_CAP=auto (HookEcl)
 static std::atomic<ScState*> g_timedSc{nullptr};
-static std::mutex g_timedLock;   // g_timedSc against TearDown: HookEcl takes a reference under it
+static std::mutex g_timedLock;   // g_timedSc against TearDown: HookEcl uses the state under it
 static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used for the XeSS-FG init flags
 static bool g_haveFgFlags;
 
@@ -583,6 +583,14 @@ static bool PaceStop(ScState* st);
 static void TearDown(ScState* st)
 {
     Log("teardown sc %p (xefg %p, presents %llu)", (void*)st, (void*)st->xefg, (unsigned long long)st->presents);
+    {
+        // first: once g_timedSc is cleared under this lock, HookEcl is done with st and does not find it again
+        std::lock_guard<std::mutex> lk(g_timedLock);
+        if (g_timedSc.load() == st) {
+            g_timedQueue = nullptr;
+            g_timedSc = nullptr;
+        }
+    }
     if (!PaceStop(st)) {
         Log("!! the pacing thread did not stop: the state stays allocated");
         return;
@@ -599,14 +607,6 @@ static void TearDown(ScState* st)
     if (st->xell) {
         xell_result_t r = p_xellDestroyContext(st->xell);
         Log("  xellDestroyContext -> %d", (int)r);
-    }
-    {
-        // refs reached 0 before this: HookEcl, under the same lock, takes no reference any more (see there)
-        std::lock_guard<std::mutex> lk(g_timedLock);
-        if (g_timedSc.load() == st) {
-            g_timedQueue = nullptr;
-            g_timedSc = nullptr;
-        }
     }
     OflowDestroy(st->oflow);
     st->oflow = nullptr;
@@ -787,34 +787,24 @@ static PFN_ExecuteCommandLists g_origEcl;
 static std::atomic<bool> g_wantFrameStart{false};
 static thread_local bool t_ownSubmit = false;
 
-// The state is taken with a reference (only while it still has one: TearDown starts at 0 and then clears g_timedSc
-// under g_timedLock), and its lock only if free: the present thread may hold it while XeSS-FG submits on this queue,
-// and a missed time stamp costs one sample.
+// The state is used under g_timedLock and takes no reference: a reference of the hook could be the last one, and its
+// release would run the whole TearDown (XeSS-FG and XeLL destroyed, fence waits) inside the game's submission.
+// TearDown clears g_timedSc under the same lock before it frees anything, so it waits at most for the time stamp
+// below, which does not block (OflowFrameStart skips a busy slot). The state's lock is taken only if free: the present
+// thread may hold it while XeSS-FG submits on this queue, and a missed time stamp costs one sample. (HookQueue takes
+// g_timedLock with the state's lock held: no deadlock, as the hook only tries that lock.)
 static void STDMETHODCALLTYPE HookEcl(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
 {
     if (!t_ownSubmit && q == g_timedQueue.load() && g_wantFrameStart.exchange(false)) {
-        ScState* st = nullptr;
-        {
-            std::lock_guard<std::mutex> lk(g_timedLock);
-            ScState* s = g_timedSc.load();
-            if (s) {
-                int r = s->refs.load();
-                while (r > 0 && !s->refs.compare_exchange_weak(r, r + 1)) {
-                }
-                if (r > 0)
-                    st = s;
-            }
-        }
+        std::lock_guard<std::mutex> tl(g_timedLock);
+        ScState* st = g_timedSc.load();
         if (st) {
-            {
-                std::unique_lock<std::mutex> lk(st->lock, std::try_to_lock);
-                if (lk.owns_lock() && st->oflow) {
-                    t_ownSubmit = true;
-                    OflowFrameStart(st->oflow, q);
-                    t_ownSubmit = false;
-                }
+            std::unique_lock<std::mutex> lk(st->lock, std::try_to_lock);
+            if (lk.owns_lock() && st->oflow) {
+                t_ownSubmit = true;
+                OflowFrameStart(st->oflow, q);
+                t_ownSubmit = false;
             }
-            ScRelease(st);
         }
     }
     g_origEcl(q, n, lists);
