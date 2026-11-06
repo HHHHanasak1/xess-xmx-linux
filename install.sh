@@ -250,7 +250,8 @@ if [ -n "$watch" ]; then
     printf '%s\n' "${watch#
 }"; echo "TriggerLimitIntervalSec=10"; echo "TriggerLimitBurst=20"; echo "[Install]"; echo "WantedBy=default.target"; } > "$UNITD/xess-xmx-shim.path.new"
   put_unit "$UNITD/xess-xmx-shim.path"
-  { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "[Service]"; echo "Type=oneshot";
+  # without the package folder (moved or deleted without uninstall.sh) the watcher's runs are skipped, not failures
+  { echo "[Unit]"; echo "Description=XeSS XMX shim re-install"; echo "ConditionPathExists=$PKG/install.sh"; echo "[Service]"; echo "Type=oneshot";
     echo "ExecStart=/bin/bash \"$PKG/install.sh\""; echo "Environment=XMX_NO_ENV=1 XMX_WAIT_PREFIX=90"; } > "$UNITD/xess-xmx-shim.service.new"
   put_unit "$UNITD/xess-xmx-shim.service"
   # the watcher itself leaves systemd alone unless a unit changed (a new library or Proton to watch)
