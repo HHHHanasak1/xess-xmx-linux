@@ -45,7 +45,7 @@ The image was correct in both, also where Viewfinder swaps large parts of the sc
 | XeSS-FG itself | about 2.6 ms (the same as with the game's own motion vectors) |
 
 RE4 at 1920x1200: about 50 fps without frame generation, about 41 rendered (82 shown) with it. Half-resolution
-optical flow gave a few frames more without a visible difference there; full resolution is the default.
+optical flow gave only 3 to 4 frames more after frame generation and a worse image; full resolution is the default.
 
 ## Even frames
 
