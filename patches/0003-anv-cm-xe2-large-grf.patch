@@ -1,4 +1,4 @@
-From f08eb3544e3d4480ddc5cc3a57241abd0eaeeb9f Mon Sep 17 00:00:00 2001
+From cf8a5a86e4f2bbf199c68b1b34a023c377831f56 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Sun, 4 Oct 2026 17:08:57 -0300
 Subject: [PATCH] anv: enable Large GRF Mode around CM kernels on Xe2

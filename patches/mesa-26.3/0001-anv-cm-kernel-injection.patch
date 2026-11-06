@@ -1,4 +1,4 @@
-From a1966822fa8369bf6e344e0f6ea4ceaa4309ed81 Mon Sep 17 00:00:00 2001
+From 26f07733858670396a1f853ab5cbd349df84912f Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
 Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
@@ -6,7 +6,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
 
 ---
  src/intel/compiler/brw/brw_compiler.h   |   21 +
- src/intel/vulkan/anv_cm.c               | 1599 +++++++++++++++++++++++
+ src/intel/vulkan/anv_cm.c               | 1794 +++++++++++++++++++++++
  src/intel/vulkan/anv_cm.h               |   69 +
  src/intel/vulkan/anv_device.c           |   20 +-
  src/intel/vulkan/anv_private.h          |    9 +
@@ -20,7 +20,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
  src/intel/vulkan/meson.build            |    3 +
  src/vulkan/runtime/vk_pipeline.c        |    2 +-
  src/vulkan/runtime/vk_shader.h          |    3 +
- 15 files changed, 1956 insertions(+), 11 deletions(-)
+ 15 files changed, 2151 insertions(+), 11 deletions(-)
  create mode 100644 src/intel/vulkan/anv_cm.c
  create mode 100644 src/intel/vulkan/anv_cm.h
  create mode 100644 src/intel/vulkan/genX_cm.c
@@ -59,10 +59,10 @@ index 6d499ae..7610ec0 100644
        struct brw_push_const_block per_thread;
 diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
 new file mode 100644
-index 0000000..3d796ea
+index 0000000..d685456
 --- /dev/null
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -0,0 +1,1599 @@
+@@ -0,0 +1,1794 @@
 +/*
 + * Copyright © 2026 xess-xmx-linux contributors
 + * SPDX-License-Identifier: MIT
@@ -91,6 +91,7 @@ index 0000000..3d796ea
 +#include <dlfcn.h>
 +#include <fcntl.h>
 +#include <signal.h>
++#include <pthread.h>
 +#include "util/simple_mtx.h"
 +#include <time.h>
 +#include <spawn.h>
@@ -880,7 +881,7 @@ index 0000000..3d796ea
 +   fclose(f);
 +}
 +
-+/* What a compile needs of the GPU */
++/* What a compile needs of the GPU, copied: a background compile (see anv_cm_prefetch) may outlive the device. */
 +struct anv_cm_target {
 +   uint32_t pci_id;
 +   uint32_t grf_size;
@@ -1137,6 +1138,213 @@ index 0000000..3d796ea
 +   return true;
 +}
 +
++/* ---- compile jobs ----------------------------------------------------------------------------------------------
++ * Every kernel this process compiles has a job, keyed by its cache file. The kernel a pipeline needs now is compiled
++ * by the thread creating it. On such a miss the other kernels in the shim's folder whose packed file is missing (all
++ * of them after a driver, IGC or helper update) are queued for up to ANV_CM_COMPILE_JOBS worker threads (default one
++ * less than the online CPUs, at most 8; 0 = off), so they are ready when XeSS asks for them instead of compiling one
++ * after another inside vkCreateComputePipelines. A thread that needs a kernel a worker is compiling waits for it; a
++ * queued one it takes over. Results reach the cache under a private name and are renamed into place, so threads and
++ * other processes see either no file or a whole one. A failed background compile is not final (the kernel is compiled
++ * again when it is needed); a failed compile of a needed kernel is not tried again in this process (each recreation of
++ * the placeholder would spawn the compiler once more and append another marker line; the next launch retries it). */
++enum anv_cm_job_state {
++   ANV_CM_JOB_QUEUED,
++   ANV_CM_JOB_RUNNING,
++   ANV_CM_JOB_OK,
++   ANV_CM_JOB_PREFETCH_FAILED,
++   ANV_CM_JOB_FAILED,
++};
++
++struct anv_cm_job {
++   enum anv_cm_job_state state;
++   struct anv_cm_target tgt;            /* the fields below never change after the job is created */
++   char hash[20], name[32];
++   char sdir[512], cdir[512], path[512];
++};
++
++#define ANV_CM_MAX_JOBS 1024
++static struct anv_cm_job *anv_cm_jobs[ANV_CM_MAX_JOBS];   /* never freed: a few hundred per process at most */
++static unsigned anv_cm_njobs, anv_cm_nworkers;
++static pthread_mutex_t anv_cm_jobs_mtx = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t anv_cm_jobs_cnd = PTHREAD_COND_INITIALIZER;
++
++/* The job of cache file path, created in state st if there is none (*created); NULL if the table is full. Called with
++ * anv_cm_jobs_mtx held. */
++static struct anv_cm_job *
++anv_cm_job_get(const char *path, enum anv_cm_job_state st, const struct anv_cm_target *tgt, const char *sdir,
++               const char *name, const char *hash, const char *cdir, bool *created)
++{
++   *created = false;
++   for (unsigned i = 0; i < anv_cm_njobs; i++)
++      if (strcmp(anv_cm_jobs[i]->path, path) == 0)
++         return anv_cm_jobs[i];
++   if (anv_cm_njobs == ANV_CM_MAX_JOBS)
++      return NULL;
++   struct anv_cm_job *j = calloc(1, sizeof(*j));
++   if (!j)
++      return NULL;
++   j->state = st;
++   j->tgt = *tgt;
++   snprintf(j->hash, sizeof(j->hash), "%s", hash);
++   snprintf(j->name, sizeof(j->name), "%s", name);
++   snprintf(j->sdir, sizeof(j->sdir), "%s", sdir);
++   snprintf(j->cdir, sizeof(j->cdir), "%s", cdir);
++   snprintf(j->path, sizeof(j->path), "%s", path);
++   anv_cm_jobs[anv_cm_njobs++] = j;
++   *created = true;
++   return j;
++}
++
++static void *
++anv_cm_worker(void *arg)
++{
++   (void)arg;
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   for (;;) {
++      struct anv_cm_job *j = NULL;
++      for (unsigned i = 0; i < anv_cm_njobs && !j; i++)
++         if (anv_cm_jobs[i]->state == ANV_CM_JOB_QUEUED)
++            j = anv_cm_jobs[i];
++      if (!j)
++         break;
++      j->state = ANV_CM_JOB_RUNNING;
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++      /* another process may have packed it meanwhile */
++      const bool ok = access(j->path, R_OK) == 0 ||
++                      anv_cm_compile(&j->tgt, j->sdir, j->name, j->hash, j->cdir, j->path);
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      j->state = ok ? ANV_CM_JOB_OK : ANV_CM_JOB_PREFETCH_FAILED;
++      pthread_cond_broadcast(&anv_cm_jobs_cnd);
++   }
++   anv_cm_nworkers--;   /* workers end when the queue is empty; the next miss starts new ones */
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   return NULL;
++}
++
++/* ANV_CM_COMPILE_JOBS, else one less than the online CPUs (the thread that needs a kernel compiles too), at most 8 */
++static unsigned
++anv_cm_max_workers(void)
++{
++   const char *s = getenv("ANV_CM_COMPILE_JOBS");
++   if (s && s[0])
++      return (unsigned)MIN2(strtoul(s, NULL, 10), 32ul);
++   const long n = sysconf(_SC_NPROCESSORS_ONLN);
++   return n > 1 ? (unsigned)MIN2(n - 1, 8l) : 0;
++}
++
++/* The workers run code of this library: it stays mapped even if the loader unloads the driver (the last
++ * vkDestroyInstance) while they compile. */
++static void
++anv_cm_pin_library(void)
++{
++   Dl_info dl;
++   if (dladdr((void *)anv_cm_pin_library, &dl) && dl.dli_fname)
++      (void)dlopen(dl.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE);
++}
++
++/* Queues every kernel of the shim's folder sdir whose packed file is missing and that this process has no job for
++ * (<16 hex digits>.spv with its .opt: the shim writes both under a temporary name and renames them, the .opt last), and
++ * starts workers for them. */
++static void
++anv_cm_prefetch(const struct anv_cm_target *tgt, const char *sdir)
++{
++   const unsigned max = anv_cm_max_workers();
++   if (max == 0)
++      return;
++   DIR *d = opendir(sdir);
++   if (!d)
++      return;
++   unsigned queued = 0;
++   struct dirent *e;
++   while ((e = readdir(d))) {
++      char hash[17], opt[600], cdir[512], path[512];
++      if (strlen(e->d_name) != 20 || strcmp(e->d_name + 16, ".spv") != 0)
++         continue;
++      memcpy(hash, e->d_name, 16);
++      hash[16] = 0;
++      if (!anv_cm_hash_ok(hash) || !anv_cm_cache_path(tgt->pci_id, hash, cdir, sizeof(cdir), path, sizeof(path)) ||
++          access(path, R_OK) == 0)
++         continue;
++      snprintf(opt, sizeof(opt), "%s/%s.opt", sdir, hash);
++      if (access(opt, R_OK) != 0)
++         continue;
++      bool created;
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      anv_cm_job_get(path, ANV_CM_JOB_QUEUED, tgt, sdir, hash, hash, cdir, &created);
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++      queued += created;
++   }
++   closedir(d);
++   if (queued == 0)
++      return;
++   static util_once_flag pin_once = UTIL_ONCE_FLAG_INIT;
++   util_call_once(&pin_once, anv_cm_pin_library);
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   unsigned waiting = 0;
++   for (unsigned i = 0; i < anv_cm_njobs; i++)
++      waiting += anv_cm_jobs[i]->state == ANV_CM_JOB_QUEUED;
++   unsigned started = 0;
++   while (anv_cm_nworkers < MIN2(max, waiting)) {
++      /* signals blocked in the workers, so that none of the game's handlers runs on them */
++      sigset_t all, old;
++      sigfillset(&all);
++      pthread_sigmask(SIG_SETMASK, &all, &old);
++      pthread_attr_t attr;
++      pthread_attr_init(&attr);
++      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++      pthread_t t;
++      const int rc = pthread_create(&t, &attr, anv_cm_worker, NULL);
++      pthread_attr_destroy(&attr);
++      pthread_sigmask(SIG_SETMASK, &old, NULL);
++      if (rc != 0)
++         break;
++      anv_cm_nworkers++;
++      started++;
++   }
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   fprintf(stderr, "ANV CM: %u more kernel(s) without a packed file queued, %u background compile(s) started\n",
++           queued, started);
++}
++
++/* A kernel needed now: compiled on this thread, or waited for if a worker is compiling it. prefetch: queue the other
++ * kernels of sdir too (placeholders of the hash format). *fresh is false when the kernel failed earlier in this process
++ * and was not tried again. */
++static bool
++anv_cm_compile_needed(const struct anv_cm_target *tgt, const char *sdir, const char *name, const char *hash,
++                      const char *cdir, const char *path, bool prefetch, bool *fresh)
++{
++   *fresh = false;
++   bool created;
++   pthread_mutex_lock(&anv_cm_jobs_mtx);
++   struct anv_cm_job *j = anv_cm_job_get(path, ANV_CM_JOB_RUNNING, tgt, sdir, name, hash, cdir, &created);
++   while (j && !created) {
++      if (j->state == ANV_CM_JOB_RUNNING) {
++         pthread_cond_wait(&anv_cm_jobs_cnd, &anv_cm_jobs_mtx);
++         continue;
++      }
++      if (j->state == ANV_CM_JOB_FAILED || (j->state == ANV_CM_JOB_OK && access(path, R_OK) == 0)) {
++         const bool ok = j->state == ANV_CM_JOB_OK;
++         pthread_mutex_unlock(&anv_cm_jobs_mtx);
++         return ok;
++      }
++      j->state = ANV_CM_JOB_RUNNING;   /* still queued, failed in the background, or its file is gone: compile it here */
++      break;
++   }
++   pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   if (prefetch)
++      anv_cm_prefetch(tgt, sdir);
++   *fresh = true;
++   const bool ok = anv_cm_compile(tgt, sdir, name, hash, cdir, path);
++   if (j) {
++      pthread_mutex_lock(&anv_cm_jobs_mtx);
++      j->state = ok ? ANV_CM_JOB_OK : ANV_CM_JOB_FAILED;
++      pthread_cond_broadcast(&anv_cm_jobs_cnd);
++      pthread_mutex_unlock(&anv_cm_jobs_mtx);
++   }
++   return ok;
++}
++
 +/* The packed kernel of a placeholder, compiled from <sdir>/<name>.spv on a cache miss. name is the kernel's hash
 + * (placeholders that carry it, id -1) or dyn_<id> (the id placeholders of an older shim, id >= 0). */
 +static bool
@@ -1145,27 +1353,14 @@ index 0000000..3d796ea
 +{
 +   const struct anv_cm_target tgt = anv_cm_target(device);
 +   char cdir[512];
-+   const bool cache = anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, pathlen);
-+   if (cache && access(path, R_OK) == 0)
-+      return true;
-+   /* a kernel that failed to compile in this process is not tried again here (each recreation of the placeholder
-+    * would spawn the compiler once more and append another marker line); the next launch retries it */
-+   static char failed[64][32];
-+   static unsigned nfailed;
-+   static simple_mtx_t failed_mtx = SIMPLE_MTX_INITIALIZER;
-+   simple_mtx_lock(&failed_mtx);
-+   bool known = false;
-+   for (unsigned k = 0; k < nfailed && !known; k++)
-+      known = strcmp(failed[k], hash) == 0;
-+   simple_mtx_unlock(&failed_mtx);
-+   if (known)
-+      return false;
-+   if (cache && anv_cm_compile(&tgt, sdir, name, hash, cdir, path))
-+      return true;
-+   simple_mtx_lock(&failed_mtx);
-+   if (nfailed < ARRAY_SIZE(failed))
-+      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
-+   simple_mtx_unlock(&failed_mtx);
++   bool ok = false, fresh = true;
++   if (anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, pathlen)) {
++      if (access(path, R_OK) == 0)
++         return true;
++      ok = anv_cm_compile_needed(&tgt, sdir, name, hash, cdir, path, id < 0, &fresh);
++   }
++   if (ok || !fresh)
++      return ok;
 +   /* tells the shim to fall back to XeSS' DP4a path on the next launch; retried by anv_cm_retry_failed(). The line is
 +    * "<id> <hash>", id -1 for a kernel named by its hash. */
 +   char mark[600];

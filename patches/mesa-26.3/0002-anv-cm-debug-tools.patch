@@ -1,4 +1,4 @@
-From ff3c2f081a4c66daa6e58ef3eaee321f6b82caf4 Mon Sep 17 00:00:00 2001
+From a593b53df72f60327e3ee074ee070d198a057a81 Mon Sep 17 00:00:00 2001
 From: xess-xmx-linux <xmx@localhost>
 Date: Fri, 25 Sep 2026 05:33:56 +0900
 Subject: [PATCH] anv: debug tools for the C-for-Metal kernel injection
@@ -34,10 +34,10 @@ index ade4a8c..15185a5 100644
  
     return VK_SUCCESS;
 diff --git a/src/intel/vulkan/anv_cm.c b/src/intel/vulkan/anv_cm.c
-index 3d796ea..dc32709 100644
+index d685456..6584e68 100644
 --- a/src/intel/vulkan/anv_cm.c
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -78,6 +78,23 @@ anv_cm_env_init(void)
+@@ -79,6 +79,23 @@ anv_cm_env_init(void)
     e->debug = getenv("ANV_CM_DEBUG") != NULL;
     const char *t = getenv("ANV_CM_TRACE");
     e->trace = t ? (t[0] == '2' ? 2 : 1) : 0;
@@ -61,7 +61,7 @@ index 3d796ea..dc32709 100644
  }
  
  const struct anv_cm_env *
-@@ -87,6 +104,9 @@ anv_cm_env(void)
+@@ -88,6 +105,9 @@ anv_cm_env(void)
     return &anv_cm_env_data;
  }
  
@@ -71,7 +71,7 @@ index 3d796ea..dc32709 100644
  
  struct cmk_header {
     char magic[4];               /* "CMK2" */
-@@ -1408,6 +1428,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1603,6 +1623,15 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
     const uint32_t wx = nir->info.workgroup_size[0], wy = nir->info.workgroup_size[1], wz = nir->info.workgroup_size[2];
     uint32_t cm_id = wx | (wy << 8) | (wz << 16);
     char path[512] = "";
@@ -87,7 +87,7 @@ index 3d796ea..dc32709 100644
     if (wx == 1 && wy == 1 && (wz == ANV_CM_CANARY_WG_Z || wz == ANV_CM_LEGACY_CANARY_WG_Z) &&
         anv_cm_is_placeholder(nir)) {
        /* the shim's self-test: proves to it that this process runs the patched driver and that placeholders still
-@@ -1462,6 +1491,18 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
+@@ -1657,6 +1686,18 @@ anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
           fprintf(stderr, "ANV CM:   set %u: type %d bindings %u descriptors %u\n", i, ANV_CM_SET_LAYOUT_MODE(l), l->binding_count, l->descriptor_count);
        }
     }
