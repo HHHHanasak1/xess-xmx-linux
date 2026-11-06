@@ -49,16 +49,17 @@ xmx_icd_json "$ROOT/lib/libvulkan_intel.so" > "$ROOT/run/intel_icd.json"
 drivers=$(xmx_driver_files "$ROOT/run/intel_icd.json")
 mkdir -p "$(dirname "$CONF")"; touch "$CONF"
 sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF"
-cat >> "$CONF" <<EOF
-# >>> XESS-XMX >>>
-export VK_DRIVER_FILES=$drivers
-export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2
-export ANV_CM_KERNEL_DIR=$ROOT/kernels
-export ANV_CM_HELPER=$ROOT/tools/cm-compile.sh
-export force_vk_vendor=0
-export INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
-# <<< XESS-XMX <<<
-EOF
+# the paths are quoted for the shell that sources the file (a package folder with spaces or quotes in its name)
+{
+  echo "# >>> XESS-XMX >>>"
+  printf 'export VK_DRIVER_FILES=%q\n' "$drivers"
+  echo "export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
+  printf 'export ANV_CM_KERNEL_DIR=%q\n' "$ROOT/kernels"
+  printf 'export ANV_CM_HELPER=%q\n' "$ROOT/tools/cm-compile.sh"
+  echo "export force_vk_vendor=0"
+  echo "export INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1'"
+  echo "# <<< XESS-XMX <<<"
+} >> "$CONF"
 
 # 3. the driver check; it also copies the host libraries the Steam Linux Runtime lacks into lib/deps
 bash "$ROOT/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "driver check: loads fine" \
