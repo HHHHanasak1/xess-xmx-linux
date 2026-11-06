@@ -815,7 +815,7 @@ static void HookQueue(ScState* st)
     if (!g_origEcl) {
         void** vt = *(void***)st->queue;
         DWORD old;
-        if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_EXECUTE_READWRITE, &old))
+        if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
             return;
         g_origEcl = (PFN_ExecuteCommandLists)vt[10];
         vt[10] = (void*)HookEcl;
