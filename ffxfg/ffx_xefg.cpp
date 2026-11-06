@@ -1091,10 +1091,11 @@ static void CapAdjust(ScState* st)
 static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags)
 {
     uint32_t next;
+    uint64_t presents;
     {
         std::lock_guard<std::mutex> lk(st->lock);
         XellMarker(st, id, XELL_PRESENT_END);
-        st->presents++;
+        presents = ++st->presents;
         // only the first presents: a later present sometimes stalled 560-580 ms around this query (Viewfinder with
         // OFLOW_FG at the display's limit while our cap fought that limit; not seen in Forza Horizon 6 at a frame limit),
         // and the status is only for the log
@@ -1111,7 +1112,9 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
         next = st->bridge ? st->nextId + 1 : id + 1;
     }
     // without the lock: the sleep can block
-    if (g_capAuto && st->oflow) {
+    // every 4th present: the window's average needs no more, and each read is a file read through Wine (a window
+    // without any sample keeps the GPU times as they are, see CapAdjust)
+    if (g_capAuto && st->oflow && presents % 4 == 0) {
         int f = GpuFreqMhz();
         if (f > 0) {
             std::lock_guard<std::mutex> lk(st->lock);
