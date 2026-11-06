@@ -197,7 +197,8 @@ struct xcmd {
    uint8_t pc[XMX_PC_BYTES];
    /* the layer's descriptor pools of this command buffer, reset when it is begun again */
    VkDescriptorPool pools[64];
-   unsigned npools, used_in_last;
+   unsigned npools;
+   uint64_t pools_full;         /* bit i: pools[i] ran out since the last reset */
    struct xlayer_set *pool_ls[64];
    /* XMX_LAYER_PROF (primary command buffers): the time stamps recorded since the last begin */
    bool primary;
@@ -1007,6 +1008,7 @@ cmd_release_pools(struct xcmd *c)
    for (unsigned i = 0; i < c->npools; i++)
       c->dev->DestroyDescriptorPool(c->dev->handle, c->pools[i], NULL);
    c->npools = 0;
+   c->pools_full = 0;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL
@@ -1051,7 +1053,7 @@ cmd_reset(struct xcmd *c)
    memset(c->sets, 0, sizeof(c->sets));
    for (unsigned i = 0; i < c->npools; i++)
       c->dev->ResetDescriptorPool(c->dev->handle, c->pools[i], 0);
-   c->used_in_last = 0;
+   c->pools_full = 0;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL
@@ -1175,18 +1177,20 @@ x_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFla
    d->CmdPushConstants(cb, layout, stages, off, size, data);
 }
 
-/* a descriptor set of the layer's layout for this command buffer */
+/* a descriptor set of the layer's layout for this command buffer; a pool that ran out is not tried again until the
+ * command buffer is reset */
 static VkDescriptorSet
 cmd_alloc_set(struct xcmd *c, struct xlayer_set *ls)
 {
    struct xdevice *d = c->dev;
    for (unsigned i = 0; i < c->npools; i++) {
-      if (c->pool_ls[i] != ls)
+      if (c->pool_ls[i] != ls || (c->pools_full >> i & 1))
          continue;
       VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, 0, c->pools[i], 1, &ls->layout };
       VkDescriptorSet s;
       if (d->AllocateDescriptorSets(d->handle, &ai, &s) == VK_SUCCESS)
          return s;
+      c->pools_full |= 1ull << i;
    }
    if (c->npools == 64)
       return VK_NULL_HANDLE;
@@ -1207,29 +1211,34 @@ cmd_alloc_set(struct xcmd *c, struct xlayer_set *ls)
    return d->AllocateDescriptorSets(d->handle, &ai, &s) == VK_SUCCESS ? s : VK_NULL_HANDLE;
 }
 
-/* before a dispatch of a replaced pipeline: the layer's set from vkd3d's heap, bound at its index */
-static void
+/* before a dispatch of a replaced pipeline: the layer's set from vkd3d's heap, bound at its index. false if the set
+ * cannot be made: the dispatch is then left out, since the kernel would run with no or a stale set of the layer's
+ * (a GPU fault). A null set is no way out: it needs a descriptor set just the same, and without the heap there is
+ * nothing valid to copy into it. */
+static bool
 prepare_dispatch(struct xcmd *c)
 {
    struct xkernel *k = c->bound;
    struct xdevice *d = c->dev;
+   const VkDescriptorSet heap = k->heap_set < 8 ? c->sets[k->heap_set] : VK_NULL_HANDLE;
+   if (k->nsurf && !heap) {
+      static atomic_bool said;
+      if (!atomic_exchange(&said, true))
+         xlog("kernel %s dispatched without its descriptor heap (set %u) bound: dispatches left out", k->hash,
+              k->heap_set);
+      return false;
+   }
    VkDescriptorSet s = cmd_alloc_set(c, k->ls);
    if (!s) {
-      xlog("kernel %s: no descriptor set for the dispatch", k->hash);
-      return;
+      static atomic_bool said;
+      if (!atomic_exchange(&said, true))
+         xlog("kernel %s: no descriptor set for the dispatch: dispatches left out", k->hash);
+      return false;
    }
    VkCopyDescriptorSet cp[NSURF_BINDINGS + 1];
    uint32_t ncp = 0;
-   const VkDescriptorSet heap = k->heap_set < 8 ? c->sets[k->heap_set] : VK_NULL_HANDLE;
    uint32_t pc[XMX_PC_BYTES / 4];
    memcpy(pc, c->pc, sizeof(pc));
-   if (k->nsurf && !heap) {
-      static bool said;
-      if (!said)
-         xlog("kernel %s dispatched without its descriptor heap (set %u) bound", k->hash, k->heap_set);
-      said = true;
-      return;
-   }
    for (uint32_t i = 0; i < k->nsurf; i++) {
       uint32_t idx = pc[k->table_off[i] / 4] + k->elem[i];
       if (idx >= k->heap_count)
@@ -1255,6 +1264,7 @@ prepare_dispatch(struct xcmd *c)
    }
    d->UpdateDescriptorSets(d->handle, nw, &w, ncp, cp);
    d->CmdBindDescriptorSets(c->handle, VK_PIPELINE_BIND_POINT_COMPUTE, k->layout, k->set_index, 1, &s, 0, NULL);
+   return true;
 }
 
 static VKAPI_ATTR void VKAPI_CALL
@@ -1262,7 +1272,9 @@ x_CmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z)
 {
    struct xcmd *c = cmd_of(cb);
    struct xdevice *d = c ? c->dev : dev_of(cb);
-   const bool t = c && c->bound && (prepare_dispatch(c), prof_before(c));
+   if (c && c->bound && !prepare_dispatch(c))
+      return;
+   const bool t = c && c->bound && prof_before(c);
    d->CmdDispatch(cb, x, y, z);
    if (t)
       prof_after(c);
@@ -1273,7 +1285,9 @@ x_CmdDispatchBase(VkCommandBuffer cb, uint32_t bx, uint32_t by, uint32_t bz, uin
 {
    struct xcmd *c = cmd_of(cb);
    struct xdevice *d = c ? c->dev : dev_of(cb);
-   const bool t = c && c->bound && (prepare_dispatch(c), prof_before(c));
+   if (c && c->bound && !prepare_dispatch(c))
+      return;
+   const bool t = c && c->bound && prof_before(c);
    d->CmdDispatchBase(cb, bx, by, bz, x, y, z);
    if (t)
       prof_after(c);
@@ -1284,7 +1298,9 @@ x_CmdDispatchIndirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off)
 {
    struct xcmd *c = cmd_of(cb);
    struct xdevice *d = c ? c->dev : dev_of(cb);
-   const bool t = c && c->bound && (prepare_dispatch(c), prof_before(c));
+   if (c && c->bound && !prepare_dispatch(c))
+      return;
+   const bool t = c && c->bound && prof_before(c);
    d->CmdDispatchIndirect(cb, b, off);
    if (t)
       prof_after(c);
