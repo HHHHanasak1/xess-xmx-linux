@@ -68,7 +68,9 @@ driver to pace the game; under Proton that driver mode does not start, and XeLL 
 project implements its own low latency mode on the XeLL API: the shim takes over the game's XeLL calls, uses the
 time stamps the game reports to XeLL (simulation, render, present) to tell whether frames queue, and waits before the
 game's next frame to remove the queue. It is on by default when frame generation is on and can be switched off with
-`IGDEXT_XELL_CAP=off` (since release 20261104).
+`IGDEXT_XELL_CAP=off` (since release 20261104). It applies to a game's own XeSS frame generation: on the FSR routes
+(`FSR=xess`, `FSR_FG`, `OFLOW_FG`) the package's frame generation DLL reports each present right before the next
+frame's sleep, so the shim sees no queue and does not wait.
 
 **Test**: Wuthering Waves, frame generation 3x, SoC 22 W. Latency is the time from the start of a frame's simulation
 to the end of its present, taken from those XeLL time stamps (`IGDEXT_XELL_LOG=1`). The builds measured were

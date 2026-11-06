@@ -141,7 +141,7 @@ path; 26.3 is this project's patched Mesa 26.3.0-rc3 (release 20261104):
   compiler backend. Forza Horizon 6 is held back by its render thread on this device, so its frame rate gains less
   than its GPU.
 * With frame generation on, the shim's low latency mode (built on the XeLL API) cuts the latency of the frame queue
-  by 36–50% at the same frame rate (Wuthering Waves).
+  by 36–50% at the same frame rate (Wuthering Waves; a game's own XeSS frame generation, not the FSR routes).
 * Mesa 26.3.0-rc3 unpatched, with a Vulkan layer of this project that is not in a release yet, runs as fast as the
   patched driver.
 
