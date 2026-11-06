@@ -59,7 +59,7 @@ struct Oflow {
     double sumOf = 0, sumEx = 0, maxAll = 0;
     uint32_t nT = 0;
     // GPU frame time (OflowFrameStart .. OflowRun): 2 time stamps per frame, kFrames frames in flight
-    static const UINT kFrames = 8;   // more than a game runs ahead, so OflowFrameStart does not wait
+    static const UINT kFrames = 8;   // more than a game runs ahead, so OflowFrameStart rarely skips a sample
     ID3D12QueryHeap* tq = nullptr;
     ID3D12Resource* trb = nullptr;
     ID3D12CommandAllocator* tAlloc[kFrames] = {};
@@ -342,9 +342,11 @@ void OflowFrameStart(Oflow* o, ID3D12CommandQueue* q)
     if (!o->trb || !o->tCl)
         return;
     UINT k = (UINT)(o->tFrame % K);
+    // called inside the game's ExecuteCommandLists: never wait there. A slot still in flight (the game runs more than
+    // kFrames ahead) skips this frame's sample; the slot is tried again next frame.
     if (o->tWait[k] && o->fence->GetCompletedValue() < o->tWait[k]) {
-        o->fence->SetEventOnCompletion(o->tWait[k], o->event);
-        WaitForSingleObject(o->event, 1000);
+        o->tOpen = -1;   // OflowRun closes no older start with this frame's end
+        return;
     }
     if (o->tPending[k]) {
         UINT64* t = nullptr;
