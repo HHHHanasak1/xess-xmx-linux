@@ -548,7 +548,9 @@ static void XefgRaiseOnce(void* dev, void* ctx)
     AcquireSRWLockExclusive(&g_fgLock);
     g_fgOwner = GetCurrentThreadId();
     bool seen = false;
-    for (LONG i = 0; i < g_fgNDone && !seen; ++i) seen = g_fgDone[i] == ctx;
+    // the last 16 contexts (g_fgNDone keeps counting past the ring's size)
+    const LONG nDone = std::min<LONG>(g_fgNDone, 16);
+    for (LONG i = 0; i < nDone && !seen; ++i) seen = g_fgDone[i] == ctx;
     if (!seen)
     {
         g_fgDone[g_fgNDone % 16] = ctx; ++g_fgNDone;
@@ -681,9 +683,11 @@ static int32_t Hook_XefgTagRes(void* ctx, void* cl, uint32_t id, const XefgResDa
         uint64_t key = (uint64_t) d->type | (uint64_t) d->validity << 4 | (uint64_t) fmt << 8 | (uint64_t) d->w << 16 | (uint64_t) d->h << 40 | (uint64_t) (cl != nullptr) << 63;
         bool known = false;
         for (LONG i = 0; i < nSeen && i < 32; ++i) known |= seen[i] == key;
-        if (!known && nSeen < 32)
+        // the slot is taken first: two threads past the check would otherwise both index from one count
+        const LONG slot = !known && nSeen < 32 ? InterlockedIncrement(&nSeen) - 1 : 32;
+        if (slot < 32)
         {
-            seen[InterlockedIncrement(&nSeen) - 1] = key;
+            seen[slot] = key;
             FLog("tag resource id %u: type %u validity %u base %u,%u size %ux%u format %u state 0x%x cmdlist %d -> %d", id, d->type,
                  d->validity, d->baseX, d->baseY, d->w, d->h, fmt, d->state, cl != nullptr, r);
         }
