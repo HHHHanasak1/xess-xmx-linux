@@ -25,8 +25,10 @@
 # The game's own old libraries are not given the Intel GPU (DXVK_CONFIG=dxgi.customVendorId = 8086 would): Cyberpunk
 # 2077's XeSS-FG 1.1.0.19 then crashes on a null context (libxess_fg +0x238ea4); with the SDK's 1.3.1.78 it works.
 # The variables behind them go into Proton's user_settings, which never override one the launch options set themselves.
-# XESS=latest: while the game runs, each libxess.dll / libxess_dx11.dll / libxess_fg.dll / libxell.dll in the game folder that is
-# older than the SDK's is renamed to <name>.xmx-orig and replaced by a link to the SDK's file. When Proton exits (the
+# XESS=latest: while the game runs, each libxess.dll / libxess_fg.dll / libxell.dll in the game folder that is older
+# than the SDK's is renamed to <name>.xmx-orig and replaced by a link to the SDK's file; each libxess_dx11.dll by a link
+# to the package's (dx11bridge/, XeSS for D3D11 on D3D12), with the SDK's libxess.dll added next to it if the game has
+# none there. When Proton exits (the
 # game ended, or Steam stopped it) the originals are put back. A run that was killed outright leaves the links; the
 # next game start (with or without XESS) or uninstall.sh puts the originals back. Steam starts Proton more than once for
 # some games (a launcher, install scripts), so each run that swaps holds a lock file listing its links for as long as
@@ -39,6 +41,12 @@ PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(PKG, "xess")
 FFXFG = os.path.join(PKG, "ffxfg")   # the package's FidelityFX upscaler and frame generation on XeSS
 FFX = os.path.join(PKG, "ffx")   # AMD's loader and providers (tools/get-ffx.sh), for games with FSR 3.1.0-3.1.3
+# the package's libxess_dx11.dll: XeSS for D3D11 on the SDK's D3D12 XeSS (dx11bridge/); Intel's forwards to the XeSS of
+# the Intel Windows driver, which does not exist here, whatever its version
+DX11 = os.path.join(PKG, "dx11bridge")
+# the package's vulkan-1.dll for a Vulkan game with XeSS (vkwrap/), and the layer that serves it (layer/)
+VKWRAP = os.path.join(PKG, "vkwrap")
+LAYER = os.path.join(PKG, "layer")
 FG_DLL = "amd_fidelityfx_framegeneration_dx12.dll"
 SINGLE_DLL = "amd_fidelityfx_dx12.dll"   # FSR 3.1.0-3.1.3: upscaler and frame generation in one
 LOADER_DLL = "amd_fidelityfx_loader_dx12.dll"
@@ -156,9 +164,9 @@ def ours(path, listed=False):
     if not os.path.islink(path):
         return False
     d = os.path.dirname(os.readlink(path))
-    if d in (STORE, FFXFG, FFX):
+    if d in (STORE, FFXFG, FFX, DX11, VKWRAP):
         return True
-    return os.path.basename(d) in ("xess", "ffxfg", "ffx") and (
+    return os.path.basename(d) in ("xess", "ffxfg", "ffx", "dx11bridge", "vkwrap") and (
         listed or os.path.isfile(os.path.join(os.path.dirname(d), "tools", "proton-hook.py")))
 
 
@@ -251,12 +259,114 @@ def fresh(f):
     return True
 
 
+def xess_dx11(game, f, swaps):
+    """XESS=latest, a game's libxess_dx11.dll: the package's in its place, whatever the version, and the SDK's
+    libxess.dll next to it if the game has none there (the package's runs XeSS through it)"""
+    ours_dx11 = os.path.join(DX11, "libxess_dx11.dll")
+    rel = os.path.relpath(f, game)
+    if not os.path.isfile(ours_dx11):
+        say("XESS=latest: %s kept (%s missing)" % (rel, ours_dx11))
+        return
+    swaps.link(f, ours_dx11)
+    say("XESS=latest: %s %s -> XeSS for D3D11 on D3D12 (dx11bridge)" % (rel, vstr(version(f))))
+    top = os.path.dirname(f)
+    if not any(n.lower() == "libxess.dll" for n in os.listdir(top)):
+        swaps.link(os.path.join(top, "libxess.dll"), os.path.join(STORE, "libxess.dll"))
+        say("XESS=latest: %s added (the SDK's, for D3D11 XeSS)" % os.path.relpath(os.path.join(top, "libxess.dll"), game))
+
+
+def pe_imports(path):
+    """the DLL names (lower case) a PE file imports, empty if it cannot be read"""
+    u16 = lambda b, o: int.from_bytes(b[o:o + 2], "little")
+    u32 = lambda b, o: int.from_bytes(b[o:o + 4], "little")
+    try:
+        with open(path, "rb") as f:
+            d = f.read(64 << 20)   # the import directory is near the start; executables of any size are read in part
+    except OSError:
+        return set()
+    if d[:2] != b"MZ" or len(d) < 0x40:
+        return set()
+    pe = u32(d, 0x3c)
+    if d[pe:pe + 4] != b"PE\0\0":
+        return set()
+    nsec, optsize = u16(d, pe + 6), u16(d, pe + 20)
+    opt = pe + 24
+    dd = opt + (112 if u16(d, opt) == 0x20b else 96)   # data directories: PE32+ / PE32
+    imp = u32(d, dd + 8)
+    secs = [(u32(d, s + 12), max(u32(d, s + 8), u32(d, s + 16)), u32(d, s + 20))
+            for s in (opt + optsize + 40 * i for i in range(nsec))]
+
+    def off(rva):
+        for va, size, raw in secs:
+            if va <= rva < va + size:
+                return raw + rva - va
+        return None
+    names = set()
+    o = off(imp) if imp else None
+    while o is not None and o + 20 <= len(d) and u32(d, o + 12):
+        n = off(u32(d, o + 12))
+        if n is not None:
+            names.add(d[n:d.find(b"\0", n)].decode("latin-1").lower())
+        o += 20
+    return names
+
+
+def xess_vulkan(game, swaps, found):
+    """XESS=latest, a Vulkan game with XeSS (its exe imports vulkan-1.dll; XESS_VK=1 forces, XESS_VK=0 skips): the
+    package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and the layer on
+    the package's unpatched Mesa, which serves XeSS' Vulkan kernels (the patched driver's serialized shaders do not fit
+    the layer's template). Without the layer XeSS stays on DP4a: vkwrap checks that the layer serves the device."""
+    force = os.environ.get("XESS_VK", "")
+    exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    if force == "0" or sys.argv[1] != "waitforexitandrun" or not exe.lower().endswith(".exe") or not os.path.isfile(exe):
+        return
+    if not named(found, ("libxess.dll",)) or (force != "1" and "vulkan-1.dll" not in pe_imports(exe)):
+        return
+    ours_vk = os.path.join(VKWRAP, "vulkan-1.dll")
+    s = proton_session()
+    f = os.path.join(os.path.dirname(exe), "vulkan-1.dll")
+    if not os.path.isfile(ours_vk) or not os.path.isfile(os.path.join(LAYER, "libVkLayer_xess_xmx.so")):
+        say("XESS=latest (Vulkan): %s or the layer missing; XeSS stays on DP4a" % ours_vk)
+        return
+    if not s:
+        say("XESS=latest (Vulkan): not run by Proton's script; XeSS stays on DP4a")
+        return
+    if os.path.lexists(f):
+        say("XESS=latest (Vulkan): the game has a vulkan-1.dll of its own next to %s; XeSS stays on DP4a" % exe)
+        return
+    swaps.link(f, ours_vk)
+    s.dlloverrides["vulkan-1"] = "n,b"
+    mesa = s.env.get("MESA", "")
+    if not mesa.startswith("stock"):
+        try:
+            active = open(os.path.join(PKG, "lib", "active")).read().strip()
+        except OSError:
+            active = ""
+        if active and os.path.isdir(os.path.join(PKG, "lib", "mesa-stock-" + active)):
+            s.env["MESA"] = "stock-" + active
+        else:
+            say("XESS=latest (Vulkan): no unpatched Mesa in %s/lib for the layer; XeSS stays on DP4a" % PKG)
+    cur = s.env.get("VK_ADD_LAYER_PATH", "")
+    if LAYER not in cur.split(":"):
+        s.env["VK_ADD_LAYER_PATH"] = LAYER + (":" + cur if cur else "")
+    cur = s.env.get("VK_LOADER_LAYERS_ENABLE", "")
+    if "VK_LAYER_XESS_xmx" not in cur.split(","):
+        s.env["VK_LOADER_LAYERS_ENABLE"] = "VK_LAYER_XESS_xmx" + ("," + cur if cur else "")
+    s.env.setdefault("XMX_LAYER_HELPER", os.path.join(PKG, "tools", "cm-compile.sh"))
+    s.env.setdefault("XMX_IGC_DIR", os.path.join(PKG, "igc"))
+    say("XESS=latest (Vulkan): %s -> XeSS on XMX through vkwrap and the layer (Mesa %s)"
+        % (os.path.relpath(f, game) if f.startswith(game) else f, s.env.get("MESA", "default")))
+
+
 def xess_latest(game, swaps, found=None):
     """found: the files of game_libs(game), when the caller has walked the game folder already"""
     if found is None:
         found = game_libs(game)
     for f in named(found, LIBS):
         if not fresh(f):
+            continue
+        if os.path.basename(f).lower() == "libxess_dx11.dll":
+            xess_dx11(game, f, swaps)
             continue
         sdk = os.path.join(STORE, os.path.basename(f).lower())
         vg, vs = version(f), version(sdk)
@@ -518,6 +628,7 @@ def main():
     if want == "latest":
         if os.path.isfile(os.path.join(STORE, "libxess.dll")):
             xess_latest(game, swaps, found)
+            xess_vulkan(game, swaps, found)
         else:
             say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
                 % (STORE, PKG))

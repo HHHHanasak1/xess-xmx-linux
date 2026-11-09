@@ -43,6 +43,45 @@ and frame generation on XMX, and the XeSS frame generation option appears in the
 Mesa has a second mechanism with the same effect for some games (`force_vk_vendor=-1` in its game profiles);
 `install.sh` overrides it, see [debugging.md](debugging.md).
 
+## XeSS in a D3D11 game
+
+Intel's XeSS for D3D11 (`libxess_dx11.dll`) contains no upscaler: it forwards every call to the XeSS of the Intel
+Windows driver, which does not exist under Proton, so a D3D11 game never gets XeSS (and Intel supports it on Arc
+GPUs only). With `XESS=latest %command%` the game's `libxess_dx11.dll` is replaced by this package's
+(`dx11bridge/`), which implements the same API on the D3D12 XeSS of `libxess.dll`:
+
+* each XeSS context gets a D3D12 device (vkd3d-proton) on the game's GPU, next to the game's D3D11 device (DXVK);
+* per frame, the game's inputs are copied into textures both devices share (depth through a small compute shader into
+  `R32_FLOAT`), a shared fence orders D3D11 -> D3D12 -> D3D11, and the result is copied into the game's output texture;
+* XeSS on the D3D12 side runs on XMX like in a D3D12 game (same shim, same driver).
+
+The copies cost some memory bandwidth per frame, nothing else changes. The same applies to OptiScaler's XeSS in a D3D11
+game (`Dx11Upscaler=xess`), which loads `libxess_dx11.dll` from the game folder. Tested with the XeSS SDK's D3D11
+sample on an Arc B390: XeSS super resolution on XMX through the bridge (`XESS_DX11_TRACE=1` logs each call;
+`XESS_DX11_DUMP=<n>` writes the output of frame `n` next to the DLL).
+
+## XeSS in a Vulkan game
+
+XeSS' Vulkan path runs its XMX kernels only when the Intel Windows driver gives it a few interfaces outside the Vulkan
+registry: a device function for the kernels' descriptors, a properties structure that says the path is available, and
+a shader module structure with the kernels' build options. Wine passes on only what the registry defines, so under
+Proton XeSS logs `Unable to initialize Intel Extensions layer. Using suboptimal implementation.` and runs DP4a.
+
+With `XESS=latest %command%`, for a game whose executable imports `vulkan-1.dll` and that has a `libxess.dll`, the
+package puts its own `vulkan-1.dll` (`vkwrap/`) next to the executable while the game runs. It forwards every Vulkan
+call to Wine's and adds those interfaces: each XeSS kernel goes to `C:\igdext_kernels` like a D3D12 game's (same files,
+same compiled cache), the module XeSS gets is a placeholder, and the descriptors go to the package's Vulkan layer,
+which replaces the placeholder pipelines by the compiled kernels and binds them. The game runs on the package's
+unpatched Mesa with that layer (the layer cannot read the patched driver's shaders); nothing else changes for it.
+`vulkan-1.dll` tells XeSS the path is available only after the layer has answered its self-test on the game's device,
+so without the layer XeSS stays on DP4a. `XESS_VK=1` sets this up for a game whose executable loads Vulkan at run time
+(no import), `XESS_VK=0` leaves it out; `VKWRAP_LOG=1` writes `vkwrap.log` next to the DLL. XeSS skips the Intel path
+whenever the Khronos validation layer is loaded.
+
+Tested with the XeSS SDK's Vulkan sample and a test program (`vkwrap/test/`, low-resolution motion vectors and depth,
+the output checked) on an Arc B390: all 63 kernels on XMX, about 7 ms per frame for 1080p output at Performance. No
+Vulkan game with XeSS has been tested yet.
+
 ## Frame generation in a game without XeSS-FG (OptiScaler)
 
 Forza Horizon 6 ships XeSS super resolution but no XeSS frame generation. This package's `FSR_FG=inject`
