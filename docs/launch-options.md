@@ -57,7 +57,8 @@ driver; the game's stderr then says `xess-xmx: MESA=...: no such driver`. The de
 
 | Launch option | What it does | When |
 |---|---|---|
-| `XESS=latest %command%` | the game runs with the XeSS libraries of Intel's XeSS SDK (3.0.2: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) instead of its own older ones | a game with XeSS older than 2.0.2.68 (below), or one whose XeSS is simply old |
+| `XESS=latest %command%` | the game runs with the XeSS libraries of Intel's XeSS SDK (3.0.2: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) instead of its own older ones | a game with XeSS older than 2.0.2.68 (below), or one whose XeSS is simply old; a **D3D11** game with XeSS (or OptiScaler's XeSS in a D3D11 game): its `libxess_dx11.dll` is replaced by the package's, which runs XeSS on D3D12 ([games.md](games.md#xess-in-a-d3d11-game)); a **Vulkan** game with XeSS: the package's `vulkan-1.dll` and layer run it on XMX ([games.md](games.md#xess-in-a-vulkan-game)) |
+| `XESS_VK=1` / `XESS_VK=0` (with `XESS=latest`) | the Vulkan part of `XESS=latest` for a game whose executable loads Vulkan at run time / never | a Vulkan game with XeSS that stays on DP4a with `XESS=latest` alone; a non-Vulkan game where the Vulkan part gets in the way |
 | `XESS=dp4a %command%` | XeSS without Intel's extension: super resolution on DP4a, frame generation on its generic path (2x only) | comparing XMX against DP4a, or ruling the XMX path out as the cause of a problem |
 | `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | XeSS frame generation produces 3x / 4x (`XESS_FG=2`: 2x), whatever the game's menu offers or chooses; frame generation stays switched on and off in the game | a game that offers only 2x, such as Cyberpunk 2077 |
 | `XESS_FG=5` ... `XESS_FG=8 %command%` | 5x to 8x (the maximum): **experimental**, beyond what Intel supports (see below). All work; 7x and 8x not recommended (latency) | a high refresh rate display that 4x does not fill |
@@ -107,11 +108,13 @@ frames reach the screen unevenly.
 With XeSS frame generation on, the game cannot use exclusive fullscreen (XeSS-FG refuses it) and runs borderless; under
 gamescope that looks the same.
 
-`XESS=latest` changes the game's files only while it runs: each `libxess.dll`, `libxess_dx11.dll`, `libxess_fg.dll`
-and `libxell.dll` in the game's folder that is older than the SDK's is renamed to `<name>.xmx-orig` and replaced by a
-link to the SDK's copy in the package (`xess/`, one copy for all games; `install.sh` downloads it from
-github.com/intel/xess, `tools/get-xess.sh` again). When the game exits, the originals are back, so Steam updates and
-"Verify integrity of game files" see the game as shipped. A file as new as the SDK's or newer is left alone. If the
+`XESS=latest` changes the game's files only while it runs: each `libxess.dll`, `libxess_fg.dll` and `libxell.dll` in
+the game's folder that is older than the SDK's is renamed to `<name>.xmx-orig` and replaced by a link to the SDK's copy
+in the package (`xess/`, one copy for all games; `install.sh` downloads it from github.com/intel/xess,
+`tools/get-xess.sh` again). A file as new as the SDK's or newer is left alone. Each `libxess_dx11.dll` is replaced by
+the package's (`dx11bridge/libxess_dx11.dll`) whatever its version, and gets the SDK's `libxess.dll` next to it if the
+game has none there. When the game exits, the originals are back (an added file is removed again), so Steam updates and
+"Verify integrity of game files" see the game as shipped. If the
 game was killed so hard that nothing could clean up, the next start of that game (with or without `XESS`) puts the
 originals back. The game's stderr (`PROTON_LOG=1`) lists each file with both versions.
 

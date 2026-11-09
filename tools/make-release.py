@@ -13,7 +13,7 @@ version = sys.argv[1]
 outdir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(root, "release")
 name = "xess-xmx-linux-%s" % version
 files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration_dx12.dll", "ffxfg/amd_fidelityfx_upscaler_dx12.dll", "ffxfg/dxgi.dll",
-         "ffxfg/LICENSE.FidelityFX-SDK.txt",
+         "ffxfg/LICENSE.FidelityFX-SDK.txt", "dx11bridge/libxess_dx11.dll", "vkwrap/vulkan-1.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "xmx-stock.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
 # what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py)
@@ -41,6 +41,13 @@ for dll, mark in (("ffxfg/amd_fidelityfx_framegeneration_dx12.dll", b"ffx_xefg s
     p = os.path.join(root, dll)
     if os.path.isfile(p) and mark not in open(p, "rb").read():
         sys.exit("%s is not this project's build (ffxfg/build.bat)" % dll)
+# dx11bridge/libxess_dx11.dll carries Intel's file name; only this project's build (dx11bridge/build.bat) may be packed
+p = os.path.join(root, "dx11bridge/libxess_dx11.dll")
+if os.path.isfile(p) and b"[xess-dx11]" not in open(p, "rb").read():
+    sys.exit("dx11bridge/libxess_dx11.dll is not this project's build (dx11bridge/build.bat)")
+p = os.path.join(root, "vkwrap/vulkan-1.dll")
+if os.path.isfile(p) and b"xess-xmx vkwrap" not in open(p, "rb").read():
+    sys.exit("vkwrap/vulkan-1.dll is not this project's build (vkwrap/build.bat)")
 files += drivers + ["lib/active"]
 # lib/bundled/: SPIRV-Tools and libdisplay-info for systems that lack them, with licenses (tools/build-deps.sh)
 bundled = ["lib/bundled/" + f for f in ("libSPIRV-Tools.so", "libdisplay-info.so.3", "LICENSE.SPIRV-Tools",

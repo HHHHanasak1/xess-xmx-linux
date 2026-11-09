@@ -15,6 +15,11 @@ vkd3d-proton:
   in its launch options ([docs/fsr-frame-generation.md](docs/fsr-frame-generation.md)). A game that has XeSS itself
   should use that: this route can flicker more. With `dxgi.dll`, a game with FSR upscaling and no FSR frame generation
   gets XeSS frame generation as well: `FSR=xess FSR_FG=inject`.
+* `libxess_dx11.dll` gives a **DX11** game XeSS super resolution on XMX (Intel's forwards to the Intel Windows driver
+  and does nothing under Proton): it runs the D3D12 XeSS next to the game's D3D11 device, with `XESS=latest` in the
+  launch options; also for OptiScaler's XeSS in a DX11 game ([docs/games.md](docs/games.md#xess-in-a-d3d11-game)).
+* `vulkan-1.dll` gives a **Vulkan** game's XeSS super resolution the Intel interfaces it looks for, so it runs on XMX
+  through the package's Vulkan layer, also with `XESS=latest` ([docs/games.md](docs/games.md#xess-in-a-vulkan-game)).
 * Experimental: XeSS frame generation for any DX12 game, with motion vectors from optical flow on the final image, like
   a driver-level frame generation (AMD Fluid Motion Frames, NVIDIA Smooth Motion): `OFLOW_FG=1`
   ([docs/optical-flow-frame-generation.md](docs/optical-flow-frame-generation.md)).
@@ -37,7 +42,9 @@ Download the release archive, unpack it somewhere it can stay (to move it: `unin
     ./uninstall.sh   # reverts everything
 
 Every game started from Steam afterwards uses the patched driver, no launch options needed. In the game, select XeSS
-(and XeSS frame generation) on its **DX12** renderer. The first launch compiles the game's kernels, a minute or two
+(and XeSS frame generation) on its **DX12** renderer; a DX11 or Vulkan game with XeSS needs `XESS=latest %command%`
+(above). The
+first launch compiles the game's kernels, a minute or two
 once; after that they come from `~/.cache/xess-xmx`.
 
 What `install.sh` does:

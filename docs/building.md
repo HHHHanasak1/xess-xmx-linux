@@ -44,6 +44,23 @@ fetches them into `ffxfg/inc/` and checks each one by SHA-256. Then, on Windows 
 
 The package keeps them in `ffxfg/` ([fsr-frame-generation.md](fsr-frame-generation.md)).
 
+## XeSS for D3D11 (`dx11bridge/libxess_dx11.dll`) and Vulkan (`vkwrap/vulkan-1.dll`)
+
+Both need the XeSS headers of `ffxfg/get-headers.sh`; on Windows with the same Build Tools (and a Python for `gen.py`,
+which writes the forwarding stubs of `vulkan-1.dll` from `vkwrap/exports.txt`, the export list of Proton's
+`vulkan-1.dll`):
+
+    bash ffxfg/get-headers.sh
+    dx11bridge\build.bat                          -> dx11bridge\build\libxess_dx11.dll
+    python vkwrap\gen.py vkwrap\exports.txt vkwrap\build
+    vkwrap\build.bat                              -> vkwrap\build\vulkan-1.dll
+
+The package keeps them in `dx11bridge/` and `vkwrap/` ([games.md](games.md#xess-in-a-d3d11-game)). Tests, run under
+Proton with the DLL next to them: `dx11bridge\test\build.bat` (`sharetest.exe`: a texture and a fence shared by a D3D11
+and a D3D12 device; `bridgetest.exe`: the bridge with depth, output checked) and `vkwrap\test\build.bat` with
+`VULKAN_HEADERS` set to a Vulkan-Headers checkout (`vktest.exe`: XeSS' Vulkan path through `vulkan-1.dll` and the layer,
+output checked). Each writes `<name>.txt` next to itself.
+
 ## The layer (`layer/libVkLayer_xess_xmx.so`)
 
 Linux with gcc, `glslangValidator` and python3, against Vulkan-Headers 1.4.350 (the distribution's headers may lack

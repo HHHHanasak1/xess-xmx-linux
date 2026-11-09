@@ -172,6 +172,24 @@ jobs:
           cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 ffxfg\dxgi_xefg.cpp /Foffxfg\build\ /Fe:ffxfg\build\dxgi.dll
           dumpbin /exports ffxfg\build\dxgi.dll | findstr /c:"CreateDXGIFactory2" /c:"DXGIGetDebugInterface1"
         shell: cmd
+      # XESS=latest for D3D11 games: XeSS for D3D11 on the D3D12 XeSS (dx11bridge/)
+      - name: libxess_dx11.dll
+        run: |
+          mkdir dx11bridge\build
+          fxc /nologo /T cs_5_0 /E main /O3 /Vn g_depthCopyCs /Fh dx11bridge\build\depth_copy_cs.h dx11bridge\depth_copy.hlsl || exit /b 1
+          rc /nologo /fo dx11bridge\build\version.res dx11bridge\version.rc || exit /b 1
+          cl /nologo /O2 /W3 /MT /LD /EHsc /std:c++17 /D_CRT_SECURE_NO_WARNINGS /I dx11bridge\build dx11bridge\xess_dx11.cpp dx11bridge\build\version.res /Fodx11bridge\build\ /Fe:dx11bridge\build\libxess_dx11.dll /link /DEF:dx11bridge\libxess_dx11.def d3d11.lib d3d12.lib dxgi.lib || exit /b 1
+          dumpbin /exports dx11bridge\build\libxess_dx11.dll | findstr /c:"xessD3D11CreateContext" /c:"xessD3D11Execute" /c:"xessD3D11Init" /c:"xessDestroyContext"
+        shell: cmd
+      # XESS=latest for Vulkan games: vulkan-1.dll with XeSS' Intel interfaces (vkwrap/)
+      - name: vulkan-1.dll
+        run: |
+          mkdir vkwrap\build
+          python vkwrap\gen.py vkwrap\exports.txt vkwrap\build || exit /b 1
+          ml64 /nologo /c /Fovkwrap\build\stubs.obj vkwrap\build\stubs.asm || exit /b 1
+          cl /nologo /O2 /W3 /MT /LD /D_CRT_SECURE_NO_WARNINGS /I vkwrap\build vkwrap\vkwrap.c vkwrap\build\stubs.obj /Fovkwrap\build\ /Fe:vkwrap\build\vulkan-1.dll /link /DEF:vkwrap\build\vulkan-1.def || exit /b 1
+          dumpbin /exports vkwrap\build\vulkan-1.dll | findstr /c:"vkGetDeviceProcAddr" /c:"vkCreateDevice" /c:"vkQueuePresentKHR"
+        shell: cmd
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ffx-xess
@@ -179,6 +197,8 @@ jobs:
             ffxfg/build/amd_fidelityfx_framegeneration_dx12.dll
             ffxfg/build/amd_fidelityfx_upscaler_dx12.dll
             ffxfg/build/dxgi.dll
+            dx11bridge/build/libxess_dx11.dll
+            vkwrap/build/vulkan-1.dll
 
   mesa:
     name: mesa ${{ matrix.name }}
