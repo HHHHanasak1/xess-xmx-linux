@@ -9,7 +9,11 @@
  *  - at every dispatch of such a pipeline, fill the layer's set from vkd3d's descriptor heap - surface k is heap
  *    index push_constant[table k] + element - and bind it;
  *  - answer the shim's self-test placeholder (anv_canary) once its own check on this device has passed, so that the
- *    shim uses XeSS' XMX path only when the layer can serve it.
+ *    shim uses XeSS' XMX path only when the layer can serve it;
+ *  - a Vulkan game with XeSS (vkwrap/, the package's vulkan-1.dll): the same placeholders, made by vkwrap from XeSS'
+ *    CM shader modules, in pipeline layouts without sets; their descriptors come from XeSS' descriptor push, which
+ *    vkwrap passes on as vkCmdPushDescriptorSetKHR with no layout and set XMX_VK_PUSH_SET (kept here, never passed
+ *    on), surface k = the k-th pushed resource. The self-test also writes layer_canary, which vkwrap waits for.
  * Enabled with VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx (and VK_ADD_LAYER_PATH); log: XMX_LAYER_LOG=1 or a path. */
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -102,7 +106,11 @@ struct xinstance {
    X(ResetDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) \
    X(CreatePipelineBinariesKHR) X(GetPipelineBinaryDataKHR) X(DestroyPipelineBinaryKHR) \
    X(CreateQueryPool) X(DestroyQueryPool) X(CmdResetQueryPool) X(CmdWriteTimestamp) X(GetQueryPoolResults) \
-   X(QueuePresentKHR) X(EndCommandBuffer)
+   X(QueuePresentKHR) X(EndCommandBuffer) X(CmdPushDescriptorSetKHR)
+
+/* vkwrap (the vulkan-1.dll of a Vulkan game with XeSS) hands XeSS' vkCmdPushXeSSDescriptorsINTEL over as
+ * vkCmdPushDescriptorSetKHR with no layout and this set number: the descriptors of the next dispatches, for the layer */
+#define XMX_VK_PUSH_SET 0x58455353u   /* "XESS" */
 
 /* XMX_LAYER_PROF: time stamps of a command buffer, two per dispatch of a replaced kernel */
 #define PROF_QUERIES 256
@@ -185,7 +193,8 @@ struct xkernel {
    uint32_t heap_set, heap_binding, heap_count;
    uint32_t nsurf, table_off[24], elem[24];
    bool sampler;
-   int sampler_mode;            /* 0 static, 1 heap, 2 default */
+   bool vkpush;                 /* a Vulkan game's kernel: its descriptors come from the XeSS push (vkwrap), not a heap */
+   int sampler_mode;            /* 0 static, 1 heap, 2 default, 3 the push's */
    VkSampler static_sampler;
    uint32_t sampler_heap_set, sampler_heap_binding, sampler_pc_off;
    char hash[17];
@@ -213,6 +222,13 @@ struct xcmd {
    unsigned npools;
    uint64_t pools_full;         /* bit i: pools[i] ran out since the last reset */
    struct xlayer_set *pool_ls[64];
+   /* the last XeSS descriptor push (Vulkan games, vkwrap): resources in kernel order, the first sampler */
+   uint32_t vk_n;
+   VkDescriptorType vk_type[NSURF_BINDINGS];
+   VkDescriptorImageInfo vk_img[NSURF_BINDINGS];
+   VkDescriptorBufferInfo vk_buf[NSURF_BINDINGS];
+   VkSampler vk_sampler;
+   bool vk_pushed;
    /* XMX_LAYER_PROF (primary command buffers): the time stamps recorded since the last begin */
    bool primary;
    VkQueryPool qp;
@@ -673,6 +689,13 @@ answer_canary(struct xdevice *d, const struct xmx_placeholder *ph)
       fclose(f);
       xlog("self-test placeholder answered (%s)", mark);
    }
+   /* the layer's own mark: vkwrap (Vulkan games) needs the layer, whose descriptor push the patched driver lacks */
+   snprintf(mark, sizeof(mark), "%s/layer_canary", d->dir);
+   f = fopen(mark, "w");
+   if (f) {
+      fprintf(f, "xess-xmx layer: XeSS' Vulkan descriptor push served\n");
+      fclose(f);
+   }
 }
 
 /* a kernel the layer cannot serve: as with a failed compile, compile_failed.txt makes the shim use XeSS' generic
@@ -762,10 +785,21 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
          kr->sampler_heap_binding = l->sampler_heap_binding;
       }
    }
+   /* XeSS' Vulkan path (a Vulkan game, through vkwrap): a layout with no sets, the descriptors come from its push */
+   const bool vkpush = pl->nsets == 0;
+   kr->vkpush = vkpush;
    uint32_t base = ~0u;
    if (nsurf && pl->push_size >= 4 * nsurf)
       base = pl->push_size - 4 * nsurf;
-   if (kr->sampler) {
+   if (vkpush) {
+      kr->sampler_mode = 3;
+      if (nsurf > NSURF_BINDINGS) {
+         xlog("kernel %s: %u surfaces, more than the layer's %u bindings", ph->hash, nsurf, NSURF_BINDINGS);
+         free(kr);
+         free(img);
+         return VK_NULL_HANDLE;
+      }
+   } else if (kr->sampler) {
       if (nstatic) {
          kr->sampler_mode = 0;
       } else if (kr->sampler_heap_set != ~0u && pl->push_size >= 4 * (nsurf + 1)) {
@@ -777,7 +811,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
          kr->sampler_mode = 2;
       }
    }
-   if (nsurf && (!heap || base == ~0u || nsurf > 24)) {
+   if (!vkpush && nsurf && (!heap || base == ~0u || nsurf > 24)) {
       xlog("kernel %s: no vkd3d-style descriptor heap in the layout (%u sets) - VKD3D_DISABLE_EXTENSIONS="
            "VK_EXT_descriptor_buffer set?", ph->hash, pl->nsets);
       free(kr);
@@ -786,7 +820,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    }
    kr->nsurf = nsurf;
    bool pc_ok = kr->sampler_mode != 1 || kr->sampler_pc_off <= XMX_PC_BYTES - 4;
-   for (uint32_t i = 0; i < nsurf; i++) {
+   for (uint32_t i = 0; i < nsurf && !vkpush; i++) {
       kr->table_off[i] = base + 4 * xmx_rd32(k.hdr + XMX_H_TABLE_IDX + 4 * i);
       kr->elem[i] = xmx_rd32(k.hdr + XMX_H_ELEM + 4 * i);
       pc_ok &= kr->table_off[i] <= XMX_PC_BYTES - 4;
@@ -807,6 +841,10 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    VkDescriptorType types[12];
    uint32_t ntypes = 4;
    memcpy(types, deftypes, sizeof(deftypes));
+   if (vkpush) {   /* XeSS' push also has buffers */
+      types[ntypes++] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      types[ntypes++] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+   }
    for (uint32_t i = 0; heap && i < heap->nmut; i++) {
       bool have = false;
       for (uint32_t j = 0; j < ntypes && !have; j++)
@@ -864,10 +902,14 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    xmap_put(&pipelines, HKEY(p), kr);
    atomic_fetch_add(&replaced_count, 1);
    atomic_fetch_add(&pipe_epoch, 1);
-   xlog("kernel %s: replaced (%u surfaces, heap set %u binding %u, sampler %s, layer set %u)", ph->hash, nsurf,
-        kr->heap_set, kr->heap_binding,
-        !kr->sampler ? "none" : kr->sampler_mode == 0 ? "static" : kr->sampler_mode == 1 ? "heap" : "default",
-        pl->nsets);
+   if (vkpush)
+      xlog("kernel %s: replaced (%u surfaces from XeSS' Vulkan push, sampler %s, layer set 0)", ph->hash, nsurf,
+           kr->sampler ? "pushed" : "none");
+   else
+      xlog("kernel %s: replaced (%u surfaces, heap set %u binding %u, sampler %s, layer set %u)", ph->hash, nsurf,
+           kr->heap_set, kr->heap_binding,
+           !kr->sampler ? "none" : kr->sampler_mode == 0 ? "static" : kr->sampler_mode == 1 ? "heap" : "default",
+           pl->nsets);
    free(code);
    free(img);
    return p;
@@ -1110,6 +1152,7 @@ cmd_reset(struct xcmd *c)
    prof_harvest(c);
    c->in_run = false;
    c->bound = NULL;
+   c->vk_pushed = false;
    memset(c->sets, 0, sizeof(c->sets));
    for (unsigned i = 0; i < c->npools; i++)
       c->dev->ResetDescriptorPool(c->dev->handle, c->pools[i], 0);
@@ -1237,6 +1280,44 @@ x_CmdPushConstants(VkCommandBuffer cb, VkPipelineLayout layout, VkShaderStageFla
    d->CmdPushConstants(cb, layout, stages, off, size, data);
 }
 
+/* XeSS' descriptor push in a Vulkan game (vkwrap, XMX_VK_PUSH_SET): kept for the next dispatches, never passed on.
+ * Samplers first, then the resources in the order of the kernel's surfaces, one descriptor per write. */
+static VKAPI_ATTR void VKAPI_CALL
+x_CmdPushDescriptorSetKHR(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, uint32_t set,
+                          uint32_t n, const VkWriteDescriptorSet *w)
+{
+   if (set != XMX_VK_PUSH_SET || layout != VK_NULL_HANDLE) {
+      struct xdevice *d = dev_of(cb);
+      if (d->CmdPushDescriptorSetKHR)
+         d->CmdPushDescriptorSetKHR(cb, bp, layout, set, n, w);
+      return;
+   }
+   struct xcmd *c = cmd_of(cb);
+   if (!c)
+      return;
+   c->vk_n = 0;
+   c->vk_sampler = VK_NULL_HANDLE;
+   for (uint32_t i = 0; i < n; i++) {
+      const VkDescriptorType t = w[i].descriptorType;
+      if (t == VK_DESCRIPTOR_TYPE_SAMPLER) {
+         if (!c->vk_sampler && w[i].pImageInfo)
+            c->vk_sampler = w[i].pImageInfo->sampler;
+         continue;
+      }
+      if (c->vk_n == NSURF_BINDINGS)
+         break;
+      const uint32_t k = c->vk_n++;
+      c->vk_type[k] = t;
+      if (t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+         if (w[i].pBufferInfo)
+            c->vk_buf[k] = w[i].pBufferInfo[0];
+      } else if (w[i].pImageInfo) {
+         c->vk_img[k] = w[i].pImageInfo[0];
+      }
+   }
+   c->vk_pushed = true;
+}
+
 /* a descriptor set of the layer's layout for this command buffer; a pool that ran out is not tried again until the
  * command buffer is reset */
 static VkDescriptorSet
@@ -1280,6 +1361,32 @@ prepare_dispatch(struct xcmd *c)
 {
    struct xkernel *k = c->bound;
    struct xdevice *d = c->dev;
+   if (k->vkpush) {
+      /* a Vulkan game: surface i is the i-th resource of XeSS' last push (vkCmdPushXeSSDescriptorsINTEL) */
+      if (!c->vk_pushed || c->vk_n < k->nsurf) {
+         static atomic_bool said;
+         if (!atomic_exchange(&said, true))
+            xlog("kernel %s: dispatched with %u pushed resources for %u surfaces: dispatches left out", k->hash,
+                 c->vk_pushed ? c->vk_n : 0, k->nsurf);
+         return false;
+      }
+      VkDescriptorSet s = cmd_alloc_set(c, k->ls);
+      if (!s)
+         return false;
+      VkWriteDescriptorSet w[NSURF_BINDINGS + 1];
+      for (uint32_t i = 0; i < k->nsurf; i++) {
+         const bool buf = c->vk_type[i] == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                          c->vk_type[i] == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+         w[i] = (VkWriteDescriptorSet){ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, s, i, 0, 1, c->vk_type[i],
+                                        buf ? NULL : &c->vk_img[i], buf ? &c->vk_buf[i] : NULL, NULL };
+      }
+      VkDescriptorImageInfo sii = { c->vk_sampler && k->sampler ? c->vk_sampler : d->default_sampler };
+      w[k->nsurf] = (VkWriteDescriptorSet){ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, 0, s, SAMPLER_BINDING, 0, 1,
+                                            VK_DESCRIPTOR_TYPE_SAMPLER, &sii, NULL, NULL };
+      d->UpdateDescriptorSets(d->handle, k->nsurf + 1, w, 0, NULL);
+      d->CmdBindDescriptorSets(c->handle, VK_PIPELINE_BIND_POINT_COMPUTE, k->layout, k->set_index, 1, &s, 0, NULL);
+      return true;
+   }
    const VkDescriptorSet heap = k->heap_set < 8 ? c->sets[k->heap_set] : VK_NULL_HANDLE;
    if (k->nsurf && !heap) {
       static atomic_bool said;
@@ -1672,7 +1779,8 @@ x_DestroyInstance(VkInstance instance, const VkAllocationCallbacks *alloc)
    HOOK(CreatePipelineLayout); HOOK(DestroyPipelineLayout); HOOK(AllocateCommandBuffers); \
    HOOK(FreeCommandBuffers); HOOK(BeginCommandBuffer); HOOK(ResetCommandBuffer); HOOK(ResetCommandPool); \
    HOOK(DestroyCommandPool); HOOK(CmdBindPipeline); HOOK(CmdBindDescriptorSets); HOOK(CmdPushConstants); \
-   HOOK(CmdDispatch); HOOK(CmdDispatchBase); HOOK(CmdDispatchIndirect); HOOK(QueuePresentKHR); HOOK(EndCommandBuffer)
+   HOOK(CmdDispatch); HOOK(CmdDispatchBase); HOOK(CmdDispatchIndirect); HOOK(QueuePresentKHR); HOOK(EndCommandBuffer); \
+   HOOK(CmdPushDescriptorSetKHR)
 
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 xmx_GetDeviceProcAddr(VkDevice device, const char *name)
