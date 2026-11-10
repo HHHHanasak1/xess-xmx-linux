@@ -86,9 +86,9 @@ and make it the default driver (`tools/switch-driver.sh`, see the README). If th
 script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
-    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc3  # or a given one
+    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0      # or a given one
 
-There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0-rc3 (first
+There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0 (first
 contributed in #19, for rc1); other versions need a rebase. Both are built from the release tarballs, not the git tags: upstream
 deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branched again. By hand, for 26.1.2 (for
 26.3: that tarball and that folder, the same meson options):
@@ -147,20 +147,21 @@ a zero group count, which the Vulkan specification makes a no-op, on every gener
 The 26.3 series does the same; its `0001` also creates the general state pool (which holds the walker payload) on the
 direct-descriptor path, where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw branch.
 
-`0004` (26.3 only) is a Mesa bug fix, not part of the XMX feature. Mesa's drirc turns on
-`anv_emulate_divergent_barriers` for Resident Evil Requiem and its demo, Pragmata and Monster Hunter Stories 3. That
-lowering only works with brw, and since Jay is the default on Xe2 and Xe3 those games crash at start with a NULL read
-in `jay_opt_propagate_forwards`. The patch compiles the workgroup-stage shaders of those games with brw and leaves Jay
-on for everything else. Drop it once the Mesa tag the series is based on includes the fix.
+There is no `0004` any more. It was a Mesa bug fix for Resident Evil Requiem and its demo, Pragmata and Monster
+Hunter Stories 3: Mesa's drirc turns on `anv_emulate_divergent_barriers` for them, a lowering that only works with
+brw, so with Jay (the default on Xe2 and Xe3) they crashed at start in `jay_opt_propagate_forwards`. Mesa 26.3's
+drirc now pairs that option with `anv_disable_jay` for the same games, which compiles them with brw; a drirc without
+either option (SteamOS ships 26.1.2's, which has no ANV entries for them) never turns the lowering on. The patch was
+dropped with 26.3.0.
 
-`0006` (26.3 only) is a Mesa bug fix too. The cooperative matrix lowering leaves function_temp variables behind (in a
+`0006` (26.3 only) is a Mesa bug fix, not part of the XMX feature. The cooperative matrix lowering leaves function_temp variables behind (in a
 compute shader of Cyberpunk 2077, dead stores into its vectors) and runs nothing that removes them, so the derefs reach
 Jay, which has no case for them: an `UNREACHABLE` that a release build turns into a jump into unrelated code. Whether
 that crashes depends on the build (26.3.0-rc3 with this series built with GCC 15 crashes in `jay_emit_fb_write` while
 Cyberpunk 2077 compiles the shader; GCC 16 happened not to); an assert build stops at "All derefs should've been
 lowered". The patch lowers them to SSA and removes the dead ones right after the lowering.
 
-`0005` (both series; there is no `0004` in the 26.1.2 one) handles CM kernels whose sampler is a descriptor table
+`0005` (both series) handles CM kernels whose sampler is a descriptor table
 rather than a static sampler, as in the FSR 4 on XMX plugin ([games.md](games.md)). vkd3d puts one push-constant
 dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the
 surface tables end one dword earlier; the sampler state is copied from vkd3d's sampler heap. XeSS uses static

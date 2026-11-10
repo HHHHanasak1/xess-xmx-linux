@@ -22,14 +22,14 @@ if [ -z "$VER" ]; then
     [ -f "$f" ] && VER=$(grep -a -o -m1 'Mesa [0-9]*\.[0-9]*\.[0-9]*' "$f" | head -1 | cut -d' ' -f2) && [ -n "$VER" ] && break
   done
 fi
-[ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0-rc3)"; exit 1; }
-[[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "!! '$VER' is not a Mesa version (26.1.2, 26.3.0-rc3)"; exit 1; }
+[ -n "$VER" ] || { echo "could not detect the system's Mesa version; pass it: $0 26.1.2 (or 26.3.0)"; exit 1; }
+[[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "!! '$VER' is not a Mesa version (26.1.2, 26.3.0)"; exit 1; }
 echo "== Mesa $VER"
 # the tarball's sha256: the versions CI builds (.github/workflows/build.yml, mesa job - keep both lists the same);
 # another version needs XMX_MESA_SHA256=<sha256 from Mesa's release notes, docs/relnotes/<version>.rst>
 case "$VER" in
   26.1.2) SHA=bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0 ;;
-  26.3.0-rc3) SHA=3600c01f11439628d0a85de5ed9cb76f297d13e9783cdeecb91aa685055c9942 ;;
+  26.3.0) SHA=91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a ;;
   *) SHA="" ;;
 esac
 [ -n "${XMX_MESA_SHA256:-}" ] && SHA=$XMX_MESA_SHA256

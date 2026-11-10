@@ -87,7 +87,7 @@ launchers) installs the shim into that prefix and writes the variables to `~/.co
 
 The archive carries the patched driver for two Mesa versions; both run the same XeSS kernels:
 
-* **Mesa 26.3.0-rc3** (the default): its new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own
+* **Mesa 26.3.0** (the default): its new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own
   shaders much faster. Patches by @kas5852 (#19). A release candidate: tested in fewer games so far.
 * **Mesa 26.1.2**: the driver of the earlier releases, the same version as SteamOS' own.
 
@@ -106,7 +106,7 @@ check before a session (for example after a system update), the other one become
 * An Intel GPU with XMX on the `xe` or `i915` kernel driver: Xe3 (Panther Lake; tested on an Arc B390), Xe2
   (Battlemage; tested by a user on an Arc B580, #16) or Xe-HPG (Alchemist; tested by a user on an Arc A310, #28).
   Lunar Lake and Arrow Lake-H are detected but untested. Xe-LPG (Meteor Lake) has no XMX units.
-* The drivers in the archive (Mesa 26.1.2 and 26.3.0-rc3 with the patches) replace the system's 64-bit ANV for the user
+* The drivers in the archive (Mesa 26.1.2 and 26.3.0 with the patches) replace the system's 64-bit ANV for the user
   session only. For another Mesa version see [docs/building.md](docs/building.md).
 * The drivers are built on Arch Linux and need glibc 2.38 and libwayland-client 1.24 or newer. SPIRV-Tools and
   libdisplay-info 0.3 come with the archive (`lib/bundled/`) for systems that lack them. Checked to load on SteamOS,
@@ -187,8 +187,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
-                                  patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
-                                  RE Engine games, and 0006, a Jay crash fix for cooperative matrix shaders
+                                  patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
+                                  cooperative matrix shaders
     layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on the system's unpatched ANV, per game (experimental)
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
