@@ -1,134 +1,157 @@
 # Drivers
 
-The release archive includes three Mesa **ANV** drivers (Intel's open-source Vulkan driver). They replace the system's 64-bit Intel Vulkan driver for your user session only, leaving other GPUs and 32-bit games on the system drivers. All three run the same XeSS kernels on the GPU's XMX (matrix) units.
+The release archive includes three builds of **Mesa ANV** (Intel's open-source Vulkan driver) in `lib/mesa-<version>/`. All three run the same Intel XeSS C-for-Metal (CM) kernels.
 
-## Drivers in the archive
+When a game starts, the session's Vulkan ICD (Installable Client Driver, the file the Vulkan loader reads to find a GPU driver) points to `lib/libvulkan_intel.so` (built from `icd/xmx-icd.c`). That file is a small forwarding ICD that loads one of the three drivers based on your session mode, `lib/active`, or the `MESA` launch option.
 
-| Driver | Path in archive | Default on | Notes |
-|---|---|---|---|
-| **Mesa 26.3.0 unpatched** + layer | `lib/mesa-stock-26.3.0/` | Xe3 (Panther Lake) | Mesa as upstream ships it. This project's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`) injects the XMX kernels from outside the driver. Performs like patched 26.3 ([performance.md](performance.md)) and needs no patches carried across Mesa versions. |
-| **Mesa 26.3.0 patched** | `lib/mesa-26.3.0/` | Xe-HPG (Alchemist), Xe2 (Battlemage) | The layer supports Xe3 only, and 256-register kernels on Xe-HPG and Xe2 need Large GRF Mode (a hardware switch that doubles the registers per thread), which only the driver can toggle (`patches/0003`). Patches by @kas5852 (#19). |
-| **Mesa 26.1.2 patched** | `lib/mesa-26.1.2/` | Not a default; used per game (`MESA=26.1`) or with `tools/switch-driver.sh`, and the session check switches to the other patched driver when the default one breaks | The driver from earlier releases, matching the Mesa version SteamOS ships. |
+For initial installation and `xmx-stock.sh` (running a single game on your Linux distribution's own driver), see [install.md](install.md). For building the drivers by hand and maintaining the patch series, see [dev/building.md](dev/building.md).
 
-On both 26.3 drivers, Mesa's new shader compiler **Jay** is the default on Xe2 and Xe3. Jay makes the games' own shaders run much faster.
+---
 
-The session's Vulkan driver list (`VK_DRIVER_FILES` in `~/.config/environment.d/50-xess-xmx.conf`) points at `lib/libvulkan_intel.so` (referenced via `run/intel_icd.json`). This file is a small loader (an ICD, Installable Client Driver) built from `icd/xmx-icd.c`. When a game starts, it loads the driver selected by `MESA`, or the default version in `lib/active`, or any package driver that loads.
+## The Three Drivers in the Archive
 
-## Choosing a driver
+| Driver in `lib/` | Description | How it is selected |
+|---|---|---|
+| **Mesa 26.3.0 unpatched** (`lib/mesa-stock-26.3.0/`) | Upstream Mesa 26.3.0 as Mesa ships it, with no patches. This project's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`) puts the XMX kernels in from outside the driver. It performs like the patched 26.3.0 driver ([performance.md](performance.md)) and needs no patch carried across Mesa versions. | Session default on **Xe3** (`0xB080`–`0xB08F` Panther Lake, `0xFD80`–`0xFD8F` Wildcat Lake) |
+| **Mesa 26.3.0 patched** (`lib/mesa-26.3.0/`) | Mesa 26.3.0 with `patches/mesa-26.3/` applied (initial 26.3 patches by @kas5852, #19). Used on Xe-HPG and Xe2 because `VK_LAYER_XESS_xmx` serves Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`) only, and 256-register CM kernels on Xe-HPG and Xe2 require hardware Large GRF Mode, which only the driver can switch (`patches/0003`, contributed in #16 for Xe2 and extended to Xe-HPG in #31, #32, and #39). | Session default on **Xe-HPG** (Alchemist), **Xe2** (Battlemage, Lunar Lake), and any other non-Xe3 PCI ID |
+| **Mesa 26.1.2 patched** (`lib/mesa-26.1.2/`) | Mesa 26.1.2 with `patches/` applied. This is the driver from earlier releases and is the same Mesa version as SteamOS's own. | Per game (`MESA=26.1`), chosen with `tools/switch-driver.sh 26.1`, or switched to by the session check if 26.3.0 fails to load |
 
-### For the whole session
+On both 26.3.0 drivers, Mesa's new shader compiler backend **Jay** (the default on Xe2 and Xe3) makes the games' own shaders much faster ([performance.md](performance.md)).
 
-`install.sh` picks the session's driver based on your GPU: unpatched 26.3 + layer on Xe3, patched 26.3 on Xe-HPG and Xe2.
+### Library Requirements
 
-To override this choice for the whole session, run `install.sh` with `XMX_DRIVER` and then log out and back in (or reboot):
+The prebuilt drivers in the archive are compiled on Arch Linux and require **glibc 2.38** and **libwayland-client 1.24** or newer:
+* Verified to load on SteamOS, Arch Linux, openSUSE Tumbleweed, Void Linux, Fedora 43, and Ubuntu 25.10.
+* Debian 13 and Ubuntu 24.04 ship `libwayland-client` 1.23 (`undefined symbol: wl_fixes_interface`); on those distributions, build a driver against your system's libraries with `tools/rebuild-driver.sh` ([below](#rebuilding-a-driver-after-a-system-update)).
+* `libSPIRV-Tools.so` and `libdisplay-info.so.3` are bundled in `lib/bundled/` for distributions that lack them or name them differently.
 
-```sh
-XMX_DRIVER=patched ./install.sh   # use the patched driver even on Xe3
-XMX_DRIVER=stock ./install.sh     # use the unpatched 26.3 driver + layer
-XMX_DRIVER=auto ./install.sh      # go back to the automatic choice by GPU
+---
+
+## Choosing a Driver
+
+### 1. Session-Wide Driver Mode (`XMX_DRIVER`)
+
+When you run `./install.sh`, it checks your GPU's PCI device ID (`(device_id & 0xfff0) == 0xb080` or `0xfd80`, i.e. `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`, the same Xe3 IDs that `VK_LAYER_XESS_xmx`'s self-test serves; the shim's GPU table in `GpuInfo.cpp` also covers `0xB090`–`0xB0FF`, which use patched mode) and selects the session mode automatically:
+* **`stock` mode (default on Xe3 `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`):** Sets `MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER`, and `XMX_IGC_DIR` in `~/.config/environment.d/50-xess-xmx.conf`.
+* **`patched` mode (default on Xe-HPG, Xe2, and any other PCI ID):** Leaves `MESA` unset in the session environment so `lib/libvulkan_intel.so` loads the patched driver named in `lib/active` (`26.3.0` by default).
+
+To override the automatic choice and save it in `run/driver-mode` for future runs of `install.sh`, run one of the following and then **log out and back in** (or reboot):
+
+```bash
+XMX_DRIVER=patched ./install.sh   # use the patched driver named in lib/active for the whole session
+XMX_DRIVER=stock ./install.sh     # use stock-26.3.0 + VK_LAYER_XESS_xmx (on Xe-HPG and Xe2 the layer declines its self-test and XeSS runs on DP4a)
+XMX_DRIVER=auto ./install.sh      # remove run/driver-mode and return to the automatic choice by GPU
 ```
 
-Your choice is saved for later runs of `install.sh`.
+### 2. Switching the Default Patched Driver (`tools/switch-driver.sh`)
 
-### Switching between patched drivers
+In a patched session, `lib/active` controls which driver in `lib/mesa-<version>/` is the default. Use `tools/switch-driver.sh` to list the drivers or switch the default:
 
-When your session uses the patched drivers, `tools/switch-driver.sh` lists the available drivers and changes the default without logging out. Changes take effect the next time you start a game.
-
-1. List the drivers in the package (`*` marks the active default):
-
-   ```sh
-   tools/switch-driver.sh
-   ```
-
-2. Set a different version as the default (the script checks that the driver loads first):
-
-   ```sh
-   tools/switch-driver.sh 26.1
-   ```
-
-### For one game
-
-Set `MESA` in the game's Steam launch options (Game -> Properties -> General -> Launch options). It takes effect on the next launch with no re-login:
-
-```sh
-MESA=26.1 %command%         # run this game on patched Mesa 26.1.2
-MESA=26.3 %command%         # run this game on patched Mesa 26.3
+```bash
+./tools/switch-driver.sh          # list available drivers in lib/ (* marks the default in lib/active)
+./tools/switch-driver.sh 26.1     # make patched Mesa 26.1.2 the default
+./tools/switch-driver.sh 26.3     # make patched Mesa 26.3.0 the default
 ```
 
-A version prefix (`26.1`, `26.3`) or a full version (`26.1.2`) works. The game's stderr logs `xess-xmx: using the Mesa ... driver`. If you give an unknown version, it logs `xess-xmx: MESA=...: no such driver` and falls back to the default driver.
+A version prefix (`26.1`, `26.3`, `26.1.2`) is enough: the script picks an exact match first, then a final release before a release candidate, then the newest matching version. Before updating `lib/active`, `tools/switch-driver.sh` runs `tools/session-check.sh --dry-run` on the chosen driver; if the check fails, nothing is changed.
 
-Use `MESA=26.1 %command%` if a game misbehaves on Mesa 26.3 only, and report the issue. If a rendering bug or crash goes away with `MESA=26.1`, you can test whether the Jay compiler is the cause by running the game on 26.3 with the old compiler instead:
+Switching with `tools/switch-driver.sh` takes effect at the next game start—no re-login is needed. Running games keep the driver they already loaded.
 
-```sh
+*(Note: on Xe3 in the default `stock` mode, `~/.config/environment.d/50-xess-xmx.conf` exports `MESA=stock-26.3.0`, which overrides `lib/active`. On Xe3, either set `MESA=` per game below or switch the session to `XMX_DRIVER=patched ./install.sh` first.)*
+
+### 3. Per-Game Driver Choice (`MESA` and `INTEL_DEBUG`)
+
+To pick a patched driver for a single game, put `MESA=<version>` in its Steam launch options (**Properties → General → Launch options**). This takes effect on the next game start without logging out and overrides both `lib/active` and the session's `MESA`:
+
+```text
+MESA=26.1 %command%   # run this game on the patched Mesa 26.1.2 driver
+MESA=26.3 %command%   # run this game on the patched Mesa 26.3.0 driver
+```
+
+When `MESA` is set, `lib/libvulkan_intel.so` prints `xess-xmx: using the Mesa <version> driver` to the game's standard error (`PROTON_LOG=1`). If no matching driver exists in `lib/`, it prints `xess-xmx: MESA=...: no such driver in ..., using the default` and loads the default driver.
+
+If a game has a rendering bug or crash on Mesa 26.3 that goes away with `MESA=26.1 %command%`, you can test whether Mesa 26.3's Jay shader compiler is the cause by running the game's own shaders with the old compiler instead of Jay (XeSS kernels are not affected):
+
+```text
 INTEL_DEBUG=no-jay %command%
 ```
 
-This compiles the game's own shaders with the old compiler while leaving XeSS unaffected.
+To run one game on your distribution's own unpatched system Mesa ANV instead of any driver in `lib/`, use `/path/to/package/xmx-stock.sh %command%` ([install.md](install.md), [launch-options.md](launch-options.md)).
 
-### Using the system's own driver for one game
+---
 
-To run a single game on your distribution's own unpatched Mesa ANV with `VK_LAYER_XESS_xmx` (experimental; supports Mesa 26.1, 26.3, and 27.0), put the `xmx-stock.sh` wrapper in the game's launch options:
+## Pre-Session Driver Check and Automatic Fallback
 
-```sh
-/path/to/package/xmx-stock.sh %command%
-```
+Because `install.sh` puts only the package's 64-bit Intel ICD (`run/intel_icd.json`) into `VK_DRIVER_FILES`, a system update that broke the driver's library dependencies would otherwise leave the desktop session (including `gamescope` on SteamOS) without Vulkan on the Intel GPU.
 
-See [install.md](install.md) and [launch-options.md](launch-options.md) for details.
+To prevent this, `install.sh` enables the systemd user unit `xess-xmx-check.service`, which runs `~/.config/xess-xmx/session-check.sh` (calling `tools/session-check.sh`) before every graphical session (`graphical-session-pre.target`, `gamescope-session.service`, `gamescope-session-plus@steam.service`, `steam-launcher.service`, `plasma-workspace.target`).
 
-## Session check and automatic fallback
+### What `session-check.sh` Does
 
-`install.sh` enables a systemd user service, `xess-xmx-check.service` (which runs `~/.config/xess-xmx/session-check.sh`, a copy of `tools/session-check.sh`). Before each graphical session starts, it checks that the package's active driver loads and finds the GPU.
+1. **Populates `lib/deps/` for the Steam Linux Runtime:**
+   Proton games run inside the Steam Linux Runtime (`pressure-vessel`) container, which hides the host's `/usr` and does not include `libSPIRV-Tools.so` or `libdisplay-info.so.3` unless another host Vulkan driver (such as `radeon` or `nouveau`) pulls them in. Some distributions also name SPIRV-Tools `libSPIRV-Tools-shared.so` (Void Linux) or `libSPIRV-Tools-<version>.so` (openSUSE). Every driver in the package has `RUNPATH` set to `$ORIGIN/../deps`. At each login, `session-check.sh` copies the host's 64-bit `libSPIRV-Tools.so` and `libdisplay-info.so.3`—or the archive's fallback builds from `lib/bundled/` if the host lacks them—into `lib/deps/`.
+2. **Cleans stale cached `.cmk` kernels:**
+   Computes the current compiler toolchain generation hashes for the patched drivers and stores them in `~/.cache/xess-xmx/kernel-gens`. If an update changed the toolchain generation, it removes the patched drivers' old `*_*_<old_gen>.cmk` files from `~/.cache/xess-xmx/kernels/` (the layer's `.cml` files are not removed; new ones get new names).
+3. **Verifies that the driver loads and finds the GPU:**
+   * Checks that `run/intel_icd.json` and the library it points to exist (and in `stock` mode, that `layer/libVkLayer_xess_xmx.so` exists).
+   * Loads the active driver (`lib/mesa-<active>/libvulkan_intel.so` in patched mode, or `lib/mesa-stock-<version>/libvulkan_intel.so` in stock mode) in Python with `RTLD_NOW` so every dynamic symbol must resolve.
+   * Runs `vulkaninfo --summary` (if `vulkaninfo` is installed) with `VK_DRIVER_FILES` set to the package's ICD and checks that `deviceName` is found.
+4. **Switches or falls back on failure:**
+   * **In `patched` mode:** If the active patched driver fails to load or enumerate the GPU, `session-check.sh` switches to the other patched driver of the package (`lib/mesa-26.1.2/` or `lib/mesa-26.3.0/`) via `tools/switch-driver.sh`. If it passes, it becomes the new default in `lib/active` automatically; if none loads, the session falls back to the system's drivers.
+   * **In `stock` mode, when no patched driver loads, or if the package folder was deleted or moved without running `uninstall.sh`:** The script falls back to the system's drivers by overwriting `VK_DRIVER_FILES` in the user systemd environment with the system's stock Vulkan ICDs (`/usr/share/vulkan/icd.d/*.json`, etc.) and clearing `VKD3D_DISABLE_EXTENSIONS`, `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER`, `MESA`, `VK_ADD_LAYER_PATH`, and `VK_LOADER_LAYERS_ENABLE`. Your session and games start normally on the system's stock Intel driver, and the shim's self-test puts XeSS on its generic DP4a path.
 
-* **If a system update broke the active patched driver:** the check switches the default to the other patched driver in the package automatically.
-* **If both patched drivers fail (or if the stock session driver fails):** the session falls back to your distribution's stock Vulkan drivers, and XeSS runs on its generic DP4a path. The same fallback happens if you delete or move the package folder without running `install.sh` from the new location.
-* **Host library dependencies:** the driver requires `libSPIRV-Tools.so` and `libdisplay-info.so.3`, which the Steam Linux Runtime container does not include. During the check, the script copies both from the host into `lib/deps/` (the driver's `RUNPATH` is `$ORIGIN/../deps`), so the driver can load inside the game's container. If the host lacks them or names them differently (`libSPIRV-Tools-shared.so` on Void Linux, `libSPIRV-Tools-<version>.so` on openSUSE), the check uses the copies bundled in `lib/bundled/`.
+### Checking Driver Status
 
-To inspect the result of the last check or run it by hand:
+`session-check.sh` writes its result (`ok` or `FAILED`, the driver path, the Mesa version string, and notes if the host's Mesa version differs or if `/usr/share/drirc.d` is not read) to `~/.cache/xess-xmx/driver-status`:
 
-```sh
+```bash
 cat ~/.cache/xess-xmx/driver-status
 journalctl --user -u xess-xmx-check
-tools/session-check.sh --dry-run      # reports status and populates lib/deps/ without changing the active driver
 ```
 
-When invoked directly, `tools/session-check.sh` also accepts `XMX_CHECK_LIB` and `XMX_CHECK_ICD` in its environment to test a specific driver library or ICD file.
+You can also run the check manually without changing the session environment (this also refreshes `lib/deps/`):
 
-## Rebuilding a driver after a system update
-
-The prebuilt drivers in the archive are compiled on Arch Linux and require **glibc 2.38** and **libwayland-client 1.24** or newer. They load as-is on SteamOS, Arch, openSUSE Tumbleweed, Void Linux, Fedora 43, and Ubuntu 25.10.
-
-You need to rebuild the driver on your machine in two cases:
-
-* A system update (such as a SteamOS update) upgraded system libraries so that neither prebuilt driver loads anymore (`~/.cache/xess-xmx/driver-status` says `FAILED`).
-* Your distribution ships a `libwayland-client` older than 1.24, such as Debian 13 or Ubuntu 24.04 (`driver-status` or the Proton log shows `undefined symbol: wl_fixes_interface`).
-
-`tools/rebuild-driver.sh` builds a patched driver for your system:
-
-1. Downloads the Mesa release tarball from `archive.mesa3d.org`.
-2. Applies the project's patches (`patches/mesa-26.3/` for 26.3, `patches/` for 26.1.2).
-3. Compiles `libvulkan_intel.so` and tests it the same way the session check does.
-4. Installs it to `lib/mesa-<version>/libvulkan_intel.so` and makes it the default driver via `tools/switch-driver.sh`.
-
-If the patches do not apply to the target Mesa version, the script stops without changing anything and tells you. The patch series are written for Mesa 26.1.2 and 26.3.0; other versions need a rebase (see [dev/building.md](dev/building.md)).
-
-### On desktop Linux
-
-Install Mesa's build dependencies for your distribution, then run:
-
-```sh
-/path/to/package/tools/rebuild-driver.sh          # builds for the system's installed Mesa version
-/path/to/package/tools/rebuild-driver.sh 26.3.0   # or specify a version (26.3.0 or 26.1.2)
+```bash
+./tools/session-check.sh --dry-run
 ```
 
-### On SteamOS (using distrobox)
+---
 
-SteamOS does not include a compiler. Run the script inside an Arch Linux distrobox container that has the Mesa build dependencies installed:
+## Rebuilding a Driver After a System Update
 
-```sh
-distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh          # the system's Mesa version
-distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0   # or a given version
+If a system update (such as a new SteamOS update) breaks the prebuilt drivers in the archive—or if your distribution ships `libwayland-client` older than 1.24 (Debian 13, Ubuntu 24.04)—use `tools/rebuild-driver.sh` to build a patched driver against your system's libraries.
+
+### What `tools/rebuild-driver.sh` Does
+
+1. Detects your host system's 64-bit Mesa version from `/run/host/usr/lib*/libvulkan_intel.so` or `/usr/lib*/libvulkan_intel.so`, or uses the version you pass as an argument (`26.1.2`, `26.3.0`).
+2. Downloads the official `mesa-<version>.tar.xz` release tarball from `archive.mesa3d.org` into `${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>` and verifies its SHA-256 checksum.
+3. Applies the matching patch series (`patches/mesa-26.3/` for 26.3, `patches/` otherwise) with `git am`. If the patches do not apply cleanly to that Mesa version, the script aborts without changing anything.
+4. Compiles `libvulkan_intel.so` with Meson and Ninja (configured with `-Dprefix=/usr -Dsysconfdir=/etc` so `/usr/share/drirc.d` game profiles are read, `-Dintel-rt=enabled` for ray tracing, and `RUNPATH` `$ORIGIN/../deps`).
+5. Tests the newly built driver with `tools/session-check.sh --dry-run`.
+6. Installs it into `lib/mesa-<version>/libvulkan_intel.so` (keeping any previous file as `.prev`) and makes it the default patched driver via `tools/switch-driver.sh`.
+
+### Running `tools/rebuild-driver.sh`
+
+Building Mesa requires a C/C++ toolchain and Mesa's build dependencies (`gcc`, `g++`, `meson`, `ninja`, `python-mako`, `python-yaml`, `python-packaging`, `python-ply`, `glslang`, `spirv-tools`, `spirv-headers`, `spirv-llvm-translator`, `llvm`, `clang`, `libclc`, `libdrm`, `wayland`, `wayland-protocols`, `libx11`, `libxext`, `libxrandr`, `libxcb`, `libxshmfence`, `expat`, `zlib`, `zstd`, `libelf`).
+
+On a desktop distribution with those packages installed, run:
+
+```bash
+./tools/rebuild-driver.sh           # builds for the system's Mesa version
+./tools/rebuild-driver.sh 26.3.0    # or specify a version
 ```
 
-By default, the script keeps its source and build trees in `~/.cache/xess-xmx/mesa-src`. Set `XMX_MESA_DIR` in the environment to use a different directory.
+SteamOS does not ship a compiler on the host image. On SteamOS, run the script inside an Arch Linux `distrobox` container that has those packages installed:
 
-For manual Mesa builds, meson flags, and patch internals, see [dev/building.md](dev/building.md).
+```bash
+distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh           # detects the host's Mesa version
+distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0    # or specify a version
+```
+
+The script has built-in SHA-256 checksums for `26.1.2` (`bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0`) and `26.3.0` (`91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a`). To build another Mesa point release that the patch series applies to, pass its tarball SHA-256 from Mesa's release notes (`docs/relnotes/<version>.rst`):
+
+```bash
+XMX_MESA_SHA256=<sha256> ./tools/rebuild-driver.sh <version>
+```
+
+For manual Meson commands and patch details, see [dev/building.md](dev/building.md).

@@ -1,171 +1,161 @@
-# Install, update, and uninstall
+# Installing, Updating, and Uninstalling
 
-This guide covers requirements, system-wide installation, per-game installation, and running a game on the system's stock driver.
+This guide covers how to install `xess-xmx-linux` system-wide for your user session, how to update or remove it, what the installer changes on your system, and how to set it up for a single game instead.
 
-## Requirements
+---
 
-* **GPU:** An Intel GPU with XMX (Intel's matrix engines) on the `xe` or `i915` kernel driver:
-  * **Xe3** (Panther Lake): tested on an Arc B390 (ONEXPLAYER 3).
-  * **Xe2** (Battlemage): tested by a user on an Arc B580 (#16).
-  * **Xe-HPG** (Alchemist): tested by a user on an Arc A310 (#28).
-  * **Lunar Lake** and **Arrow Lake-H**: detected by the shim, but untested.
-  * **Xe-LPG** (Meteor Lake) has no XMX units.
-* **Steam client:** Only the native Steam client is supported (SteamOS, distribution packages). Flatpak Steam is not supported.
-* **Proton:** vkd3d-proton (Proton's D3D12-to-Vulkan translator) as in Proton 11 / GE-Proton 11 (tested with GE-Proton 11-6 and Proton Experimental).
-* **System libraries:** The drivers in the archive (Mesa 26.3.0 unpatched, Mesa 26.1.2 and 26.3.0 with the patches) replace the system's 64-bit ANV (Mesa's Intel Vulkan driver) for the user session only. They are built on Arch Linux and need `glibc` 2.38 and `libwayland-client` 1.24 or newer.
-  * Checked to load on SteamOS, Arch, openSUSE Tumbleweed, Void Linux, Fedora 43, and Ubuntu 25.10.
-  * Debian 13 and Ubuntu 24.04 have `libwayland-client` 1.23 and need a driver built on the system with `tools/rebuild-driver.sh` (see [drivers.md](drivers.md) and [dev/building.md](dev/building.md)).
-  * `SPIRV-Tools` and `libdisplay-info` 0.3 come with the archive (`lib/bundled/`) for systems that lack them.
-  * For another Mesa version, see [dev/building.md](dev/building.md).
-* **Tools for `install.sh`:**
-  * `curl`, `ar` (binutils), `tar`, and `zstd` to unpack the compiler.
-  * `python3` for the compiler helper, the session check, and `tools/fsr-fg.sh`.
-  * `unzip` or `python3` for the XeSS SDK download.
+## System-Wide Install
 
-## System-wide install
-
-1. Download the release archive and unpack it into a permanent folder. (If you want to move the folder later, run `./uninstall.sh` first, move the folder, and run `./install.sh` again from the new location.)
-2. Run the installer from the unpacked folder:
-
-   ```sh
+1. Download the release archive and unpack it into a folder where it can stay. (If you want to move the folder later, run `./uninstall.sh` first.)
+2. Run the installer from inside that folder:
+   ```bash
    ./install.sh
    ```
+   On first run, `install.sh` downloads the Intel Graphics Compiler bundle (`igc/`, about 95 MB), Intel's XeSS SDK libraries (`xess/`, about 77 MB), and AMD's FidelityFX loader and providers (`ffx/`, about 87 MB).
+3. Reboot, or log out of your desktop session and log back in, so Steam picks up the new session environment variables.
 
-   This runs once. It fetches the compiler bundle (about 95 MB), Intel's XeSS SDK libraries (77 MB), and AMD's FidelityFX loader and providers (87 MB).
-3. Reboot, or log out and log back in.
+Every Direct3D 12 (DX12) game you start from Steam afterwards uses the package's driver automatically without any Steam launch options. In the game's graphics settings, select the **DX12** renderer and enable **XeSS** (and **XeSS Frame Generation** if offered).
 
-Every game started from Steam afterwards uses the package's driver with no launch options needed:
+For Direct3D 11 (DX11) or Vulkan games with XeSS, or games that ship an older XeSS version, add `XESS=latest %command%` to the game's launch options ([games.md](games.md), [launch-options.md](launch-options.md)).
 
-* In **DX12** games, select XeSS (and XeSS frame generation) in the game menu.
-* In **DX11** or **Vulkan** games with XeSS, set the game's Steam launch options to `XESS=latest %command%` (see [games.md](games.md)).
+The first time you launch a game with XeSS enabled, the driver (or the Vulkan layer) compiles that game's C-for-Metal (CM, Intel's GPU kernel language) kernels into `~/.cache/xess-xmx/kernels`. Startup can pause for a minute or two once; after that, the compiled kernels load from the cache.
 
-The first launch of a game compiles its XMX kernels. This takes a minute or two once; after that, the compiled kernels load from `~/.cache/xess-xmx`.
+---
 
-## Updating and uninstalling
+## Updating and Uninstalling
 
-To revert everything:
+### Uninstalling
 
-```sh
+To revert everything `install.sh` did, run:
+
+```bash
 ./uninstall.sh
 ```
 
-`uninstall.sh` reverts everything, and switches back every game modified with `tools/fsr-fg.sh`.
+Then reboot or log out and back in so Steam drops the session environment variables.
 
-To update to a new release, unpack the new release archive over the previous version (into the same folder), run `./install.sh`, and reboot or log out and back in. Moving the package to another folder requires running `./uninstall.sh` from the old folder first, because the installation points to the folder.
+`uninstall.sh` removes `~/.config/environment.d/50-xess-xmx.conf`, disables and removes the `xess-xmx-shim.path`, `xess-xmx-shim.service`, and `xess-xmx-check.service` systemd user units and `~/.config/xess-xmx/session-check.sh`, restores every backed-up `igdext64.dll.stock` in your Proton installations and game prefixes, removes `ControlLib.dll` and the `user_settings.py` Proton hook (restoring any `user_settings.user.py` of your own), undoes any leftover `XESS` / `FSR` file links or `tools/fsr-fg.sh` changes in your game folders, and deletes the `drive_c/igdext_kernels` folders inside your prefixes.
 
-If you install a new Vulkan driver on your system later (for example, for an eGPU or `lavapipe`), re-run `./install.sh` and log out and in so `VK_DRIVER_FILES` picks it up.
+It leaves the unpacked package folder, the downloaded bundles (`igc/`, `xess/`, `ffx/`), per-game `enable.sh` blocks in `~/.config/xess-xmx.conf` (use `./disable.sh` for those), and the compiled kernel cache in `~/.cache/xess-xmx` (delete that folder if you want to remove the cached kernels).
 
-## What `install.sh` does
+### Updating or Moving the Package Folder
 
-* **Writes `~/.config/environment.d/50-xess-xmx.conf`:**
-  * Sets `VK_DRIVER_FILES` so the package's driver (`run/intel_icd.json`) is the 64-bit Intel Vulkan driver, while keeping other GPUs' drivers and the 32-bit Intel driver in the list. On Xe3, the default driver is unpatched Mesa 26.3 with this project's Vulkan layer (`layer/`); on Xe-HPG and Xe2, it is the patched Mesa 26.3 driver (see [drivers.md](drivers.md)).
-  * Sets `ANV_CM_KERNEL_DIR` and `ANV_CM_HELPER` for the kernel compiler.
-  * Sets `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` for every D3D12 game in the session. The kernel binding code needs the classic descriptor heap (`VK_EXT_descriptor_buffer` disabled), and `VK_KHR_present_wait2` crashed games with frame generation.
-  * Sets `force_vk_vendor=0`, overriding Mesa game profiles that hide the Intel GPU from some games (see [troubleshooting.md](troubleshooting.md)).
-  * Sets `INTC_ALT_DRIVER_EXTENSIONS_PATH` to the prefix folder containing the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`) for Proton versions like Proton 11.0 that have no driver store.
-* **Installs the shim (`igdext64.dll`) and `ControlLib.dll`:**
-  * Puts `igdext64.dll` (the D3D12 extension shim) into every Proton that bundles an `igdext64.dll` and into every Wine prefix (the per-game Windows folder Steam creates under `compatdata/`), keeping the original file as `.stock`.
-  * Puts `ControlLib.dll` into every prefix (`C:\windows\system32\ControlLib.dll`) so `XESS_FG` can override the frame generation multiplier (see [frame-generation.md](frame-generation.md)).
-  * Enables a background watcher that repeats this after a Proton update and for new prefixes.
-  * Covers every Steam library, including SD cards and secondary disks (`steamapps/libraryfolders.vdf`).
-  * **Distribution-packaged Proton builds:** A Proton installed by a system package (such as CachyOS' `proton-cachyos` in `/usr/share/steam/compatibilitytools.d`) belongs to `root`. `install.sh` cannot write to it directly; it prints the `sudo` commands you need to run to put the shim in. Until you run them (and again after each package update), games using that Proton run on the DP4a fallback.
-* **Installs the Proton launch-option hook:**
-  * Puts a small `user_settings.py` into every Proton (`tools/proton-hook.py`). If you already have a `user_settings.py`, it is kept as `user_settings.user.py` and still runs.
-  * This hook enables the `XESS=...`, `XESS_LOG=1`, `FSR=...`, `FSR_FG=...`, `FSR_VENDOR=...`, and `OFLOW_FG=1` launch options (see [launch-options.md](launch-options.md)).
-* **Fetches third-party bundles:**
-  * Runs `tools/get-igc.sh` to fetch Intel Graphics Compiler (IGC 2.10.10) and `ocloc` (compute-runtime 25.18) into `igc/`.
-  * Runs `tools/get-xess.sh` to fetch Intel's XeSS SDK libraries into `xess/` (used by `XESS=latest`, `FSR=xess`, and `FSR_FG=xess`).
-  * Runs `tools/get-ffx.sh` to fetch AMD's FidelityFX loader and providers into `ffx/` (used by `FSR=xess` and `FSR_FG=xess` on games with FSR 3.1.0–3.1.3).
-* **Enables `xess-xmx-check.service`:**
-  * Runs `~/.config/xess-xmx/session-check.sh` (`tools/session-check.sh`) before every graphical session to verify that the package's driver loads and finds the GPU.
-  * Copies `SPIRV-Tools` and `libdisplay-info` from the host (or `lib/bundled/`) into `lib/deps/`, so the driver finds them inside the Steam Linux Runtime container.
-  * Writes the result to `~/.cache/xess-xmx/driver-status`. If a system update broke the active driver, the other driver in the package takes over; if both are broken (or if the package folder was moved or deleted), the session falls back to the system's stock drivers and XeSS runs on DP4a (see [drivers.md](drivers.md)).
+* **Updating to a new release:** Unpack the new release over the previous version (into the same folder), run `./install.sh`, and reboot or re-login. If the compiler toolchain or `.cmk` packer format changed, `xess-xmx-check.service` removes the patched driver's `*.cmk` files from the old toolchain in `~/.cache/xess-xmx/kernels` (the layer's `*.cml` files are not removed; new ones get new file names) and recompiles kernels on next use.
+* **Moving or deleting the package folder:** Only moving the package to another folder (or deleting it) needs `./uninstall.sh` from the old folder first; after moving, run `./install.sh` from the new location. If you delete or move the folder without running `./uninstall.sh`, `~/.config/xess-xmx/session-check.sh` detects that the folder is missing at your next login, points the session back to the system's stock Vulkan drivers so your desktop and games keep working (on DP4a, the 8-bit integer dot-product fallback), and writes `FAILED ... package folder ... not found` to `~/.cache/xess-xmx/driver-status`.
 
-### Installer environment variables
+---
 
-| Variable | Effect |
-|---|---|
-| `STEAM_DIR=<path>` | For `install.sh` and `uninstall.sh`. Overrides the Steam directory. By default, the scripts use the first of `~/.local/share/Steam`, `~/.steam/steam`, or `~/.steam/root` that holds a Steam install (which also covers the Debian/Ubuntu `steam` package). |
-| `XMX_DRIVER=patched\|stock\|auto` | For `install.sh`. Forces the session driver choice instead of picking by GPU (`stock` = unpatched Mesa 26.3 + layer; `patched` = patched Mesa 26.3; `auto` = default by GPU). Kept for later runs. Requires re-login. See [drivers.md](drivers.md). |
-| `XMX_NO_ENV=1` | For `install.sh`. Skips writing the session environment (`50-xess-xmx.conf`) and enabling the session check service, while still installing the shim, the Proton hook, and the prefix watcher. |
+## Requirements
 
-If the compiler, XeSS SDK, or FidelityFX downloads need to be re-run later, you can run `tools/get-igc.sh`, `tools/get-xess.sh`, or `tools/get-ffx.sh` directly. (`IGC_TAG` and `NEO_TAG` select other compiler releases for `get-igc.sh`, though others are untested; `XESS_TAG` and `XESS_SHA256` select another XeSS SDK release for `get-xess.sh`.)
+### Hardware
 
-## Per-game install instead of system-wide
+* An Intel GPU with **XMX** (Xe Matrix Extensions, hardware matrix engines) running on the Linux `xe` or `i915` kernel driver:
+  - **Xe3 (Panther Lake, Wildcat Lake):** The shim's GPU table (`shim/src/dll/GpuInfo.cpp`) covers PCI IDs `0xB080`–`0xB0FF` and `0xFD80`–`0xFD8F`. `install.sh` and `VK_LAYER_XESS_xmx` treat a GPU as Xe3 when `(device_id & 0xfff0)` is `0xb080` or `0xfd80` (PCI IDs `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`); only those IDs get stock mode by default and are served by `VK_LAYER_XESS_xmx` (a Panther Lake GPU at `0xB090`–`0xB0FF` is detected by the shim and runs on the patched driver). Tested on an Arc B390 (ONEXPLAYER 3).
+  - **Xe2 (Battlemage, Lunar Lake):** PCI IDs `0xE200`–`0xE2FF` (Battlemage, tested by a user on an Arc B580, #16) and `0x6420`–`0x64FF` (Lunar Lake, detected, untested).
+  - **Xe-HPG (Alchemist / DG2):** PCI IDs `0x5690`–`0x56FF`. Tested by a user on an Arc A310 (#28).
+  - **Xe-LPG+ (Arrow Lake-H):** PCI IDs `0x7D51`, `0x7DD1` (detected, untested).
+* **Xe-LPG (Meteor Lake and non-H Arrow Lake, `0x7D40`–`0x7DFF` except `0x7D51` / `0x7DD1`)** has no XMX units; the shim reports `XMX=0` and games stay on DP4a. Unknown Intel PCI IDs automatically fall back to DP4a unless declared with `IGDEXT_GMD` ([troubleshooting.md](troubleshooting.md)).
 
-If you do not want to replace the Intel Vulkan driver for your entire desktop session, you can install the shim into a single game's prefix and use a launch wrapper for that game only.
+### Software
 
-1. Run `enable.sh` with the game's Steam App ID (or `XMX_PREFIX` for non-Steam launchers):
+* **Native Linux Steam client** (SteamOS, or a distribution package). **Flatpak Steam is not supported**: its sandbox blocks access to `~/.config/environment.d` and the package folder.
+* **Proton 11 / GE-Proton 11 / Proton Experimental** (for their `vkd3d-proton`, Proton's D3D12-to-Vulkan translation layer).
+* **System libraries for the prebuilt drivers:** The drivers in the release archive (`lib/mesa-stock-26.3.0/`, `lib/mesa-26.3.0/`, `lib/mesa-26.1.2/`) are built on Arch Linux and require **glibc 2.38** and **libwayland-client 1.24** or newer.
+  - Checked to load on SteamOS, Arch Linux, openSUSE Tumbleweed, Void Linux, Fedora 43, and Ubuntu 25.10.
+  - Debian 13 and Ubuntu 24.04 ship `libwayland-client` 1.23 (`undefined symbol: wl_fixes_interface`); on those distributions, build the driver against your system libraries with `tools/rebuild-driver.sh` ([drivers.md](drivers.md), [dev/building.md](dev/building.md)).
+  - `libSPIRV-Tools.so` and `libdisplay-info.so.3` are bundled in `lib/bundled/` for distributions that lack them or name them differently.
+* **Command-line tools for `install.sh`:** `curl`, `ar` (from `binutils`), `tar`, and `zstd` to unpack the compiler bundle; `python3` for the Proton hook, compiler helper, session check, and `tools/fsr-fg.sh`; `unzip` or `python3` to unpack the XeSS SDK download.
 
-   ```sh
+---
+
+## What `install.sh` Does
+
+1. **Fetches runtime bundles (if not already present):**
+   - `igc/` (~95 MB via `tools/get-igc.sh`): Intel Graphics Compiler `v2.10.10` and `ocloc` `25.18.33578.6` for runtime CM kernel compilation.
+   - `xess/` (~77 MB via `tools/get-xess.sh`): Intel's XeSS SDK `v3.0.2` runtime DLLs (`libxess.dll` 2.0.2.68, `libxess_dx11.dll`, `libxess_fg.dll` 1.3.1.78, `libxell.dll` 1.3.2.10) used when a game's launch options include `XESS=latest`, `FSR=xess`, `FSR_FG=xess`, or `OFLOW_FG=1`.
+   - `ffx/` (~87 MB via `tools/get-ffx.sh`): AMD's signed FidelityFX SDK `v2.4.0` loader (`amd_fidelityfx_loader_dx12.dll`), upscaler, and frame generation DLLs, used when `FSR=xess` or `FSR_FG=xess` is set on a game with FSR 3.1.0–3.1.3 (which ships a single `amd_fidelityfx_dx12.dll`).
+2. **Writes `~/.config/environment.d/50-xess-xmx.conf`** (and applies the variables to the current user `systemd` manager):
+   - `VK_DRIVER_FILES`: puts the package's 64-bit Intel Vulkan ICD (`run/intel_icd.json`) first while keeping every other GPU's Vulkan driver (for hybrid laptops, eGPUs, or `lavapipe`) and the 32-bit Intel driver (`intel_icd.i686.json` / `intel_icd.i386.json`) in the list.
+   - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2`: the kernel binding code requires `vkd3d-proton`'s classic descriptor heap rather than `VK_EXT_descriptor_buffer`, and disabling `VK_KHR_present_wait2` prevents crashes in `vkWaitForPresent2KHR` under frame generation's high present rate. This applies to every D3D12 game in the session.
+   - `ANV_CM_KERNEL_DIR=<package>/kernels` and `ANV_CM_HELPER=<package>/tools/cm-compile.sh`.
+   - `force_vk_vendor=0`: overrides Mesa game profiles (`drirc`) that set `force_vk_vendor=-1` to hide the Intel GPU from certain games ([troubleshooting.md](troubleshooting.md)).
+   - `INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'`: tells XeSS where to load `igdext64.dll` on Protons that do not set up an Intel driver store in the registry (such as Valve's Proton 11.0).
+   - **Driver mode selection:** On **Xe3** (`0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`), `install.sh` defaults to `stock` mode (`MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER`, `XMX_IGC_DIR`), running the package's unpatched Mesa 26.3.0 driver with `VK_LAYER_XESS_xmx`. On **all other GPUs** (Xe-HPG, Xe2, and `0xB090`–`0xB0FF`), it defaults to `patched` mode, running the patched driver named in `lib/active`. You can override this choice with `XMX_DRIVER=patched ./install.sh`, `XMX_DRIVER=stock ./install.sh`, or `XMX_DRIVER=auto ./install.sh` (`XMX_DRIVER=stock` is accepted on any GPU, but on non-Xe3 GPUs the layer declines its self-test and XeSS runs on DP4a; see [drivers.md](drivers.md)).
+3. **Installs `igdext64.dll`, `ControlLib.dll`, and the Proton hook across all Steam libraries:**
+   - Finds your main Steam installation (`$STEAM_DIR`, or the first existing folder among `~/.local/share/Steam`, `~/.steam/steam`, `~/.steam/root`, and `~/.steam/debian-installation`) and every secondary Steam library in `steamapps/libraryfolders.vdf` (SD cards, second disks).
+   - Replaces `igdext64.dll` in every Proton that bundles one (`files/lib/wine/igdext/x86_64-windows/igdext64.dll`) and in every existing game prefix that already has the `drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1` folder (matching both `driverstore` and `DriverStore` casing), backing up the original file as `igdext64.dll.stock`.
+   - In every prefix that already has that `igd_faux.inf_1` folder, copies `ControlLib.dll` into its `drive_c/windows/system32/` for `XESS_FG` (leaving any existing `ControlLib.dll` that is not this package's alone; see [frame-generation.md](frame-generation.md)); on a manual run with the `igc/` compiler bundle present, it also removes any `drive_c/igdext_kernels/compile_failed.txt` markers so previously failed compiles are retried.
+   - Places a small `user_settings.py` into every Proton folder (keeping any existing `user_settings.py` of your own as `user_settings.user.py`), which runs `tools/proton-hook.py` at game start to handle `XESS=`, `XESS_LOG=`, `FSR=`, `FSR_FG=`, and `OFLOW_FG=` launch options ([launch-options.md](launch-options.md)).
+   - **Protons installed by a distribution package:** A Proton in `/usr/share/steam/compatibilitytools.d` or `/usr/local/share/steam/compatibilitytools.d` (such as CachyOS's `proton-cachyos`) is owned by `root`. `install.sh` cannot write to it as your user; it lists those Proton paths and prints the `sudo cp` commands to install `igdext64.dll` into them. Until you run those commands (or use a Proton in `~/.local/share/Steam/compatibilitytools.d`), games using that system Proton run on DP4a, and the `user_settings.py` hook options (`XESS=latest`, `FSR=xess`, `OFLOW_FG=1`) will not run on it.
+4. **Enables the shim watcher (`xess-xmx-shim.path` and `xess-xmx-shim.service`):**
+   - Watches your Proton and `compatdata` folders across all Steam libraries and automatically re-installs `igdext64.dll`, `ControlLib.dll`, and `user_settings.py` whenever a Proton updates or a newly launched game creates a prefix.
+5. **Enables the pre-session driver check (`xess-xmx-check.service`):**
+   - Runs `~/.config/xess-xmx/session-check.sh` (`tools/session-check.sh`) before every graphical session starts.
+   - Copies `libSPIRV-Tools.so` and `libdisplay-info.so.3` from the host (or from `lib/bundled/`) into `lib/deps/` so the driver can load inside the Steam Linux Runtime (`pressure-vessel`) container.
+   - Verifies that the package's driver loads and enumerates the GPU. In a patched session, if a system update broke the active driver, it switches to the other patched driver of the package (`lib/mesa-26.1.2` or `lib/mesa-26.3.0`); if none loads, the session falls back to the system's drivers. In a stock session, if the check fails, the session falls back to the system's drivers. It writes the result to `~/.cache/xess-xmx/driver-status` ([drivers.md](drivers.md)).
+
+### Installer Environment Options
+
+* `STEAM_DIR=/path/to/Steam ./install.sh` (also for `uninstall.sh`): overrides the Steam root directory.
+* `XMX_DRIVER=patched|stock|auto ./install.sh`: chooses the session driver mode and remembers it in `run/driver-mode` ([drivers.md](drivers.md)).
+* `XMX_NO_ENV=1 ./install.sh`: installs the shim, `ControlLib.dll`, the Proton hooks, and the shim watcher, but skips writing `~/.config/environment.d/50-xess-xmx.conf` and `xess-xmx-check.service` (useful if you want to enable the driver per game instead of session-wide).
+
+---
+
+## Per-Game Install Instead of System-Wide (`enable.sh` / `disable.sh`)
+
+If you prefer not to set the driver for your entire desktop session, you can install the shim into a single game's prefix and use a launch wrapper for that game:
+
+1. Run `enable.sh` with either the game's Steam App ID (`XMX_APPID`, searched across all Steam libraries) or the path to a Wine/Proton prefix folder (`XMX_PREFIX`, for non-Steam launchers; the folder containing `drive_c`):
+   ```bash
    XMX_APPID=<steam app id> ./enable.sh
+   # or, for another launcher:
+   XMX_PREFIX=/path/to/prefix ./enable.sh
    ```
-
-   For another launcher, pass the Wine prefix path instead:
-
-   ```sh
-   XMX_PREFIX=<prefix> ./enable.sh
-   ```
-
-   `enable.sh` installs `igdext64.dll` and `ControlLib.dll` into that prefix, populates `lib/deps/`, and writes the environment variables to `~/.config/xess-xmx.conf`. If you have not run `install.sh` before, also fetch the compiler bundle once with `./tools/get-igc.sh`.
-
-2. In Steam, set the game's launch options to:
-
-   ```sh
+   (Start the game once first if its prefix does not exist yet. If you have not run `install.sh`, also run `./tools/get-igc.sh` once to download the kernel compiler.)
+2. `enable.sh` backs up and replaces `igdext64.dll` in that prefix, copies `ControlLib.dll` into its `system32`, runs `tools/session-check.sh --dry-run` (which also populates `lib/deps/`), and writes the environment variable block to `~/.config/xess-xmx.conf`.
+3. Set the game's Steam launch options to:
+   ```text
    /path/to/package/xmx-launch.sh %command%
    ```
-
-   If you pass per-game variables, put them before the wrapper:
-
-   ```sh
-   MESA=26.1 /path/to/package/xmx-launch.sh %command%
+   Any per-game variables go before the wrapper:
+   ```text
+   MESA=26.1 XESS_FG=4 /path/to/package/xmx-launch.sh %command%
+   ```
+4. To remove the shim from that prefix and delete the block from `~/.config/xess-xmx.conf`, run:
+   ```bash
+   XMX_APPID=<steam app id> ./disable.sh
+   # or:
+   XMX_PREFIX=/path/to/prefix ./disable.sh
    ```
 
-To remove the per-game install from that prefix:
+Optional variables for `enable.sh`, `disable.sh`, and `xmx-launch.sh`:
+* `XMX_CONF=/path/to/file`: overrides the config file path (default `~/.config/xess-xmx.conf`).
+* `XMX_GAME=<process name>`: if set, `enable.sh` and `disable.sh` refuse to run while a process matching that name (first 15 characters, case-insensitive) is running.
 
-```sh
-XMX_APPID=<steam app id> ./disable.sh
+Note: Without `install.sh`, Proton's `user_settings.py` hook is not installed, so the hook shorthands (`XESS=latest`, `XESS=dp4a`, `XESS_LOG=1`, `FSR=xess`, `FSR_FG=xess`, `FSR_FG=inject`, `OFLOW_FG=1`) are not available. Use `IGDEXT_FORCE_FALLBACK=1` instead of `XESS=dp4a`, the `IGDEXT_*` log variables instead of `XESS_LOG=1`, and `tools/fsr-fg.sh` for games that have FSR 3.1+ frame generation ([frame-generation.md](frame-generation.md), [launch-options.md](launch-options.md)).
+
+---
+
+## Using the System's Own Driver for One Game (`xmx-stock.sh`)
+
+**Experimental.** If you want a single game to run on your Linux distribution's own unpatched Mesa ANV driver (instead of the drivers in this package) while still running XeSS on XMX through the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), put `xmx-stock.sh` in the game's Steam launch options:
+
+```text
+/path/to/package/xmx-stock.sh %command%
 ```
 
-(Or pass `XMX_PREFIX=<prefix>`.)
+Put any launch option variables before the wrapper:
 
-### Options and limitations of the per-game install
+```text
+XESS=latest /path/to/package/xmx-stock.sh %command%
+```
 
-* **Script variables for `enable.sh` and `disable.sh`:**
-  * `XMX_APPID` or `XMX_PREFIX`: one is required.
-  * `XMX_CONF`: path to the config file (default `~/.config/xess-xmx.conf`).
-  * `XMX_GAME`: process name; the script refuses to run while that process is running.
-* **Proton hook shorthands are not available:** Because `enable.sh` does not install `user_settings.py` into Proton, the launch-option shorthands `XESS`, `XESS_LOG`, `FSR`, `FSR_FG`, and `OFLOW_FG` do not work with `xmx-launch.sh`:
-  * Instead of `XESS=dp4a` and `XESS_LOG=1`, use their full environment variables (`IGDEXT_FORCE_FALLBACK=1`, `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1`; see [launch-options.md](launch-options.md) and [dev/debugging.md](dev/debugging.md)).
-  * Instead of `FSR=xess` and `FSR_FG=xess`, run `tools/fsr-fg.sh all <app id>` or `tools/fsr-fg.sh on <app id>` (requires `tools/get-xess.sh` and `tools/get-ffx.sh`; see [frame-generation.md](frame-generation.md)).
-  * `XESS=latest`, `FSR_FG=inject`, and `OFLOW_FG=1` have no equivalent without the Proton hook (though for `XESS=latest` in a D3D12 game you can replace the game's XeSS DLLs by hand; see [games.md](games.md)).
+`xmx-stock.sh` installs nothing and changes nothing outside that game's process environment:
+* It must be used as a command wrapper around `%command%` because `VK_DRIVER_FILES` has to be rewritten before Steam's Linux Runtime container (`pressure-vessel`) starts; changing `VK_DRIVER_FILES` inside the container loads two Intel drivers at once.
+* The game's prefix must have `igdext64.dll` and the package must have `igc/` (`./install.sh` sets up both; without `./install.sh`, run `XMX_APPID=<app id> ./enable.sh` and `./tools/get-igc.sh`, and do **not** combine `xmx-stock.sh` with `xmx-launch.sh`).
+* `VK_LAYER_XESS_xmx` supports **Xe3** GPUs (`0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`) on unpatched Mesa **26.1**, **26.3**, and **27.0** (SteamOS ships 26.1.2). On other GPUs or other Mesa versions, the layer leaves the self-test unanswered and XeSS runs on DP4a.
+* It writes one `xess-xmx: xmx-stock:` line naming the driver and the layer to Steam's output (the terminal Steam was started from; in Game Mode, the user journal), not to `PROTON_LOG`'s file. If the layer files or a 64-bit Intel ICD of the system are missing, that line says so and the game starts unchanged (on the session's driver: the package's unpatched driver + layer in stock mode on Xe3, or the patched driver otherwise).
+* `MESA` has no effect when using `xmx-stock.sh`.
 
-## Using the system's own driver for one game (`xmx-stock.sh`)
-
-**Experimental.** On an **Xe3** GPU, you can run a single game on your Linux distribution's own unpatched Mesa ANV driver with this project's Vulkan layer (`VK_LAYER_XESS_xmx` in `layer/`), which puts the XMX kernels in from outside the driver, while keeping the package's driver as the default for every other game. The layer serves Xe3 only. It knows Mesa 26.1, 26.3, and 27.0 (SteamOS ships 26.1.2); with another version, XeSS runs on DP4a.
-
-`xmx-stock.sh` is a wrapper script rather than a launch variable because it must set the driver list before Steam's runtime container starts. Inside the container the driver list has already been rewritten, and changing it there loaded two Intel drivers at once.
-
-1. Make sure the game's prefix has the shim and the package has the compiler bundle (`igc/`). A system-wide `./install.sh` provides both. Without a system-wide install, run `XMX_APPID=<app id> ./enable.sh` to put the shim in and `./tools/get-igc.sh` to fetch the compiler. (Do not combine `xmx-stock.sh` with `xmx-launch.sh`, whose file points at the patched driver.)
-2. In the game's Steam launch options, put:
-
-   ```sh
-   /path/to/package/xmx-stock.sh %command%
-   ```
-
-   Put any launch variables before the wrapper:
-
-   ```sh
-   XESS=latest /path/to/package/xmx-stock.sh %command%
-   ```
-
-`xmx-stock.sh` installs nothing and changes nothing outside the game's environment. What it sets:
-
-* `VK_DRIVER_FILES`: the system's Intel ICDs (`intel_icd.x86_64.json`, then `intel_icd.i686.json`, from `/usr/share/vulkan/icd.d` and the loader's other folders), followed by every other entry of the session's list (other GPUs' drivers), without the package's ICD (`run/intel_icd.json`, which `install.sh` puts first). Without a session list, it includes every ICD of the system. Setting `XMX_STOCK_ICD=<json>` uses that Intel ICD instead (for example, a Mesa built by hand).
-* `VK_ADD_LAYER_PATH=<package>/layer` and `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, added to any values already set so MangoHud and other layers keep working.
-* `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh` and `XMX_IGC_DIR=<package>/igc`, unless already set.
-* `VK_EXT_descriptor_buffer` and `VK_KHR_present_wait2` added to `VKD3D_DISABLE_EXTENSIONS`, plus `force_vk_vendor=0` and `INTC_ALT_DRIVER_EXTENSIONS_PATH` as `install.sh` sets them, unless already set. `ANV_CM_KERNEL_DIR` and `ANV_CM_HELPER` stay as they are (the stock driver does not read them).
-
-`xmx-stock.sh` writes one `xess-xmx: xmx-stock:` line naming the driver and the layer to Steam's output (the terminal Steam was started from, or the user journal in Game Mode), not to `PROTON_LOG`'s file. If the layer files or a 64-bit Intel ICD of the system are missing, that line says so and the game starts unchanged (on the patched driver after `install.sh`). `MESA` has no effect with `xmx-stock.sh`.
-
-For the layer's own log, set `XMX_LAYER_LOG=1` (stderr) or `XMX_LAYER_LOG=<file>`. Its other switches are in [../layer/README.md](../layer/README.md). See also [launch-options.md](launch-options.md) and [drivers.md](drivers.md).
+See [drivers.md](drivers.md) and [launch-options.md](launch-options.md) for full details on `xmx-stock.sh` and its variables (`XMX_STOCK_ICD`, `XMX_LAYER_LOG`, `XMX_LAYER_PROF`).

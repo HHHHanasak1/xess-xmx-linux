@@ -1,18 +1,10 @@
-# Building from source
+# Building from Source
 
-The release archive contains binaries built from this repository:
+The release archive contains prebuilt Windows and Linux binaries compiled from this repository. Intel C-for-Metal (CM, Intel's GPU kernel language) kernels are not in the repository or the release archive; the driver or layer compiles them on the user's machine at runtime from the SPIR-V inside each game's XeSS libraries (see [how-it-works.md](how-it-works.md)).
 
-* the shim `igdext64.dll` (a translator library that answers Intel driver queries)
-* `ControlLib.dll`
-* the FSR DLLs in `ffxfg/`
-* the D3D11 bridge `dx11bridge/libxess_dx11.dll` and Vulkan wrapper `vkwrap/vulkan-1.dll`
-* the patched Mesa ANV drivers `lib/mesa-<version>/libvulkan_intel.so` (ANV is Mesa's Intel Vulkan driver) and the unpatched driver `lib/mesa-stock-26.3.0/libvulkan_intel.so`
-* the small ICD (Installable Client Driver, the entry point the Vulkan loader reads) `lib/libvulkan_intel.so` that loads one of the drivers
-* the Vulkan layer `layer/libVkLayer_xess_xmx.so` for an unpatched ANV (Xe3's default session driver and `xmx-stock.sh`) and XeSS' Vulkan path
+GitHub Actions (`.github/workflows/build.yml`) builds every binary on every push and pull request and keeps them as workflow artifacts. To build a release archive, download the artifacts for the release commit and run `tools/make-release.py`.
 
-The kernels are compiled on the user's machine (see [how-it-works.md](how-it-works.md)). CI (`.github/workflows/build.yml`) builds all of these binaries on every push and keeps them as workflow artifacts. Build a release archive from the artifacts of the release commit with `tools/make-release.py`.
-
-## Repository layout
+## Repository Layout
 
 ```text
 install.sh, uninstall.sh      system-wide install / removal
@@ -31,150 +23,229 @@ ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR up
                               for any DX12 game from optical flow, OFLOW_FG=1); get-headers.sh fetches the AMD /
                               Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
                               optical flow libraries
-dx11bridge/                   libxess_dx11.dll source: runs D3D12 XeSS next to a D3D11 game's device (XESS=latest)
-vkwrap/                       vulkan-1.dll source: adds the Intel interfaces XeSS' Vulkan path looks for (XESS=latest)
+dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
+vkwrap/                       vulkan-1.dll source: XeSS' Intel Vulkan interfaces for Vulkan games
+icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
 tools/cm-compile.sh           run-time compiler helper called by the driver
 tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
 tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
 tools/get-ffx.sh              fetches AMD's FidelityFX loader and providers into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
-tools/proton-hook.py          XESS / XESS_LOG / FSR / FSR_FG launch options, run by Proton through user_settings.py
+tools/proton-hook.py          XESS / XESS_LOG / FSR / FSR_FG / OFLOW_FG launch options, run by Proton through user_settings.py
 tools/fsr-fg.sh               FSR on XeSS for one game, for Protons without the hook
 tools/steam-libraries.sh      every Steam library (libraryfolders.vdf), for the scripts
 tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
 tools/switch-driver.sh        sets the default among the package's drivers (per game: MESA)
-icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
 tools/session-check.sh        the driver check run before each session
 tools/cmk_pack.py             zebin -> .cmk packer (the driver has a C port; cm-compile.sh uses this one for older drivers)
-tools/xell-probe.sh           XeLL driver-mode probe (docs/dev/debugging.md)
-tools/gen_placeholders.py     placeholder templates for run-time kernels;  tools/check_placeholders.py consistency check
+tools/xell-probe.sh           XeLL driver-mode probe (debugging.md)
+tools/gen_placeholders.py     placeholder templates for run-time kernels; tools/check_placeholders.py consistency check
 tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
 tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
 tools/make-release.py         builds the release archive (the developer tools stay out of it)
-docs/                         user guides (install, drivers, games, frame generation, Steam launch options, performance,
-                              troubleshooting); docs/dev/: how it works, building, debugging
+docs/                         user guides (install, drivers, games, frame generation, launch options, performance, troubleshooting)
+docs/dev/                     developer documents (how it works, building, debugging)
 .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the D3D11/Vulkan DLLs, the ICD,
-                              the drivers and the layer, checks the scripts
+                              both patched drivers, the unpatched driver and the layer, checks the scripts
 ```
 
-The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, the layer `layer/libVkLayer_xess_xmx.so`) and the scripts. It contains no Intel kernels; they are compiled on your machine from the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
 
-## The shim (`igdext64.dll`) and `ControlLib.dll`
+| Artifact / Binary | Source Directory | Toolchain | Purpose |
+|---|---|---|---|
+| `igdext64.dll` | `shim/` | Windows, MSVC (Visual Studio 2022 Build Tools), CMake + Ninja | D3D12 Intel extension shim (`_INTC_D3D12_*`) and XeLL / XeFG hooks |
+| `ControlLib.dll` | `controllib/` | Windows, MSVC (`cl`) | Intel Graphics Control Library stand-in for `XESS_FG` multiplier overrides |
+| `amd_fidelityfx_upscaler_dx12.dll` | `ffxfg/` | Windows, MSVC (`cl`) | FSR 3.1+ upscaling translated to XeSS super resolution |
+| `amd_fidelityfx_framegeneration_dx12.dll` | `ffxfg/` | Windows, MSVC (`cl`, `dxc`), CMake | FSR 3.1+ frame generation and `OFLOW_FG=1` optical flow on XeSS-FG |
+| `dxgi.dll` | `ffxfg/` | Windows, MSVC (`cl`) | DXGI factory wrapper for `FSR_FG=inject` and `OFLOW_FG=1` |
+| `libxess_dx11.dll` | `dx11bridge/` | Windows, MSVC (`cl`, `fxc`, `rc`) | XeSS D3D11 API bridge running on D3D12 XeSS |
+| `vulkan-1.dll` | `vkwrap/` | Windows, MSVC (`cl`, `ml64`), Python 3 | Vulkan loader wrapper providing Intel private interfaces for Vulkan XeSS |
+| `lib/libvulkan_intel.so` | `icd/xmx-icd.c` | Linux, `gcc` | Forwarding Vulkan ICD (installable client driver) that loads the selected Mesa driver |
+| `lib/mesa-<ver>/libvulkan_intel.so` | `patches/` + Mesa tarball | Linux (Arch container), `meson` + `ninja` | Patched (`26.1.2`, `26.3.0`) and unpatched (`stock-26.3.0`) Mesa ANV drivers |
+| `lib/bundled/*` | `tools/build-deps.sh` | Linux (Debian 12 container), CMake + Meson | Bundled `libSPIRV-Tools.so` and `libdisplay-info.so.3` (glibc >= 2.36) for systems that lack them |
+| `layer/libVkLayer_xess_xmx.so` | `layer/` | Linux, `gcc`, `glslangValidator`, Python 3 | `VK_LAYER_XESS_xmx` Vulkan layer for unpatched ANV (`xmx-stock.sh`) and Vulkan XeSS |
 
-Build the shim on Windows with the Visual Studio 2022 Build Tools (C++ workload):
+---
+
+## Building Windows Components
+
+All Windows DLLs build with the Visual Studio 2022 Build Tools (Desktop development with C++ workload, including the Windows 10/11 SDK for `fxc.exe`, `dxc.exe`, and `rc.exe`). Every DLL links statically against the MSVC runtime (`/MT` or `MultiThreaded`) so it does not depend on the Visual C++ redistributable inside a game's Proton prefix.
+
+### 1. The D3D12 Shim (`igdext64.dll`) and `ControlLib.dll`
+
+Build `igdext64.dll` using the batch script on Windows:
 
 ```bat
-shim\build.bat            -> shim\build\igdext64.dll
+shim\build.bat
 ```
 
-Or run CMake from any shell with the MSVC environment loaded:
+Or run CMake and Ninja from any shell with the MSVC x64 environment loaded:
 
-```bash
+```bat
 cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build shim/build
 ```
 
-The DLL links against the static MSVC runtime and imports only `kernel32` and `advapi32`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), and XeSS silently fell back to DP4a (the generic non-XMX instruction path). `shim/toolchain-mingw64.cmake` is kept from dxvk-igdext for a mingw build; it is not used for releases.
+This writes `shim/build/igdext64.dll`. The DLL links against the static MSVC runtime and imports only `kernel32`, `advapi32`, and `dxgi`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), causing XeSS to fall back to DP4a (dot-product instructions). `shim/toolchain-mingw64.cmake` is kept from upstream `dxvk-igdext` for MinGW cross-compilation, but is not used for releases.
 
-Generate the two placeholder templates rather than writing them by hand. This requires `fxc.exe` (the DirectX shader compiler) from the Windows SDK. Under WSL, pass the Windows `fxc.exe` as the second argument:
+#### Regenerating and Checking the DXBC Placeholder Templates
+
+The two DXBC (DirectX Bytecode) compute shader templates in `shim/src/dll/placeholders.inc` (`kPlaceholderKernel` with `numthreads(1, 1, 23)` and `kPlaceholderCanary` with `numthreads(1, 1, 19)`) are generated using `fxc.exe` from the Windows SDK rather than written by hand. Under WSL, pass the path to the Windows `fxc.exe` as the second argument (paths are converted with `wslpath`):
 
 ```bash
 python tools/gen_placeholders.py shim/src/dll/placeholders.inc                     # kernel and self-test templates
-python tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch      # they match the driver
+python tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch      # verify they match the driver
 python tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 ```
 
-Build `ControlLib.dll` (the stand-in for Intel's Control Library that `XESS_FG` needs) the same way:
+`tools/check_placeholders.py` checks that the template shapes, magic value (`0x584d5843`), self-test canary constants (`0x00414e43` and `0x7fa15952`), byte offsets (`kPlaceholderKernelHashAt` and `kPlaceholderCanaryHashAt`), and custom DXBC MD5 checksums (`shim/src/dll/DxbcChecksum.h`) match the driver patches.
+
+#### Building `ControlLib.dll`
+
+Build `ControlLib.dll` (`controllib/ControlLib.c`, the stand-in for Intel's Control Library that `XESS_FG` needs):
 
 ```bat
-controllib\build.bat      -> controllib\build\ControlLib.dll
+controllib\build.bat
 ```
 
-## The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
+This runs `cl /nologo /O2 /W3 /MT /LD ControlLib.c /Fobuild\ /Fe:build\ControlLib.dll /link dxgi.lib dxguid.lib` and outputs `controllib/build/ControlLib.dll`.
 
-The headers these DLLs build against (AMD FSR SDK 2.4.0 and Intel XeSS SDK) are not in the repository. Run `get-headers.sh` to fetch them into `ffxfg/inc/` and check each one by SHA-256. Then build on Windows with the Visual Studio 2022 Build Tools:
+### 2. The FSR DLLs (`ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`, `ffxfg/dxgi.dll`)
 
-```bash
-bash ffxfg/get-headers.sh
-ffxfg\build.bat           -> ffxfg\build\amd_fidelityfx_upscaler_dx12.dll, amd_fidelityfx_framegeneration_dx12.dll, dxgi.dll
+Building the DLLs in `ffxfg/` ([../frame-generation.md](../frame-generation.md)) requires two prerequisites that are not tracked in git:
+
+1. **Public headers (`ffxfg/inc/`):** Run `ffxfg/get-headers.sh` in a Bash shell (requires `curl` and `sha256sum`). It downloads headers from AMD FSR SDK `v2.4.0` and Intel XeSS SDK (commit `de0fb9c1c510661c571164e1418ceca8101dab69`, the commit after `v3.0.2` that put the XeLL headers under the MIT license) into `ffxfg/inc/` and checks each file by SHA-256:
+
+   ```bash
+   bash ffxfg/get-headers.sh
+   ```
+
+2. **FidelityFX SDK 1.1.4 optical flow static libraries (`ffxfg/ffxsdk/`):** `ffxfg/build-ffxsdk.bat` clones `GPUOpen-LibrariesAndSDKs/FidelityFX-SDK` at tag `v1.1.4`, checks that `HEAD` matches commit `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`, and builds `ffx_opticalflow_x64.lib` and `ffx_backend_dx12_x64.lib` with static MSVC runtime (`MultiThreaded`). `ffxfg/build.bat` runs `build-ffxsdk.bat` automatically if the `.lib` files are missing.
+
+Then, on Windows with the Visual Studio 2022 Build Tools:
+
+```bat
+ffxfg\build.bat
 ```
 
-Set `FFXFG_DEBUG=1` in the environment of `build.bat` to compile the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XESS_JITTER`) into the DLLs.
+`ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and `ffx_xefg.cpp` into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
 
-The release archive keeps the built DLLs in `ffxfg/` (see [../frame-generation.md](../frame-generation.md) and [how-it-works.md](how-it-works.md)). CI builds them next to the shim.
+To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
 
-## XeSS for D3D11 (`dx11bridge/libxess_dx11.dll`) and Vulkan (`vkwrap/vulkan-1.dll`)
+```bat
+set FFXFG_DEBUG=1
+ffxfg\build.bat
+```
 
-Both DLLs need the XeSS headers from `ffxfg/get-headers.sh`. Build them on Windows with the Visual Studio 2022 Build Tools and Python (`gen.py` writes the forwarding stubs of `vulkan-1.dll` from `vkwrap/exports.txt`, the export list of Proton's `vulkan-1.dll`):
+### 3. XeSS for D3D11 (`dx11bridge/libxess_dx11.dll`) and Vulkan (`vkwrap/vulkan-1.dll`)
 
-```bash
+Both components need the XeSS headers fetched by `bash ffxfg/get-headers.sh` ([../games.md](../games.md#xess-in-a-d3d11-game)). On Windows with the same Build Tools (and Python for `gen.py`, which writes 259 forwarding stubs in `stubs.asm`, `names.h`, and `vulkan-1.def` from the 262 exports in `vkwrap/exports.txt`, the export list of Proton's `vulkan-1.dll`, while `vkwrap.c` implements `vkGetInstanceProcAddr`, `vkGetDeviceProcAddr`, and `vkCreateDevice` itself):
+
+```bat
 bash ffxfg/get-headers.sh
 dx11bridge\build.bat                          -> dx11bridge\build\libxess_dx11.dll
 python vkwrap\gen.py vkwrap\exports.txt vkwrap\build
 vkwrap\build.bat                              -> vkwrap\build\vulkan-1.dll
 ```
 
-The package keeps them in `dx11bridge/` and `vkwrap/` (see [../games.md](../games.md#xess-in-a-d3d11-game)).
+* `dx11bridge\build.bat` compiles `depth_copy.hlsl` with `fxc /T cs_5_0` into `build\depth_copy_cs.h`, compiles `version.rc` (FileVersion `2.0.2.68`, so DXVK does not hide the Intel GPU), and links `xess_dx11.cpp` into `dx11bridge\build\libxess_dx11.dll`.
+* `vkwrap\build.bat` assembles `build\stubs.asm` with `ml64` and compiles `vkwrap.c` into `vkwrap\build\vulkan-1.dll`.
 
-To build the tests:
+The package keeps these DLLs in `dx11bridge/` and `vkwrap/`.
 
-* Run `dx11bridge\test\build.bat` to build `sharetest.exe` (a texture and a fence shared by a D3D11 and a D3D12 device) and `bridgetest.exe` (the bridge with depth, output checked).
-* Set `VULKAN_HEADERS` to a Vulkan-Headers checkout and run `vkwrap\test\build.bat` to build `vktest.exe` (XeSS' Vulkan path through `vulkan-1.dll` and the layer, output checked).
+#### Building the D3D11 and Vulkan Tests
 
-Run each test under Proton with the corresponding DLL next to it. Each test writes `<name>.txt` next to itself.
+Build the test programs on Windows with the same Build Tools:
 
-## The layer (`layer/libVkLayer_xess_xmx.so`)
+```bat
+dx11bridge\test\build.bat
+set VULKAN_HEADERS=C:\path\to\Vulkan-Headers
+vkwrap\test\build.bat
+```
 
-Build the layer on Linux with `gcc`, `glslangValidator` (a GLSL-to-SPIR-V shader compiler), and `python3` against Vulkan-Headers 1.4.350. The distribution's own headers may lack `VK_KHR_pipeline_binary`, which the headers must define:
+* `dx11bridge\test\build.bat` builds `sharetest.exe` (a texture and a fence shared by a D3D11 and a D3D12 device) and `bridgetest.exe` (the D3D11 bridge with `D24_UNORM_S8_UINT` depth, checking output color and preserved D3D11 compute state).
+* `vkwrap\test\build.bat` (with `VULKAN_HEADERS` set to a Khronos `Vulkan-Headers` checkout) builds `vktest.exe` (XeSS's Vulkan path through `vulkan-1.dll` and `VK_LAYER_XESS_xmx`, checking output color).
+
+Run each `.exe` under Proton with the corresponding DLL (`libxess_dx11.dll` or `vulkan-1.dll`, plus `libxess.dll`) next to it. Each test writes `<name>.txt` (`sharetest.txt`, `bridgetest.txt`, `vktest.txt`) next to itself.
+
+---
+
+## Building the Vulkan Layer (`layer/libVkLayer_xess_xmx.so`)
+
+Build the layer on Linux with `gcc`, `glslangValidator` (`glslang-tools`), and `python3` against Khronos `Vulkan-Headers` 1.4.350 (CI pins tag `vulkan-sdk-1.4.350.1`, commit `8864cdc896bbc2a9b6eb36b3218fc9ef57908d77`, because a distribution's system headers may lack `VK_KHR_pipeline_binary`):
 
 ```bash
-VULKAN_HEADERS=<Vulkan-Headers checkout> layer/build.sh out   # default out/ -> out/libVkLayer_xess_xmx.so, out/VkLayer_xess_xmx.json
+VULKAN_HEADERS=<Vulkan-Headers checkout> layer/build.sh out   # -> out/libVkLayer_xess_xmx.so, out/VkLayer_xess_xmx.json
 layer/tests/build.sh                                          # unit tests
 ```
 
-From inside `layer/`, run `VULKAN_HEADERS=<Vulkan-Headers checkout> ./build.sh [out dir]` and `./tests/build.sh`.
+If you omit the output directory argument (`layer/build.sh`), it defaults to `layer/out`. `layer/build.sh` compiles `layer/src/template.comp` into a SPIR-V C array (`template_spv.h`), compiles the layer sources with the portable BLAKE3 implementation in `layer/third_party/blake3/`, and copies `layer/VkLayer_xess_xmx.json`. For a release archive, copy the CI artifact `xmx-layer` (`libVkLayer_xess_xmx.so`) into `layer/` alongside the repository's `layer/VkLayer_xess_xmx.json`.
 
-For a release archive, place the CI artifact `xmx-layer` into `layer/` (the manifest there is the repository's own).
+### Layer Unit Tests and Probing a New Mesa Version
 
-## The driver (`libvulkan_intel.so`)
+`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`), the C prologue table against the IGA assembler (`test_prologue`), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
 
-The package carries one patched driver per Mesa version in `lib/mesa-<version>/`. The file the session's Vulkan driver list points at, `lib/libvulkan_intel.so`, is a small ICD built from `icd/xmx-icd.c`. It loads one of the drivers (`MESA`, else the version in `lib/active`, else any that loads) and passes the loader its three entry points.
+ANV's serialized compute shader format (`layer/src/anvbin.c`) differs between Mesa minor versions. `layer/src/layouts.h` holds one measured offset table (`struct anv_layout`) per supported version (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`), including `pd_size_patched` (`656` on 26.1.2, `664` on 26.3.0) for this project's patched drivers. The offsets were measured on exported binaries from the variant shaders in `layer/tests/variants` rather than taken from Mesa's headers:
 
-Build the ICD with:
+```bash
+VULKAN_HEADERS=<Vulkan-Headers checkout> bash layer/tests/build-probe.sh /tmp/probe-out
+bash layer/tests/variants/build.sh /tmp/variants
+mkdir -p /tmp/exported && /tmp/probe-out/probe export /tmp/exported /tmp/variants/*.spv
+python3 layer/tests/layout_probe.py /tmp/exported
+python3 layer/tests/layout_bytes.py /tmp/exported <pd_size> 0 <pd_size>
+```
+
+If you change the prologue instruction sequence in `layer/tools/prologue_asm.py`, regenerate `layer/src/prologue_table.inc` using `libiga64.so.2` from the IGC bundle:
+
+```bash
+IGC=<package>/igc/igc python3 layer/tools/gen_prologue_table.py layer/src/prologue_table.inc
+```
+
+---
+
+## Building the Driver (`libvulkan_intel.so`) and Bundled Dependencies
+
+### 1. The Forwarding ICD (`lib/libvulkan_intel.so`)
+
+The package carries one driver per Mesa version in `lib/mesa-<version>/libvulkan_intel.so`. `lib/libvulkan_intel.so`—the file that the session's `VK_DRIVER_FILES` (`run/intel_icd.json`) points to—is a small forwarding ICD built from `icd/xmx-icd.c`. It loads the driver selected by `MESA`, or else the version named in `lib/active`, or else any driver in `lib/mesa-*/` that loads, and forwards the three Vulkan ICD entry points:
 
 ```bash
 gcc -O2 -shared -fPIC -fvisibility=hidden -o lib/libvulkan_intel.so icd/xmx-icd.c -ldl -lpthread
 ```
 
-### Rebuilding with `tools/rebuild-driver.sh`
+### 2. Bundled Dependencies (`lib/bundled/`)
 
-Run `tools/rebuild-driver.sh` to automate the driver build for the system's Mesa version (for example, after a SteamOS update). The script:
+`tools/build-deps.sh` builds the two libraries the release archive bundles in `lib/bundled/` for distributions that lack them or ship older sonames: `libSPIRV-Tools.so` (tag `vulkan-sdk-1.4.350.1`, commit `0539c81f69a3daeb706fd3477dca61435b475156`, with `SPIRV-Headers` commit `ad9184e76a66b1001c29db9b0a3e87f646c64de0`) and `libdisplay-info.so.3` (tag `0.3.0`, commit `47a5590e9c4eb35d67651b8c05a55f1a48259329`). Build them in a Debian 12 (`bookworm`, glibc 2.36) container so they run on any distribution with glibc >= 2.36 (the drivers themselves require glibc >= 2.38):
 
-1. Downloads the release tarball from `archive.mesa3d.org`.
-2. Applies the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise).
-3. Builds the driver and checks the result the same way the session check does.
-4. Installs it as `lib/mesa-<version>/libvulkan_intel.so` and makes it the default driver (`tools/switch-driver.sh`, see [../drivers.md](../drivers.md)).
+```bash
+docker run --rm -v "$PWD":/src -w /src debian:bookworm tools/build-deps.sh lib/bundled
+```
 
-If the patches do not apply to the new version, the script changes nothing and tells you. SteamOS has no compiler, so run the script in an Arch Linux distrobox (a container that shares your home directory) with the Mesa build dependencies installed:
+### 3. Rebuilding a Patched Driver (`tools/rebuild-driver.sh`)
+
+`tools/rebuild-driver.sh` automates the entire Mesa ANV build for your system's Mesa version (for example after a SteamOS update, or on Debian 13 / Ubuntu 24.04 where `libwayland-client` is 1.23; see [../drivers.md](../drivers.md)):
+1. Downloads the release tarball from `archive.mesa3d.org` and checks its SHA-256 (`26.1.2`: `bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0`, `26.3.0`: `91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a`; for another version, pass `XMX_MESA_SHA256=<sha256>`).
+2. Applies the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise). If the patches do not apply cleanly to the new version, nothing is changed and the script exits.
+3. Builds `libvulkan_intel.so` (caching the source and build tree under `${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>`), checks it with `tools/session-check.sh --dry-run`, installs it to `lib/mesa-<version>/libvulkan_intel.so`, and makes it the default driver via `tools/switch-driver.sh`.
+
+SteamOS has no compiler toolchain, so run it inside an Arch Linux distrobox container with the Mesa build dependencies installed:
 
 ```bash
 distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
 distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0      # or a given one
 ```
 
-The unpatched 26.3.0 driver in the archive (`lib/mesa-stock-26.3.0/`, Xe3's default with the layer) is the same tarball built with the same options and no patches (CI job `mesa stock-26.3.0`).
+### 4. Building Mesa ANV by Hand
 
-### Building by hand
+There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0` (first contributed in #19 for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
 
-There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0 (first contributed in #19 for rc1). Other versions need a rebase. Build both from the release tarballs rather than git tags: upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branched again.
-
-To build Mesa 26.1.2 by hand (for 26.3, use the 26.3.0 tarball and `patches/mesa-26.3/` with the same meson options):
+To build patched Mesa `26.1.2` by hand (for `26.3.0`, use `mesa-26.3.0.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.0/` driver is the same `26.3.0` tarball built with the same Meson options and no patches):
 
 ```bash
 mkdir mesa && curl -sfL https://archive.mesa3d.org/mesa-26.1.2.tar.xz | tar -xJ -C mesa --strip-components=1
 cd mesa && git init -q && git add -A && git commit -qm "mesa 26.1.2"
-git am ../patches/0001-anv-cm-kernel-injection.patch      # the feature
-git am ../patches/0002-anv-cm-debug-tools.patch           # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
-git am ../patches/0003-anv-cm-xe2-large-grf.patch         # Xe-HPG, Xe2: needed; Xe3: no effect (applies with or without 0002)
+git am ../patches/0001-anv-cm-kernel-injection.patch          # the feature
+git am ../patches/0002-anv-cm-debug-tools.patch               # optional: ANV_CM_VIEW/GCAP/CAPTURE/... (see debugging.md)
+git am ../patches/0003-anv-cm-xe2-large-grf.patch             # Xe-HPG, Xe2: needed; Xe3: no effect (applies with or without 0002)
 git am ../patches/0005-anv-cm-sampler-descriptor-table.patch  # kernels whose sampler is a descriptor table (FSR 4 on XMX)
 meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-drivers=intel -Dgallium-drivers= \
   -Dglx=disabled -Dgbm=disabled -Degl=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false -Dllvm=enabled \
@@ -182,50 +253,62 @@ meson setup build -Dprefix=/usr -Dsysconfdir=/etc -Dbuildtype=release -Dvulkan-d
 ninja -C build src/intel/vulkan/libvulkan_intel.so
 ```
 
-Pay close attention to three of these meson options:
+Three of the Meson options are easy to get wrong:
 
-* `'-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps'` (use single quotes so the shell keeps `$ORIGIN`): this lets the driver find SPIRV-Tools and libdisplay-info in the package's `lib/deps/` inside the Steam Linux Runtime, where the session check puts them on systems that lack them. Without this option, the driver loads on the host but can fail in the game's container. Run `readelf -d libvulkan_intel.so | grep RUNPATH` to verify that it shows `$ORIGIN/../deps`.
-* `-Dprefix=/usr -Dsysconfdir=/etc`: pass these even though nothing is installed to the system. The driver reads Mesa's per-game workarounds from `<prefix>/share/drirc.d`. With meson's default `/usr/local`, the driver runs without those workarounds (Wuthering Waves with ray tracing then hangs the GPU within a minute).
-* `-Dintel-rt=enabled`: without this option, the driver exposes no ray tracing extensions and games hide their ray tracing options.
+* `'-Dcpp_link_args=-Wl,-rpath,$ORIGIN/../deps'` (use single quotes so the shell keeps `$ORIGIN`): lets the driver find `libSPIRV-Tools.so` and `libdisplay-info.so.3` in the package's `lib/deps/` inside the Steam Linux Runtime container, where `tools/session-check.sh` places them on systems that lack them. Without this, the driver loads on the host but can fail inside the game's container. Check that `readelf -d libvulkan_intel.so | grep RUNPATH` shows `$ORIGIN/../deps`.
+* `-Dprefix=/usr -Dsysconfdir=/etc`, even though nothing is installed system-wide: the driver reads Mesa's per-game workarounds from `<prefix>/share/drirc.d`, and with Meson's default `/usr/local` it runs without them (Wuthering Waves with ray tracing then hangs the GPU within a minute).
+* `-Dintel-rt=enabled`: without it, the driver exposes no Vulkan ray tracing extensions and games hide their ray tracing options.
 
-### What the patches change
+---
 
-#### `0001` (kernel injection and run-time compilation)
+## What the Mesa Patches Change
 
-This patch touches mostly `src/intel/vulkan`, plus a small hook in the common Vulkan runtime. The code lives in three new files that are identical in both patch series, while the upstream files only get small hooks:
+### `0001-anv-cm-kernel-injection.patch` (26.1.2 and 26.3.0)
 
-* `anv_cm.c` / `anv_cm.h` (all generations): holds the environment block (`struct anv_cm_env`), recognition of the shim's placeholder shaders (their workgroup size, the stored magic value `0x584D5843`, and the kernel hash next to it, as well as the id placeholders of older shims), the kernel cache `~/.cache/xess-xmx/kernels`, the run-time compile and its retry, and filling `brw_cs_prog_data` from the `.cmk` header instead of compiling the NIR (Mesa's intermediate shader representation). Hooks into `anv_shader_compile.c` (and `anv_device.c` for the retry).
-* `genX_cm.c` (per generation, in `anv_per_hw_ver_files`): builds the per-dispatch binding table from the vkd3d-proton descriptor heap (using the static sampler of the pipeline layout, or null surfaces when the heap is not bound) and the NEO-style walker payload (cross-thread data, per-thread local ids). Hooks into `genX_cmd_buffer.c`, `genX_shader.c`, and `genX_cmd_compute.c`.
-* `anv_private.h`: defines the few names that differ between the Mesa versions (`anv_cm_bind_state`, `ANV_CM_*` macros), so that the three files need no `#if` on the Mesa version.
-* `vk_pipeline.c` / `vk_shader.h`: adds a `no_cache` flag so placeholders are never stored in a pipeline cache.
-* `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: adds the new fields.
+Most of the code lives in three new files under `src/intel/vulkan` that are byte-for-byte identical between both patch series; upstream files only get small hooks:
 
-In the 26.3 series, `0001` also creates the general state pool (which holds the walker payload) on the direct-descriptor path where 26.3 no longer creates it, and replaces the placeholder before the Jay/brw compiler branch.
+* `anv_cm.c` / `anv_cm.h` (all generations): the environment block (`struct anv_cm_env`), recognition of the shim's placeholder shaders (workgroup size, stored magic value `0x584D5843`, and the 64-bit kernel hash next to it, plus the legacy ID placeholders of older shims), the kernel cache `~/.cache/xess-xmx/kernels`, runtime compilation (with background prefetch workers and timeouts) and its retry logic (`anv_cm_retry_failed`), the C zebin-to-`CMK2` packer (`anv_cm_pack`), and filling `brw_cs_prog_data` from the `.cmk` header instead of compiling the NIR. Hooked in `anv_shader_compile.c` and `anv_device.c`.
+* `genX_cm.c` (per hardware generation, in `anv_per_hw_ver_files`): the per-dispatch binding table built from the vkd3d-proton descriptor heap (using the static sampler of the pipeline layout, or null surfaces when the heap is not bound) and the NEO-style walker indirect payload (cross-thread data, per-thread packed local IDs). Hooked in `genX_cmd_buffer.c`, `genX_shader.c`, and `genX_cmd_compute.c`.
+* `anv_private.h`: defines `anv_cm_bind_state` and the `ANV_CM_*` macros for the few internal names that differ between Mesa 26.1 and 26.3, so `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` need no `#if` on the Mesa version.
+* `vk_pipeline.c` / `vk_shader.h`: adds a `no_cache` flag so placeholders are never stored in a Vulkan pipeline cache.
+* `brw_compiler.h`, `anv_private.h`, `anv_shader.c`: adds the CM fields to `brw_cs_prog_data` and `anv_shader`.
 
-#### `0002` (debug tools)
+In the `patches/mesa-26.3/` series, `0001` also initializes `device->general_state_pool` on the direct-descriptor path (where Mesa 26.3 stopped creating it, and pins it in `i915/anv_batch_chain.c`), and calls `anv_cm_kernel_replace` in `anv_shader_compile` before the Jay/brw compiler branch.
 
-Adds the debug switches listed in [debugging.md](debugging.md).
+### `0002-anv-cm-debug-tools.patch` (26.1.2 and 26.3.0)
 
-`0001` and `0002` are generated from a single source tree where the debug-only code sits between `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines. Run:
+Adds the developer debug switches (`ANV_CM_PC`, `ANV_CM_VIEW`, `ANV_CM_GCAP`, `ANV_CM_CAPTURE`, `ANV_CM_ONLY`, `ANV_CM_SKIP`, `ANV_CM_SYNC`, `ANV_CM_MAXGROUPS`, `ANV_CM_PREEMPT`, `ANV_CM_CAP_DIR`, and `<blake3>.cmk` shader replacement) documented in [debugging.md](debugging.md).
+
+`0001` and `0002` are generated from a single Mesa source tree where the debug-only code sits between `/* XMX-DEBUG-BEGIN */` and `/* XMX-DEBUG-END */` lines:
 
 ```bash
-tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>
+python3 tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>
 ```
 
-This writes `0001` without those blocks and `0002` with them (new files such as `anv_cm.c` may stay untracked in that tree; the script picks them up). `0003`, `0005`, and `0006` are single commits on top, rebased when `0001` changes. CI checks that no debug code ends up in `0001`.
+`tools/split_patch.py` writes `0001` with those blocks stripped and `0002` with them included (untracked files under `src/` such as `anv_cm.c` are picked up automatically), then restores the marked working tree. CI checks that `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` are identical across both patch series and that no debug symbols end up in `0001`.
 
-#### `0003` (Large GRF Mode)
+### `0003-anv-cm-xe2-large-grf.patch` (26.1.2 and 26.3.0)
 
-Contributed in #16 for Xe2, extended to Xe-HPG in #31 and #32, and updated in #39. It switches Large GRF Mode (256 registers per thread instead of 128) around CM kernels on Xe-HPG and Xe2, including switching it off before Mesa's own BLORP (blit and copy) compute work, trace rays, internal shaders, and generated commands (see [how-it-works.md](how-it-works.md)). It also drops CM dispatches with a zero group count, which the Vulkan specification makes a no-op, on every generation. The switch itself lives in `genX_cm.c`; the other files get one call each.
+Contributed in #16 for Xe2, and extended to Xe-HPG in #31, #32, and #39. Switches `STATE_COMPUTE_MODE` Large GRF Mode on around 256-GRF CM kernels on Xe-HPG and Xe2, and switches it off before non-CM compute walkers, Mesa's own BLORP compute work (`blorp_exec_on_compute`), ray tracing (`cmd_buffer_trace_rays`), internal simple shaders (`genX_simple_shader.c`), device-generated commands (`genX_cmd_dgc.c` on 26.3), at the end of command buffers, and before executing secondary command buffers (see [how-it-works.md](how-it-works.md)). It also drops direct CM dispatches with a zero workgroup count in any dimension, which the Vulkan specification makes a no-op, on every generation. Applies cleanly with or without `0002`.
 
-#### `0004` (removed)
+*(There is no `0004` patch any more. It was a Mesa bug fix for Resident Evil Requiem and its demo, Pragmata, and Monster Hunter Stories 3: Mesa's `drirc` enabled `anv_emulate_divergent_barriers` for them, a lowering that only works with `brw`, causing a crash at startup in `jay_opt_propagate_forwards` when Jay was active. Mesa 26.3's `drirc` now pairs `anv_emulate_divergent_barriers` with `anv_disable_jay` for those games, and SteamOS's 26.1.2 `drirc` has no ANV entries for them, so the patch was dropped with 26.3.0.)*
 
-There is no `0004` any more. It was a Mesa bug fix for Resident Evil Requiem and its demo, Pragmata, and Monster Hunter Stories 3. Mesa's `drirc` turns on `anv_emulate_divergent_barriers` for them, a lowering pass that only works with the old `brw` compiler, so with Jay (the default compiler on Xe2 and Xe3) they crashed at start in `jay_opt_propagate_forwards`. Mesa 26.3's `drirc` now pairs that option with `anv_disable_jay` for the same games, which compiles them with `brw`. A `drirc` without either option (SteamOS ships 26.1.2's, which has no ANV entries for them) never turns the lowering on. The patch was dropped with 26.3.0.
+### `0005-anv-cm-sampler-descriptor-table.patch` (26.1.2 and 26.3.0)
 
-#### `0005` (sampler descriptor tables)
+Handles CM kernels whose sampler is passed in a D3D12 descriptor table rather than as a static sampler, as used by the FSR 4 on XMX plugin ([../games.md](../games.md)). vkd3d-proton puts one push-constant dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the surface tables end one dword earlier; the sampler state is copied from vkd3d-proton's sampler heap at dispatch time. XeSS uses static samplers and does not take this path.
 
-In both series, `0005` handles CM kernels whose sampler is a descriptor table rather than a static sampler, as in the FSR 4 on XMX plugin (see [../games.md](../games.md)). vkd3d puts one push-constant dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the surface tables end one dword earlier. The driver copies the sampler state from vkd3d's sampler heap. XeSS uses static samplers and does not take this path.
+### `0006-anv-cmat-vars-before-jay.patch` (26.3.0 only)
 
-#### `0006` (26.3 only: Jay cooperative matrix fix)
+Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matrix lowering (`brw_nir_lower_cmat`) leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into `ivec8` vectors) and runs no variable-to-SSA or dead-variable pass afterward. When those derefs reach Jay, `jay_emit_instr` hits `UNREACHABLE("All derefs should've been lowered")`. In a release build (`__builtin_unreachable`), execution jumps into whatever function the compiler placed next (`jay_emit_fb_write` when built with GCC 15; GCC 16 happened not to crash), crashing the game while compiling the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables`, and `nir_opt_dce` right after `brw_nir_lower_cmat`.
 
-`0006` is a Mesa bug fix, not part of the XMX feature. The cooperative matrix lowering leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into its vectors) and runs nothing that removes them. Those variable dereferences reach Jay, which has no case for them: an `UNREACHABLE` macro that a release build turns into a jump into unrelated code. Whether that crashes depends on the build (26.3.0-rc3 with this series built with GCC 15 crashes in `jay_emit_fb_write` while Cyberpunk 2077 compiles the shader; GCC 16 happened not to). An assert build stops at `All derefs should've been lowered`. The patch lowers them to SSA (Static Single Assignment values) and removes the dead ones right after the lowering.
+---
+
+## Packaging a Release Archive (`tools/make-release.py`)
+
+With all binaries built and placed in their release locations in the working tree (`igdext64.dll`, `ControlLib.dll`, `ffxfg/*.dll`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, `lib/libvulkan_intel.so`, `lib/active`, `lib/mesa-*/libvulkan_intel.so`, `lib/bundled/*`, and `layer/libVkLayer_xess_xmx.so`), build the release zip archive:
+
+```bash
+python3 tools/make-release.py <version> [out dir]
+```
+
+`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.

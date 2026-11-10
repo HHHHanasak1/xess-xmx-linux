@@ -1,211 +1,230 @@
-# Developer debugging
+# Developer Debugging Reference
 
-This document lists the logs, probes, and environment variables used to debug the shim, the drivers, the layer, the FSR/XeSS wrappers, and the scripts.
+This document covers the developer logs, the XeLL (Xe Low Latency) driver-mode probe, and the full environment variable reference across every component of the project.
 
-For common symptoms and user fixes, see [../troubleshooting.md](../troubleshooting.md). For user-facing Steam launch options, see [../launch-options.md](../launch-options.md).
+For user-facing symptoms, fixes, and quick bug-report instructions, see [../troubleshooting.md](../troubleshooting.md). For Steam launch options, see [../launch-options.md](../launch-options.md). For internal architecture details, see [how-it-works.md](how-it-works.md), and for building from source, see [building.md](building.md).
 
-## Logs
+---
 
-* **Shim (`igdext64.dll`):** Set `IGDEXT_TRACE=1`. It writes `C:\igdext_trace.log` inside the game's Wine prefix (the simulated Windows directory tree, usually `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/`, or in the `steamapps` folder on another drive). The log records every extension call, the detected GPU, the feature answers, each C-for-Metal (CM) kernel with its id, and a `callers(...)` module chain so you can tell super resolution (`libxess.dll`) and frame generation (`libxess_fg.dll`) kernels apart. It also dumps every kernel to `C:\igdext_dump`.
-* **XeLL (Intel Xe Low Latency):** Set `IGDEXT_XELL_LOG=1`. It writes `C:\igdext_xell.log` with the arguments the game passes to XeLL, the real frame rate from `xellSleep` timing, the average simulation-start to present-end latency every 100 frames, and XeLL's own messages.
-* **XeSS frame generation:** Set `IGDEXT_XEFG_LOG=1` to write `C:\igdext_xefg.log` (XeSS-FG's own log via `xefgSwapChainSetLoggingCallback`, the maximum number of generated frames after context creation and initialization, and every change to that number). Set `XESS_FG_LOG=1` to write `C:\igcl_stub.log` with every call `ControlLib.dll` answers.
-* **Patched driver (`libvulkan_intel.so`):** Set `ANV_CM_DEBUG=1` to log each placeholder and kernel injection to the game's standard error (`stderr`). Set `ANV_CM_TRACE=1` to log every dispatch (`ANV CM: walker kernel x,y,z ...`), or `ANV_CM_TRACE=2` to also log the surface states. To capture the game's `stderr`, put `exec 2>>/some/file` into the launch wrapper's config, or use `PROTON_LOG=1 %command%` (which writes `~/steam-<appid>.log`).
-* **Vulkan layer (`VK_LAYER_XESS_xmx`):** Set `XMX_LAYER_LOG=1` to log to `stderr`, or `XMX_LAYER_LOG=<path>` to append to a file.
-* **D3D11 bridge and Vulkan wrapper:** `XESS_DX11_TRACE=1` logs each D3D11 bridge call. `VKWRAP_LOG=1` writes `vkwrap.log` next to `vulkan-1.dll`.
-* **FSR and optical flow DLLs (`ffxfg/`):** Placed in the game's folder next to the DLLs; they keep the last run. `ffx_xess.log` logs the XeSS version, context, quality setting, flags, the first dispatches, and every 600th dispatch. `ffx_xefg.log` logs the upscalers the game's FidelityFX loader offers on the GPU, the swap chain, the maximum multiplier XeSS-FG reports and the number set, the first frames, every 600th present (`presented 4` = 4x, with sync interval and flags),XeSS-FG's warnings, `cap auto:` interval changes, and `oflow: GPU time`. With `FSR_FG=inject`, `dxgi_xefg.log` next to `dxgi.dll` logs what became of each swap chain.
-* **Compiler (`tools/cm-compile.sh`):** Writes to `~/.cache/xess-xmx/compile.log` (`CM_LOG` overrides the path).
-* **Session check:** Writes to `~/.cache/xess-xmx/driver-status` and the user systemd journal (`journalctl --user -u xess-xmx-check`).
+## 1. Logs
 
-To count dispatches per kernel from an `ANV_CM_TRACE=1` log and see what runs every frame:
+In the paths below, `<pfx>` is the game's Wine prefix (`<Steam library>/steamapps/compatdata/<appid>/pfx`, or `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx` on the main drive).
+
+* **Shim (`igdext64.dll`):** `IGDEXT_TRACE=1` writes `C:\igdext_trace.log` inside the prefix (`<pfx>/drive_c/igdext_trace.log`). It records every D3D12 (Direct3D 12) extension call, the detected GPU and PCI ID, the `CheckFeatureSupport` (`OPTIONS1` / `OPTIONS2`) feature answers, each C-for-Metal (CM) kernel with its ID and hash, and `callers(...)` module chains so super resolution (`libxess.dll`) and frame generation (`libxess_fg.dll`) kernels can be told apart. It also dumps every raw kernel binary and options string to `C:\igdext_dump` (`<pfx>/drive_c/igdext_dump/`).
+* **XeLL (`libxell.dll` hook):** `IGDEXT_XELL_LOG=1` writes `C:\igdext_xell.log` (`<pfx>/drive_c/igdext_xell.log`). It records what the game passes to `xellSetSleepMode` and `xellSetFgEnabled`, the real frame rate and blocking times from `xellSleep` timing, the low-latency pacing state (`low latency: ...`, `auto: ...`), XeLL's own messages via `xellSetLoggingCallback`, and the average simulation-start to present-end latency from `xellGetFramesReports` every 100 frames.
+* **XeSS Frame Generation (`libxess_fg.dll` hook):** `IGDEXT_XEFG_LOG=1` writes `C:\igdext_xefg.log` (`<pfx>/drive_c/igdext_xefg.log`). It records XeSS-FG's own internal log via `xefgSwapChainSetLoggingCallback`, `maxSupportedInterpolations` after context creation and initialization, `XESS_FG=5..8` probe results, tagged resource types/formats, camera matrices every 300 frames, and changes to the interpolated frame count.
+* **Control Library (`ControlLib.dll`):** `XESS_FG_LOG=1` (or `IGDEXT_TRACE=1`) writes `C:\igcl_stub.log` (`<pfx>/drive_c/igcl_stub.log`), recording every IGCL call and the `XESS_FG` override value returned for `CTL_3D_FEATURE_FRAME_GENERATION`.
+* **Patched Mesa ANV driver:** `ANV_CM_DEBUG=1` logs each placeholder and kernel injection to the game's `stderr` (and while a kernel is being compiled on first launch or a cache miss, the patched driver prints `ANV CM: compiling kernel` even without `ANV_CM_DEBUG`); `ANV_CM_TRACE=1` logs every dispatch (`ANV CM: walker kernel x,y,z ...` and descriptor heap indices), and `ANV_CM_TRACE=2` also dumps the 16 `RENDER_SURFACE_STATE` dwords of each bound surface. To capture the game's `stderr`, put `exec 2>>/some/file` into the launch wrapper's config, or set `PROTON_LOG=1` (which writes `~/steam-<appid>.log`).
+* **Vulkan layer (`VK_LAYER_XESS_xmx`):** `XMX_LAYER_LOG=1` logs to `stderr`, or `XMX_LAYER_LOG=<path>` appends to that file (self-test results, template round-trips, kernel replacements, and `XMX_LAYER_PROF` GPU profiling tables; the layer logs kernel compiles to `~/.cache/xess-xmx/compile.log`).
+* **Compiler (`tools/cm-compile.sh`, driver, and layer):** `~/.cache/xess-xmx/compile.log` (`CM_LOG` overrides the path). Logs every kernel compile (`cm-compile ok`, `cm-compile FAILED`, `cm-compile PACK FAILED`, `cm-compile TIMEOUT`) with target device, workgroup size, flags, and elapsed time.
+* **Session check (`xess-xmx-check.service`):** `~/.cache/xess-xmx/driver-status` and the user systemd journal (`journalctl --user -u xess-xmx-check`).
+* **FSR-to-XeSS and optical-flow DLLs (`ffxfg/`):** Write `ffx_xess.log`, `ffx_xefg.log`, and `dxgi_xefg.log` in the game folder next to the DLLs (`FFX_XESS_LOG=0` and `FFX_XEFG_LOG=0` turn the first two off).
+* **D3D11 bridge and Vulkan wrapper:** `XESS_DX11_TRACE=1` logs `dx11bridge/libxess_dx11.dll` calls to `stderr` and `OutputDebugString`; `VKWRAP_LOG=1` writes `vkwrap.log` next to `vkwrap/vulkan-1.dll`.
+
+### Counting Dispatches per Kernel
+
+From an `ANV_CM_TRACE=1` stderr log, count dispatches per kernel to see what runs every frame:
 
 ```bash
 grep -a -o "walker kernel [0-9]*,[0-9]*,[0-9]*" stderr.log | sort | uniq -c
 ```
 
-## XeLL driver-mode probe
+---
 
-XeLL runs in cross-vendor mode under Proton (see [how-it-works.md](how-it-works.md)). The reason is in `libxell.dll` itself (read from 1.3.2.10, the SDK copy; run `strings libxell.dll | grep wine_get_version` to check if the 1.3.0.5 copy that games ship has the same check). Before doing anything else, `libxell.dll` checks `GetProcAddress(GetModuleHandle("ntdll.dll"), "wine_get_version")`. If that export exists, it uses its built-in context without ever loading the extension library.
+## 2. XeLL Driver-Mode Probe
 
-If that export is hidden, `libxell.dll` loads `igdext64.dll`, asks for extension version 5/13 or 4/13, checks the driver version string (`>= 31.0.101.6252`) and `GTGeneration`. `GTGeneration` must be one of Intel's `PRODUCT_FAMILY` IDs (1300 for Panther Lake, 1275 for Lunar Lake, 1274 for Battlemage, 1270 for Alchemist, and so on; the shim normally reports 30 there). Only then does it call the latency-reduction functions. Details and offsets are in `shim/src/dll/XellDriver.cpp`.
+Under Proton, Intel XeLL (`libxell.dll`) runs in its cross-vendor mode ([how-it-works.md](how-it-works.md)). The reason is inside `libxell.dll` itself (read from 1.3.2.10, the SDK copy; run `strings libxell.dll | grep wine_get_version` to check whether the 1.3.0.5 build that games ship has the same check):
 
-`IGDEXT_XELL_PROBE=<version>` turns all of this on for one launch: the shim hooks the import table in `libxell.dll` to hide `wine_get_version`, reports the product family ID, claims the requested interface version, accepts the pacing calls, and logs what XeLL does with the timing buffers.
+1. Before anything else at context creation, `libxell.dll` checks that the DXGI adapter has `VendorId == 0x8086` **and** that `GetProcAddress(GetModuleHandle("ntdll.dll"), "wine_get_version")` returns `NULL`. Under Wine that export exists, so `libxell.dll` immediately selects its built-in context (`[XeLL] Using built-in context`) without ever loading `igdext64.dll`.
+2. When `wine_get_version` is hidden, `libxell.dll` loads `igdext64.dll`, asks `GetSupportedVersions` for extension version `5/13` or `4/13`, checks that the driver version string is `>= 31.0.101.6252`, and checks that `INTCDeviceInfo::GTGeneration` is one of Intel's `PRODUCT_FAMILY` IDs (`1300` for Panther Lake, `1275` Lunar Lake, `1274` Battlemage, `1273` Arrow Lake, `1272` Meteor Lake, `1270` Alchemist, `1276`, or `>= 1340`; the shim normally reports `30`, `20`, or `12` there for XeSS).
+3. Only after passing those checks does `libxell.dll` call the latency-reduction entry points (`_INTC_D3D12_GetLatencyReductionStatus`, `_INTC_D3D12_LatencyReductionExt`, `_INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers`, `_INTC_D3D12_RenderSubmitStart`, `_INTC_D3D12_SetNumGeneratedFrames`, `_INTC_D3D12_SetPresentSequenceNumber`). Details and offsets are in `shim/src/dll/XellDriver.cpp`.
 
-To run the probe, put this in the game's Steam launch options:
+### Running the Probe
+
+`IGDEXT_XELL_PROBE=<version>` turns all of that on for one launch: the shim hides `wine_get_version` from `libxell.dll` (via an import-table hook of `GetProcAddress` in `libxell.dll` only, installed when `libxell.dll` loads), reports `gpu.productFamily` in `GTGeneration`, claims support for that latency-reduction interface version, accepts the `Set*` pacing calls, allocates guard-page buffers (`PAGE_GUARD`) for the render-submit timing buffers, and logs every call and every read/write fault XeLL makes on the timing buffers.
+
+Put the probe wrapper in the game's Steam launch options:
 
 ```text
 /path/to/package/tools/xell-probe.sh %command%
 ```
 
-Play for a minute with frame generation enabled (the Wuthering Waves title screen with FG on is enough), then quit. The wrapper prints a summary and writes `~/xess-xmx-probe-<date>.tar.gz` containing:
+*(If the game uses the per-game `enable.sh` install, keep `xmx-launch.sh` in front: `/path/to/package/xmx-launch.sh /path/to/package/tools/xell-probe.sh %command%`.)*
 
-* `proton-xell.log`: XeLL's own messages sent through `OutputDebugString` (the wrapper sets `PROTON_LOG=1` and keeps the XeLL lines from `~/steam-<appid>.log`).
-* `libxell.log`: written by `libxell` 1.3.2+.
-* `igdext_trace.log`: `XELLPROBE` lines showing the hook, every latency-reduction call with its arguments, each `RenderSubmitStart` with the time since the previous one, and every read or write XeLL makes to the timing buffers (slot, in-slot offset, and code address in `libxell.dll`).
-* `igdext_xell.log` and the session's `driver-status`.
+Play for a minute with frame generation on (the Wuthering Waves title screen with FG enabled is enough), quit, and check the summary the wrapper prints to `stderr`. It also writes `~/xess-xmx-probe-<date>.tar.gz` containing:
+* `proton-xell.log`: XeLL's own `OutputDebugString` messages (the wrapper sets `PROTON_LOG=1` and extracts the XeLL lines from `~/steam-<appid>.log`),
+* `libxell.log`: written by `libxell.dll` 1.3.2+ when `XELL_FORCE_LOGS_TO_FILE=1` is set (`1.3.0.x` has no file log),
+* `igdext_trace.log`: `XELLPROBE` lines showing the IAT hook, every latency-reduction call with its arguments, each `RenderSubmitStart` with the elapsed time since the previous one, and every read or write XeLL makes to the timing buffers with the slot number, in-slot byte offset, and code address (`libxell.dll+0x...`),
+* `igdext_xell.log`, `driver-status`, and `environment.txt`.
 
-Attach the archive to the issue.
+Attach `~/xess-xmx-probe-<date>.tar.gz` to the issue.
 
-### Reading the probe result
+### How to Read the Probe Result
 
-* **No `XELLPROBE libxell.dll ...: GetProcAddress import hooked` line:** The shim never saw `libxell.dll` load. Either the shim is not loaded (run `install.sh`), or the game created its XeLL context before the shim loaded. Toggle frame generation off and on in the game's menu to recreate the context, then check again.
-* **`[XeLL] Using built-in context` and no `Intel Extensions` lines when the hook is in place:** XeLL still did not take the Intel path. Check the DXGI vendor ID the game sees (`force_vk_vendor=0`, see [../games.md](../games.md)) and check whether `XELL_FORCE_CROSS_VENDOR` is set.
-* **`XeLL context creation failed - unsupported device` or `unsupported driver`:** The family ID or driver version string reported by the shim was rejected. Override the family ID with `IGDEXT_FAMILY=<id>`.
-* **`Intel Extensions initialized.` and `Latency reduction enabled.` followed by `XELLPROBE LatencyReductionExt(...)` and buffer accesses:** Driver mode started. The access log gives the slot size and fields. A read of `gpu +0x0` followed by a crash means XeLL treats the GPU buffer as a COM object (an `ID3D12Resource` it maps) rather than plain memory, which the next shim version must then provide.
-* **`GetDisplayTelemetry` called and then cross-vendor:** Retry with `XELL_PROBE_TELEMETRY=1` (or `IGDEXT_XELL_TELEMETRY=1`).
+* **No `XELLPROBE libxell.dll ...: GetProcAddress import hooked` line:** The shim never saw `libxell.dll` load. Either the shim is not loaded (`./install.sh`), or the game created its XeLL context before `igdext64.dll` was loaded: toggle frame generation off and back on in the game's menu, which recreates the context, and check again.
+* **`[XeLL] Using built-in context` and no `Intel Extensions` lines although the hook is in place:** XeLL still did not take the Intel path. Check the DXGI vendor ID the game sees (`force_vk_vendor=0`, [../games.md](../games.md)) and whether `XELL_FORCE_CROSS_VENDOR` is set.
+* **`XeLL context creation failed - unsupported device` or `unsupported driver`:** The family ID or driver version string the shim reported was rejected. `IGDEXT_FAMILY=<id>` overrides the family ID.
+* **`Intel Extensions initialized.` and `Latency reduction enabled.` followed by `XELLPROBE LatencyReductionExt(...)` and buffer accesses:** Driver mode started. The access log gives the slot size and field offsets; a read of `gpu +0x0` followed by a crash means XeLL treats the GPU buffer pointer as a COM object (an `ID3D12Resource*` it calls `Map` on) rather than plain memory, which a future shim version must then provide.
+* **`GetDisplayTelemetry` called and then cross-vendor fallback:** Retry with `XELL_PROBE_TELEMETRY=1`.
 
-## Environment variables and switches
+---
 
-Variables set in a game's launch options override the shorthands (`XESS=...`, `FSR=...`) and the session defaults.
+## 3. Switches Reference
 
-### Session environment
+User-facing Steam launch options for a single game are explained in [../launch-options.md](../launch-options.md) and [../frame-generation.md](../frame-generation.md). The tables below list every environment variable and script switch across the project.
 
-Set by `install.sh` in `~/.config/environment.d/50-xess-xmx.conf` or by `enable.sh` in `~/.config/xess-xmx.conf` (read by `xmx-launch.sh`):
+### Session Environment (`install.sh` and `enable.sh`)
 
-| Variable | Effect |
-|---|---|
-| `VK_DRIVER_FILES` | Points to `run/intel_icd.json` as the 64-bit Intel Vulkan driver while keeping every other driver on the system in the list. |
-| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` | Keeps vkd3d-proton on its classic descriptor heap (needed by the kernel binding code) and uses present wait 1 (with present wait 2, Cyberpunk 2077 with frame generation crashed within minutes in `vkWaitForPresent2KHR`). |
-| `force_vk_vendor=0` | Overrides Mesa's `force_vk_vendor=-1` game profiles so games see the Intel GPU. Put `force_vk_vendor=-1 %command%` in a game's launch options to restore Mesa's profile for that game. |
-| `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | The driver's kernel folder and compiler helper (see Driver table below). |
-| `INTC_ALT_DRIVER_EXTENSIONS_PATH` | Points to `C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`. Proton 11.0 has no driver store folder of its own and needs this variable to load the shim. Proton Experimental has a driver store; GE-Proton sets its own value for every game. |
-
-### Launch-option shorthands (`tools/proton-hook.py`)
-
-Run by Proton via the `user_settings.py` installed by `install.sh`:
+Written by `./install.sh` to `~/.config/environment.d/50-xess-xmx.conf` or by `./enable.sh` to `~/.config/xess-xmx.conf` (sourced by `xmx-launch.sh`):
 
 | Variable | Effect |
 |---|---|
-| `XESS=latest` | Replaces older `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` in the game folder with Intel's XeSS SDK libraries (`xess/`), replaces `libxess_dx11.dll` with `dx11bridge/libxess_dx11.dll`, and adds `vkwrap/vulkan-1.dll` for Vulkan games with XeSS. Restores originals on exit. |
-| `XESS_VK=1` / `XESS_VK=0` | Used with `XESS=latest`: forces the `vulkan-1.dll` wrapper on (for games that load Vulkan at run time without importing it) or off. |
+| `VK_DRIVER_FILES` | Puts the package's driver (`run/intel_icd.json`) first as the 64-bit Intel Vulkan driver; every other driver on the system (other GPUs and the 32-bit Intel ICD) stays in the list. |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` | `VK_EXT_descriptor_buffer` keeps vkd3d-proton on its classic `MUTABLE` descriptor heap, which the kernel binding code needs. `VK_KHR_present_wait2` keeps vkd3d-proton on present wait 1: with present wait 2, Cyberpunk 2077 with frame generation (several presents per frame) crashed within minutes in `vkWaitForPresent2KHR`. |
+| `force_vk_vendor=0` | Overrides Mesa's `force_vk_vendor=-1` game profiles ([../troubleshooting.md](../troubleshooting.md)); `force_vk_vendor=-1` in one game's launch options restores Mesa's behavior. |
+| `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | The patched driver's kernel folder (`<package>/kernels`) and compiler helper (`<package>/tools/cm-compile.sh`). |
+| `INTC_ALT_DRIVER_EXTENSIONS_PATH` | Points XeSS at the prefix folder containing the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`). Proton Experimental exposes a driver store in the registry and needs no help; Proton 11.0 has none, and without this variable XeSS never loads the shim there (no XMX, frame generation capped at 2x). GE-Proton sets its own value (`C:\Windows\System32`) for every game. |
+
+*(On Xe3 GPUs with `(device_id & 0xfff0) == 0xb080` or `0xfd80`, i.e., `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`, where `./install.sh` defaults to `stock` mode, `50-xess-xmx.conf` also sets `MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh`, and `XMX_IGC_DIR=<package>/igc`.)*
+
+### Launch-Option Shorthands (`tools/proton-hook.py`)
+
+Run by Proton through the `user_settings.py` that `./install.sh` places into every Proton ([../launch-options.md](../launch-options.md)). Any variable set explicitly in the game's launch options wins over the variable a shorthand expands to:
+
+| Variable | Effect |
+|---|---|
+| `XESS=latest` | Runs the game with Intel's XeSS SDK libraries (`xess/`, fetched by `tools/get-xess.sh`) in place of its older ones, replaces `libxess_dx11.dll` with `dx11bridge/libxess_dx11.dll` (adding `xess/libxess.dll` if missing), and for Vulkan games that import `vulkan-1.dll` links `vkwrap/vulkan-1.dll` (`WINEDLLOVERRIDES=vulkan-1=n,b`) and enables `VK_LAYER_XESS_xmx`. Restores originals when the game exits. |
+| `XESS_VK=1` / `XESS_VK=0` | With `XESS=latest`: forces the Vulkan wrapper (`vkwrap/vulkan-1.dll` + layer) on for a Vulkan game that loads `vulkan-1.dll` at runtime (`1`), or disables it (`0`). |
 | `XESS=dp4a` | Sets `IGDEXT_FORCE_FALLBACK=1`. |
 | `XESS_LOG=1` | Sets `IGDEXT_TRACE=1 IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1`. |
-| `FSR=xess` | Replaces the game's FSR 3.1+ DLLs with the package's (`ffxfg/`) and places the SDK's XeSS libraries next to them while the game runs. |
-| `FSR_FG=xess` | Same as `FSR=xess`, for the frame generation DLL only. |
-| `FSR_FG=inject` | Used with `FSR=xess`: also places `dxgi.dll` and `ffx_xefg_bridge.dll` next to the upscaler for games without FSR frame generation. |
-| `OFLOW_FG=1` | Experimental: places `dxgi.dll` and the optical flow frame generation DLL next to a DX12 game's executable. Ignored when `FSR` or `FSR_FG` is set. |
-| `FSR_VENDOR=amd` | Used with `FSR` or `FSR_FG`: sets `dxgi.customVendorId = 1002` in `DXVK_CONFIG`. |
+| `FSR=xess` | Replaces the game's FSR 3.1+ DLLs with the package's (`ffxfg/`), with the SDK's XeSS libraries next to them (and `ffx/amd_fidelityfx_loader_dx12.dll` for FSR 3.1.0–3.1.3 single-DLL games); restores originals when the game exits. |
+| `FSR_FG=xess` | Same as `FSR=xess`, for the frame generation DLL only (keeps the game's FSR upscaler, or uses `ffx/amd_fidelityfx_upscaler_dx12.dll` for FSR 3.1.0–3.1.3). |
+| `FSR_FG=inject` | With `FSR=xess`: also links `dxgi.dll` and `ffx_xefg_bridge.dll` next to the game executable, for a game with FSR 3.1+ upscaling and no FSR frame generation. |
+| `OFLOW_FG=1` | Experimental: links `dxgi.dll`, `ffx_xefg_bridge.dll`, `libxess_fg.dll`, and `libxell.dll` next to the game executable and sets `FFX_XEFG_OFLOW=1` (XeSS-FG from optical flow on the final image for any DX12 game). Ignored if `FSR` or `FSR_FG` is set. |
+| `FSR_VENDOR=amd` | With `FSR` or `FSR_FG`: sets `dxgi.customVendorId = 1002` in `DXVK_CONFIG` so games that restrict FSR to AMD GPUs show the option, while `ffx_xefg` and `ControlLib.dll` still report `0x8086` to XeSS-FG and XeLL. |
 
-### Driver selection and Mesa options
-
-| Variable | Effect |
-|---|---|
-| `MESA=<version>` | Selects the package driver for this game (`26.1`, `26.3`, `stock-26.3`; a prefix is enough). Logs `xess-xmx: using the Mesa ... driver` to `stderr`, or `no such driver` and falls back to the default. |
-| `INTEL_DEBUG=no-jay` | On Mesa 26.3, compiles the game's own shaders with the old `brw` compiler instead of Jay. |
-| `XMX_STOCK_ICD=<json>` | Used with `xmx-stock.sh`: uses the given Intel ICD JSON file instead of searching the system paths. |
-
-### Shim (`igdext64.dll` and `ControlLib.dll`)
+### Driver Choice and Mesa Options (Game Environment)
 
 | Variable | Effect |
 |---|---|
-| `IGDEXT_TRACE=1` | Writes `C:\igdext_trace.log` and dumps kernels to `C:\igdext_dump`. |
-| `IGDEXT_IGNORE_FAILED=1` | Does not fall back to DP4a when `drive_c/igdext_kernels/compile_failed.txt` exists. |
-| `IGDEXT_SKIP_SELFTEST=1` | Skips the `anv_canary` self-test and assumes the patched driver or layer is active. |
-| `IGDEXT_FORCE_FALLBACK=1` | Declines the extension context so XeSS uses DP4a and XeSS-FG uses its generic 2x path. The shim also does this automatically for unknown Intel device IDs (`fallback: unknown Intel device id`). |
-| `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | Overrides `CheckFeatureSupport(OPTIONS1)`. |
-| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(OPTIONS2)`. Default from the detected GPU: `1,1,0` on Xe2/Xe3, `0,1,0` on Xe-HPG. |
-| `IGDEXT_OPTIONS2_FG=...` | Same as `IGDEXT_OPTIONS2`, but only for calls coming from `libxess_fg.dll`. Do not set `0,...` on Xe2/Xe3: giving XeFG the Xe-HPG kernel variant makes generated frames black or flicker. |
-| `IGDEXT_GMD=<arch>,<rel>` | Overrides the reported GMD architecture and release (also enables unknown Intel device IDs for testing). |
-| `IGDEXT_GTGEN`, `IGDEXT_GTNAME`, `IGDEXT_EUS=<eus>,<cores>` | Overrides the reported GT generation, name, EU count, and core count. |
-| `IGDEXT_XELL_LOG=1` | Writes `C:\igdext_xell.log`. |
-| `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | Applies the Wuthering Waves 33.3 ms frame-cap fix in any game, or disables it everywhere (default: Wuthering Waves only). |
-| `IGDEXT_XELL_CAP=off` / `auto:<ms>` / `<us>` | Configures low latency with frame generation: `off` disables it; `auto:<ms>` starts each frame `<ms>` earlier (or later if negative); `<us>` sets a fixed XeLL frame cap in microseconds (up to `1000000`). With `IGDEXT_XELL_LOG=1`, logs `low latency: ...`, `auto: frame generation on/off (source)`, `auto: frame time ...`, `auto: queue ...`, and `auto: waited in N of 100 frames`. |
-| `XESS_FG=<n>` | Overrides the frame generation multiplier (`2` to `4` via `ControlLib.dll`; `5` to `8` raised by the shim, experimental). |
-| `IGDEXT_XEFG_LOG=1` | Writes `C:\igdext_xefg.log`. |
-| `XESS_FG_LOG=1` | Writes `C:\igcl_stub.log`. |
-| `IGDEXT_XELL_PROBE=<version>` | Enables the XeLL driver-mode probe for the given extension interface version (`tools/xell-probe.sh`). |
-| `IGDEXT_FAMILY=<id>` | Overrides the Intel `PRODUCT_FAMILY` ID reported during the XeLL probe. |
-| `IGDEXT_XELL_TELEMETRY=1` / `XELL_PROBE_TELEMETRY=1` | During the XeLL probe, answers `GetDisplayTelemetry` with a zeroed buffer instead of `E_NOTIMPL`. |
+| `MESA=<version>` | Makes `lib/libvulkan_intel.so` (`icd/xmx-icd.c`) load that driver from `lib/mesa-<version>/` instead of the default in `lib/active` (`26.1`, `26.3`, `stock-26.3`; a prefix is enough). Prints `xess-xmx: using the Mesa ... driver` to `stderr`, or `no such driver` and loads the default. Caveat: setting `MESA=stock-26.3` in a patched session loads the unpatched driver without enabling `VK_LAYER_XESS_xmx`, so that game runs without XMX (on DP4a). |
+| `INTEL_DEBUG=no-jay` | On Mesa 26.3: compiles the game's own shaders with the old `brw` compiler instead of Jay. |
 
-### Patched driver (`patches/0001` and `patches/0002`)
-
-`0001` variables:
+### Shim (`igdext64.dll`) and `ControlLib.dll` (Game Environment)
 
 | Variable | Effect |
 |---|---|
-| `ANV_CM_KERNEL_DIR` | Sets the base path for the default helper below (set by `install.sh`; the folder itself may be empty). |
-| `ANV_CM_HELPER` | Path to the compiler helper script (default: `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
-| `ANV_CM_SPV_DIR` | Folder where the shim writes `.spv` and `.opt` files (default: `$WINEPREFIX/drive_c/igdext_kernels`). |
-| `ANV_CM_DEBUG=1` | Logs placeholder detection and kernel injection to `stderr`. |
-| `ANV_CM_TRACE=1` / `2` | Logs every CM kernel dispatch (`1`), plus surface states (`2`), to `stderr`. |
+| `IGDEXT_TRACE=1` | Enables the trace log (`C:\igdext_trace.log`) and kernel dump (`C:\igdext_dump\`). |
+| `IGDEXT_IGNORE_FAILED=1` | Ignores `C:\igdext_kernels\compile_failed.txt` instead of falling back to DP4a after a failed compile. |
+| `IGDEXT_SKIP_SELFTEST=1` | Skips the `anv_canary` self-test pipeline and assumes the patched driver or layer is active. |
+| `IGDEXT_FORCE_FALLBACK=1` | Declines the D3D12 extension context (`E_NOTIMPL`): XeSS uses DP4a, and XeSS frame generation uses its generic 2x path. The shim also does this automatically for an Intel PCI device ID not in its table (trace: `fallback: unknown Intel device id`) unless `IGDEXT_GMD` is set. |
+| `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS1)`. |
+| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS2)` for non-FG callers (default from the detected GPU: `1,1,0` on Xe2/Xe3, `0,1,0` on Xe-HPG). Does not apply to calls from `libxess_fg.dll`. |
+| `IGDEXT_OPTIONS2_FG=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS2)` for calls coming from `libxess_fg.dll` (when unset, `libxess_fg.dll` calls use the GPU default). |
+| `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN=<n>`, `IGDEXT_GTNAME=<name>`, `IGDEXT_EUS=<eus>,<cores>` | Override the reported GMD architecture/release, `GTGeneration`, `GTGenerationName`, and `EUCount`/`XeCoresCount` in `INTCDeviceInfo1`. Setting `IGDEXT_GMD` also allows an unrecognized Intel PCI device ID to use the extension context. |
+| `IGDEXT_XELL_LOG=1` | Enables `C:\igdext_xell.log`, including the average simulation-start to present-end latency from XeLL's frame reports every 100 frames. |
+| `IGDEXT_XELL_FIXCAP=1` / `IGDEXT_XELL_KEEPCAP=1` | Applies the Wuthering Waves 30 fps XeLL frame-cap fix in any game (`FIXCAP=1`) or disables it everywhere (`KEEPCAP=1`; default: Wuthering Waves only). |
+| `IGDEXT_XELL_CAP=off` / `auto:<ms>` / `<us>` | Configures low-latency frame pacing while frame generation runs ([../frame-generation.md](../frame-generation.md)): `off` (or `0`) turns it off; `auto` (default) or `auto:<ms>` starts each frame `<ms>` earlier (later if negative); `<us>` (`0..1000000`) disables auto-pacing and raises any smaller `minimumIntervalUs` passed to `xellSetSleepMode` to `<us>` microseconds per displayed frame (takes effect when the game calls `xellSetSleepMode`; any other value turns both off). With `IGDEXT_XELL_LOG=1`, logs `low latency: ...` at start, `auto: frame generation on/off (source)`, `auto: frame time ...` once learned, `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames. |
+| `XESS_FG=<n>` | Frame generation multiplier override (`<n>`x): `2..4` is answered through `ControlLib.dll` (`ControlLib.c` accepts `2..16` and clamps values above `4` to `3`, i.e., 4x); `5..8` (`8` is the maximum) is raised in `libxess_fg.dll` memory by `XellHook.cpp` (`XefgRaise`) and is **experimental** (all work; `7` and `8` are not recommended due to latency). |
+| `IGDEXT_XEFG_LOG=1` | Enables `C:\igdext_xefg.log`: XeSS-FG's own log (`xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, tagged resources/constants, and every change of the number. |
+| `XESS_FG_LOG=1` | Enables `C:\igcl_stub.log`: logs every call `ControlLib.dll` answers. |
+| `IGDEXT_XELL_PROBE=<version>` | Hides `wine_get_version` from `libxell.dll`, reports the Intel `PRODUCT_FAMILY` ID as `GTGeneration`, claims XeLL driver-mode support (interface `<version>`), accepts the `Set*` pacing calls, and logs XeLL's use of the timing buffers (`tools/xell-probe.sh`, [Section 2](#2-xell-driver-mode-probe)). |
+| `IGDEXT_FAMILY=<id>` | Overrides the `PRODUCT_FAMILY` ID reported in `GTGeneration` when `IGDEXT_XELL_PROBE` is active (default from the detected GPU). |
+| `IGDEXT_XELL_TELEMETRY=1` | With `IGDEXT_XELL_PROBE`: answers `_INTC_D3D12_GetDisplayTelemetry` with a zeroed buffer (`S_OK`) instead of `E_NOTIMPL`. |
 
-`0002` debug tools (included in the release drivers). These variables refer to a kernel as `x,y` matching the logs. Because all hash placeholders share the workgroup size `(1, 1, 23)`, each kernel is assigned the next free `x,y` pair (`1..16` each) in the order the process first compiles it. `ANV_CM_DEBUG=1` prints `ANV CM: kernel <hash> is x,y in this process's log` (for older id placeholders, `x,y` is the workgroup size):
+### Patched Mesa ANV Driver (`patches/0001` and `patches/0002`)
 
-| Variable | Effect |
-|---|---|
-| `ANV_CM_PC=1` | Prints the push constants of each dispatch (use with `ANV_CM_TRACE`). |
-| `ANV_CM_CAPTURE="x,y:N;..."` | CPU-side dump of every buffer that kernel `x,y` reads at its `N`-th dispatch into `ANV_CM_CAP_DIR` (default: `~/.cache/xess-xmx/cap`, or under `XDG_CACHE_HOME` when set). |
-| `ANV_CM_GCAP="x,y:N;..."` | GPU-side copy of every small (`<= 4 KiB`) buffer right before the `N`-th dispatch into `ANV_CM_CAP_DIR`. |
-| `ANV_CM_VIEW="x,y:s=X,Y:S;..."` | Lets surface `s` of kernel `x,y` see surface `S` of kernel `X,Y` (used for probe kernels). |
-| `ANV_CM_ONLY="x,y ..."` | Injects only the listed kernels; leaves others as placeholders. |
-| `ANV_CM_SKIP="x,y ..."` | Never injects the listed kernels. |
-| `ANV_CM_SYNC=1` | Inserts a full flush and stall around every CM kernel dispatch. |
-| `ANV_CM_MAXGROUPS=<n>` | Clamps the dispatch workgroup count to `<n>`. |
-| `ANV_CM_PREEMPT=0` / `1` | Forces thread preemption off or on. |
-
-### Vulkan layer (`VK_LAYER_XESS_xmx`)
-
-| Variable | Effect |
-|---|---|
-| `XMX_LAYER_LOG` | `1`: logs to `stderr`; `<path>`: appends to that file. |
-| `XMX_LAYER_HELPER` | Path to the compile script (falls back to `ANV_CM_HELPER`, then `tools/cm-compile.sh` next to `ANV_CM_KERNEL_DIR`). |
-| `XMX_LAYER_PROF=1` | Measures GPU time of every replaced dispatch and writes a per-kernel table to the log every 5 seconds. |
-| `XMX_LAYER_PROF=2` | Uses one timestamp pair per run of back-to-back replaced dispatches, reported as one `runs` row (measures XeSS's GPU time including gaps between dispatches). |
-| `XMX_LAYER_PROF_SEC=<n>` | Sets the profiling report period in seconds. |
-| `XMX_LAYER_DISABLE=1` | Turns the layer off. |
-
-### D3D11 bridge, Vulkan wrapper, and FSR 4 plugin
+#### Core Driver Variables (`0001-anv-cm-kernel-injection.patch`)
 
 | Variable | Effect |
 |---|---|
-| `XESS_DX11_TRACE=1` | Logs each call in `dx11bridge/libxess_dx11.dll`. |
-| `XESS_DX11_DUMP=<n>` | Writes the D3D11 bridge output of frame `<n>` next to `libxess_dx11.dll`. |
-| `VKWRAP_LOG=1` | Writes `vkwrap.log` next to `vkwrap/vulkan-1.dll`. |
-| `FSR4_XMX_NO_DIALOG=1` | Suppresses the error dialog in the third-party FSR 4 on XMX plugin. |
-| `FSR4_XMX_LITE=1` / `FSR4_XMX_PROVIDER_INDEX=0` | Selects the Lite model or full model (4.0.2X) in the FSR 4 on XMX plugin. |
+| `ANV_CM_KERNEL_DIR` | Sets the default helper path (`$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`); set by `install.sh` and `enable.sh`. With patch `0002`, any `<blake3>.cmk` placed in this folder also replaces the matching compute shader. |
+| `ANV_CM_HELPER` | Compiler helper script (default `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
+| `ANV_CM_SPV_DIR` | Directory where the shim's `.spv` and `.opt` files live (default `$WINEPREFIX/drive_c/igdext_kernels`). |
+| `ANV_CM_COMPILE_JOBS=<n>` | Maximum number of detached background worker threads started on a cache miss to prefetch and compile uncached `.spv` kernels in `ANV_CM_SPV_DIR` (default: `min(online_cpus - 1, 8)`, max `32`; `0` turns background prefetching off). |
+| `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). |
+| `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1](#1-logs)). |
 
-### FSR on XeSS and optical flow (`ffxfg/`)
+#### Driver Debug Tools (`0002-anv-cm-debug-tools.patch`, included in release drivers)
 
-These can be set in the environment or as `KEY=VALUE` lines in `ffx_xess.env` / `ffx_xefg.env` next to the DLL (environment variables take precedence; `XESS_FG` must be in the launch options because the shim reads it before the DLLs load):
+All hash-format placeholders share the workgroup size `(1, 1, 23)`, so each kernel is assigned the next free `x,y` (`1..16` each) in the order the process first compiles it. `ANV_CM_DEBUG=1` prints `ANV CM: kernel <hash> is x,y in this process's log` (for legacy ID placeholders from older shims, `x,y` is the placeholder's workgroup size):
 
 | Variable | Effect |
 |---|---|
-| `FFX_XESS_LOG=<path>` | Upscaler log file (`0` disables logging; default `ffx_xess.log`). |
-| `FFX_XESS_XESSLOG=0..3` | XeSS internal log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
-| `FFX_XESS_QUALITY=100..106` | Forces the XeSS quality preset (`100` Ultra Performance to `105` Ultra Quality Plus, `106` Native AA). |
-| `FFX_XESS_AUTOEXPOSURE=0` | Disables XeSS auto exposure. |
-| `FFX_XEFG_MULT=<n>` | Frames shown per rendered frame (defaults to `XESS_FG`, else `2`), capped at XeSS-FG's maximum. |
-| `FFX_XEFG_LOG=<path>` | Frame generation log file (`0` disables logging; default `ffx_xefg.log`). |
-| `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG internal log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
-| `FFX_XEFG_HUDLESS=0` | Disables HUD-less image and UI composition; XeSS-FG interpolates the whole image including UI. |
-| `FFX_XEFG_SLEEP=0` | Skips calling `xellSleep` (XeLL itself stays on because XeSS-FG requires it). |
-| `FFX_XEFG_OWNWAIT=0` | Gives the game the XeSS-FG proxy's frame latency waitable object instead of the DLL's own object. |
-| `FFX_XEFG_PACE=1` | Releases the DLL's waitable object when the GPU finishes the presented frame (via a fence and helper thread, 200 ms timeout) instead of when Present returns. |
-| `FFX_XEFG_VALIDITY=0` | Measuring aid: tags depth and motion vectors as valid until the next present instead of copying them at prepare time, to measure copy cost (can flicker if the game overwrites them before present). |
-| `FFX_XEFG_EXCLUSIVE=1` | Lets exclusive fullscreen requests through instead of keeping the swap chain windowed (disables interpolation in exclusive fullscreen). |
-| `FFX_XEFG_VENDOR=0` | Lets XeSS-FG and XeLL see the vendor ID reported by DXVK instead of spoofing Intel (`0x8086`) on Intel adapters when `FSR_VENDOR=amd` is used. |
-| `FFX_XEFG_MVNDC=1` | Treats motion vectors as NDC (as Cyberpunk 2077 passes them). |
-| `FFX_XEFG_OFLOW_DIV=n` | With `OFLOW_FG=1`: runs optical flow at `1/n` of the display size (`1` to `4`, default `1`). |
-| `FFX_XEFG_OFLOW_DEPTH=d` | With `OFLOW_FG=1`: sets the constant depth value written by the expansion shader (default `1.0`). |
-| `FFX_XEFG_CAP=auto` / `<us>` / `0` | With `OFLOW_FG=1`: controls the rendered frame interval via XeLL's frame cap (`auto` is default, `<us>` sets a fixed microsecond interval, `0` disables). |
-| `FFX_XEFG_CAP_PAD=ms` | With `OFLOW_FG=1`: sets `auto`'s initial guess in milliseconds for the time needed beyond the measured GPU time (default `1.5`). |
-| `FFX_XEFG_REFRESH=Hz` | With `OFLOW_FG=1`: overrides the display refresh rate when Windows reports a wrong one. |
-| `FFX_XEFG_TIMES=1` | With `OFLOW_FG=1`: logs frame time, time in Present, and XeLL sleep percentiles every 300 frames. |
+| `ANV_CM_PC=1` | Prints the non-table push constant dwords of each dispatch (requires `ANV_CM_TRACE`). |
+| `ANV_CM_CAPTURE="x,y:N;..."` | CPU-side dump of every raw buffer surface (`format == 0x1ff`) that kernel `x,y` reads at its `N`-th dispatch into `ANV_CM_CAP_DIR` (`cap_x_y_nN_s<surf>.bin`). |
+| `ANV_CM_GCAP="x,y:N;..."` | GPU-side copy (`mi_memcpy` into a 4 MiB host-coherent BO right before the dispatch) of every small (`<= 4 KiB`) raw buffer surface at the `N`-th dispatch of kernel `x,y`, written to `ANV_CM_CAP_DIR` (`gcap_x_y_nN_s<surf>.bin`) 40 dispatches of that kernel later. |
+| `ANV_CM_CAP_DIR=<dir>` | Output folder for `ANV_CM_CAPTURE` and `ANV_CM_GCAP` (default `~/.cache/xess-xmx/cap`, or `$XDG_CACHE_HOME/xess-xmx/cap`; no capture happens if neither `ANV_CM_CAP_DIR`, `XDG_CACHE_HOME`, nor `HOME` is an absolute path). |
+| `ANV_CM_VIEW="x,y:s=X,Y:S;..."` | Makes surface `s` of kernel `x,y` use the most recently recorded 64-byte surface state `S` of kernel `X,Y` (for probe kernels inspecting intermediate buffers). |
+| `ANV_CM_ONLY="x,y ..."`, `ANV_CM_SKIP="x,y ..."` | Injects only (`ONLY`) or never (`SKIP`) the listed kernels; skipped kernels stay no-op placeholders. |
+| `ANV_CM_SYNC=1` | Emits a full end-of-pipe sync and cache flush/invalidate before every CM kernel dispatch. |
+| `ANV_CM_MAXGROUPS=<n>`, `ANV_CM_PREEMPT=0\|1` | Clamps `num_wg[0..2]` of every CM dispatch to at most `<n>` / forces `InterfaceDescriptor.ThreadPreemption` to `0` or `1` on Xe2+ (`GFX_VER >= 20`). |
 
-Input-isolation debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XESS_JITTER`) are only compiled in when building `ffxfg` with `FFXFG_DEBUG=1` in the environment of `build.bat`. See the comments at their definitions in `ffxfg/ffx_xefg.cpp`.
+### Unpatched-Driver Vulkan Layer (`VK_LAYER_XESS_xmx`, `layer/`)
 
-### Scripts
+The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer` and `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`.
 
-Environment variables and arguments accepted when running the package's scripts from a shell:
-
-| Script | Arguments and variables |
+| Variable | Effect |
 |---|---|
-| `install.sh`, `uninstall.sh` | `STEAM_DIR`: overrides the Steam installation path (default: first found of `~/.local/share/Steam`, `~/.steam/steam`, `~/.steam/root`). On `install.sh`: `XMX_DRIVER=patched`, `stock`, or `auto` selects the session driver; `XMX_NO_ENV=1` skips writing the session environment and session check while still installing the shim, hook, and watcher. |
-| `enable.sh`, `disable.sh` | Requires `XMX_APPID` or `XMX_PREFIX`. `XMX_CONF` overrides the config file path (default `~/.config/xess-xmx.conf`). `XMX_GAME` refuses to run while that process is running. |
-| `tools/switch-driver.sh [version]` | With no argument, lists the package's drivers (`*` marks the default). With a version, checks it and makes it the default. |
-| `tools/rebuild-driver.sh [version]` | Rebuilds the patched driver for `[version]` (defaults to the system's Mesa version). `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees. |
-| `tools/session-check.sh [--dry-run]` | Run by `xess-xmx-check.service`. `--dry-run` only reports and populates `lib/deps/`. `XMX_CHECK_LIB` and `XMX_CHECK_ICD` test a specific driver library or ICD. |
-| `tools/get-xess.sh [package dir]` | Downloads Intel's XeSS SDK libraries into `xess/`. `XESS_TAG` and `XESS_SHA256` select another SDK release. |
-| `tools/get-ffx.sh [package dir]` | Downloads AMD's FidelityFX loader and providers into `ffx/` for FSR 3.1.0 to 3.1.3 games. |
-| `tools/fsr-fg.sh all\|on\|off\|status <app id \| game folder>` | Installs or removes the FSR-on-XeSS DLLs directly in a game folder for Protons without the hook. |
-| `tools/get-igc.sh [package dir]` | Downloads the compiler bundle into `igc/`. `IGC_TAG` and `NEO_TAG` select other releases (defaults: IGC `2.10.10`, compute-runtime `25.18`; other versions are untested). |
-| `tools/cm-compile.sh` | Called by the driver and layer. Accepts `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (overrides `ocloc -device` detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`), and `CM_NO_LOAD_PAYLOAD=1` (used by the layer). The driver also passes `CM_PCI_ID`, `CM_GRF_BYTES`, and `CM_OUT_DIR` (when `CM_OUT_DIR` is unset, `cm-compile.sh` packs the output with `tools/cmk_pack.py`). |
+| `XMX_LAYER_LOG=1\|<path>` | `1`: logs to `stderr`; a path containing `/`: appends to that file. |
+| `XMX_LAYER_HELPER=<path>` | Compiler helper script (else `ANV_CM_HELPER`, else `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
+| `XMX_LAYER_PROF=1\|2` | GPU timestamp profiling of replaced dispatches: `=1` records a timestamp pair around every replaced dispatch and logs a per-kernel table every `XMX_LAYER_PROF_SEC` seconds; `=2` records one timestamp pair per contiguous run of replaced dispatches and reports them as one `runs` row (measuring XeSS's GPU time including barriers and copies between dispatches). |
+| `XMX_LAYER_PROF_SEC=<sec>` | Report period in seconds for `XMX_LAYER_PROF` (default `5.0`, minimum `> 0.5`). |
+
+### D3D11 Bridge (`dx11bridge/`), Vulkan Wrapper (`vkwrap/`), and FSR / Optical-Flow DLLs (`ffxfg/`)
+
+| Variable | Component | Effect |
+|---|---|---|
+| `XESS_DX11_TRACE=1` | `dx11bridge/libxess_dx11.dll` | Logs D3D12 device setup, shared texture creation, and every `xessD3D11Execute` call to `stderr` and `OutputDebugString`. |
+| `XESS_DX11_DUMP=<n>` | `dx11bridge/libxess_dx11.dll` | Dumps the output texture of the `<n>`-th `xessD3D11Execute` call to `xess_dx11_dump.raw` next to `libxess_dx11.dll` (header `"XD11"`, width, height, DXGI format, row pitch, then pixel rows). |
+| `VKWRAP_LOG=1` | `vkwrap/vulkan-1.dll` | Writes `vkwrap.log` next to `vulkan-1.dll`. |
+| `FFX_XESS_LOG=<path>\|0` | `amd_fidelityfx_upscaler_dx12.dll` | Upscaler log file path (default `ffx_xess.log` next to the DLL); `0` turns it off. Can also be set in `ffx_xess.env`. |
+| `FFX_XESS_XESSLOG=0..3` | `amd_fidelityfx_upscaler_dx12.dll` | `libxess.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
+| `FFX_XESS_QUALITY=100..106` | `amd_fidelityfx_upscaler_dx12.dll` | Forces a specific XeSS quality setting (`100` Ultra Performance .. `105` Ultra Quality Plus, `106` Native AA). |
+| `FFX_XESS_AUTOEXPOSURE=0` | `amd_fidelityfx_upscaler_dx12.dll` | Debug: disables `XESS_INIT_FLAG_ENABLE_AUTOEXPOSURE`. |
+| `FFX_XEFG_MULT=<n>` | `amd_fidelityfx_framegeneration_dx12.dll` | Frames shown per rendered frame (default `XESS_FG`, else `2`), capped at XeSS-FG's maximum. Can also be set in `ffx_xefg.env`. |
+| `FFX_XEFG_LOG=<path>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off. |
+| `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
+| `FFX_XEFG_HUDLESS=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Ignores the game's HUD-less color texture and leaves XeSS-FG UI composition off. |
+| `FFX_XEFG_SLEEP=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Skips calling `xellSleep` (XeLL stays enabled, as XeSS-FG requires it). |
+| `FFX_XEFG_OWNWAIT=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Hands the game the XeSS-FG proxy swap chain's own frame-latency waitable object instead of the DLL's semaphore (deadlocks CONTROL Resonant). |
+| `FFX_XEFG_PACE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Releases the DLL's waitable semaphore when a GPU fence signaled after `Present` completes (with a 200 ms watchdog), instead of when `Present` returns. |
+| `FFX_XEFG_VALIDITY=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: tags depth and motion vectors `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids the copy at prepare to measure its cost; can flicker if the game overwrites them before present). |
+| `FFX_XEFG_EXCLUSIVE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Lets exclusive fullscreen requests through instead of keeping the swap chain windowed (XeSS-FG then refuses to interpolate). |
+| `FFX_XEFG_VENDOR=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Disables the `IDXGIAdapter::GetDesc*` hook that reports `0x8086` to `libxess_fg.dll` and `libxell.dll` when DXVK spoofs another vendor ID. |
+| `FFX_XEFG_MVNDC=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Sets `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scales motion vectors to NDC (`2 / width`, `-2 / height`). |
+| `FFX_XEFG_OFLOW=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Computes motion vectors from FidelityFX optical flow on the final backbuffer (`OFLOW_FG=1` sets this). |
+| `FFX_XEFG_OFLOW_DIV=1..4` | `amd_fidelityfx_framegeneration_dx12.dll` | Runs optical flow at `1/n` of the display size (default `1`). |
+| `FFX_XEFG_OFLOW_DEPTH=<d>` | `amd_fidelityfx_framegeneration_dx12.dll` | Constant depth value written by `oflow_expand.hlsl` (default `1.0`). |
+| `FFX_XEFG_CAP=auto\|<us>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Real-frame interval cap via XeLL (`auto` is default when `FFX_XEFG_OFLOW=1`, `<us>` sets a fixed interval in microseconds, `0` disables). |
+| `FFX_XEFG_CAP_PAD=<ms>` | `amd_fidelityfx_framegeneration_dx12.dll` | Initial estimate in milliseconds of per-frame time beyond the measured GPU time for `FFX_XEFG_CAP=auto` (default `1.5`, then learned). |
+| `FFX_XEFG_REFRESH=<Hz>` | `amd_fidelityfx_framegeneration_dx12.dll` | Overrides the display refresh rate for `FFX_XEFG_CAP=auto` when Windows reports a wrong one (default from `EnumDisplaySettingsA`, else `144`). |
+| `FFX_XEFG_TIMES=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Logs frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow and expansion GPU times every 300 runs. |
+
+#### `FFXFG_DEBUG=1` Build-Only Switches (`ffxfg/build.bat` with `FFXFG_DEBUG=1`)
+
+Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](building.md)):
+* `FFX_XESS_JITTER=<f>`: multiplies upscaler jitter offsets by `<f>` (`-1` negates jitter).
+* `FFX_XEFG_CAMERA=0..6`: `0` identity view and projection matrices; `1` normal (default); `2` transposed; `3` projection not depth-inverted; `4` both transposed and not inverted; `5` all zero; `6` ignores camera vectors (fixed view, real projection).
+* `FFX_XEFG_JITTER=<f>`: multiplies frame generation jitter offsets by `<f>` (`0` disables, `-1` negates).
+* `FFX_XEFG_RENDERTIME=<ms>`: overrides `frameRenderTime` with `<ms>`.
+* `FFX_XEFG_RENDERSCALE=<f>`: multiplies the game's `frameTimeDelta` by `<f>` (`0.001` = seconds).
+* `FFX_XEFG_DUMP=<n>`: dumps depth and motion vectors of two consecutive frames every `<n>` frames to `ffx_xefg_<frame>_depth.bin` and `ffx_xefg_<frame>_mv.bin` (up to 16 dumps total, 8 pairs).
+* `FFX_XEFG_ORDER=1`: logs the order of `prepare`, `configure`, and `present` calls with their frame IDs for the first 300 calls after interpolation starts.
+
+### Scripts (Shell Environment When Running Them)
+
+| Script | Arguments / Variables |
+|---|---|
+| `install.sh`, `uninstall.sh` | `STEAM_DIR` (default: the first of `~/.local/share/Steam`, `~/.steam/steam`, `~/.steam/root`, `~/.steam/debian-installation` that holds a Steam install); `install.sh` only: `XMX_DRIVER=auto\|patched\|stock` (session driver mode, saved in `run/driver-mode`; `stock` is accepted on any GPU if `lib/mesa-stock-*` and `layer/libVkLayer_xess_xmx.so` exist, though on Xe-HPG and Xe2 the layer declines its self-test and XeSS runs on DP4a), `XMX_NO_ENV=1` (no session environment and no session check; the shim, hook, and watcher stay), `XMX_WAIT_PREFIX=<s>` (used by `xess-xmx-shim.service`). |
+| `enable.sh`, `disable.sh` | `XMX_APPID` or `XMX_PREFIX` (one is required), `XMX_CONF` (default `~/.config/xess-xmx.conf`, read by `xmx-launch.sh`), `XMX_GAME` (refuse to run while that process runs), `STEAM_DIR`. |
+| `xmx-stock.sh` | `XMX_STOCK_ICD=<json>[:<json>]` (custom Intel ICD(s) to use instead of the system's), `XMX_ICD_DIRS` (colon-separated ICD search directories, for tests). |
+| `tools/switch-driver.sh [version]` | No argument: lists the package's drivers (`*` = default in `lib/active`); with a version or prefix: tests it and makes it the default. |
+| `tools/rebuild-driver.sh [version]` | Version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees; `XMX_MESA_SHA256` provides the tarball SHA-256 for versions other than `26.1.2` and `26.3.0`. |
+| `tools/session-check.sh [--dry-run]` | Run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver library or ICD file. |
+| `tools/get-xess.sh [package dir]` | Downloads Intel's XeSS SDK libraries for `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG` (default `v3.0.2`) and `XESS_SHA256` select another release. |
+| `tools/get-ffx.sh [package dir]` | Downloads AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3. |
+| `tools/fsr-fg.sh all\|on\|off\|status <app id \| game folder>` | Persistent FSR-on-XeSS file swap in folders that contain `amd_fidelityfx_framegeneration_dx12.dll` (or the FSR 3.1.0–3.1.3 single-DLL `amd_fidelityfx_dx12.dll`), for Protons without the `user_settings.py` hook ([../frame-generation.md](../frame-generation.md)). |
+| `tools/get-igc.sh [package dir]` | `IGC_TAG`, `NEO_TAG` select other compiler releases (defaults: IGC `v2.10.10`, compute-runtime `25.18.33578.6`; others are untested). |
+| `tools/cm-compile.sh` | Called by the driver and layer; `XMX_IGC_DIR` (default `<package>/igc`), `CM_DEVICE` (`ocloc -device`, overrides the detection), `CM_LOG` (default `~/.cache/xess-xmx/compile.log`). The driver and layer also set `CM_PCI_ID`, `CM_GRF_BYTES`, and `CM_OUT_DIR` (`ocloc`'s output folder; the driver/layer packs the `.cmk`/`.cml` itself), and the layer sets `CM_NO_LOAD_PAYLOAD=1`. Run by hand without `CM_OUT_DIR`, it packs with `tools/cmk_pack.py` (which reads `CMK_GC` and `CMK_GRF_BYTES`). |
+| `tools/xell-probe.sh` | `XELL_PROBE_VERSION=<n>` (default `1`, exported as `IGDEXT_XELL_PROBE`), `XELL_PROBE_TELEMETRY=1` (exports `IGDEXT_XELL_TELEMETRY=1`), `XELL_PROBE_KEEP=1` (keeps raw logs in the prefix after creating the archive). |

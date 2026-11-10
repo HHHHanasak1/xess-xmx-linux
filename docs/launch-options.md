@@ -1,111 +1,108 @@
 # Steam launch options
 
-Set launch options for one game in Steam under **Properties -> General -> Launch options**. Put variables before `%command%`, separated by spaces:
+This page lists every Steam launch option you can set for a single game (**Properties → General → Launch options**). Put variables before `%command%`, separated by spaces:
 
 ```sh
 MESA=26.1 XESS=latest %command%
 ```
 
-A launch option applies only to that game and takes effect the next time you start it. You do not need to log out and in. `install.sh` sets system-wide defaults in `~/.config/environment.d/50-xess-xmx.conf`; a launch option overrides them for that game.
+A launch option applies only to that game and takes effect the next time you start it. You do not need to log out or reboot. `install.sh` writes the system-wide defaults to `~/.config/environment.d/50-xess-xmx.conf` ([install.md](install.md)); a launch option overrides them for that game.
 
-`XESS`, `XESS_LOG`, `FSR`, `FSR_FG`, and `OFLOW_FG` require the system-wide install ([install.md](install.md)): `install.sh` puts a `user_settings.py` file into every Proton, which runs `tools/proton-hook.py` before starting a game. If you already had a `user_settings.py`, `install.sh` keeps it as `user_settings.user.py` next to it and still runs it.
+## How the Proton hook works
 
-With a per-game install (`enable.sh`, see [install.md](install.md)), put the wrapper after the variables:
+`XESS`, `XESS_LOG`, `FSR`, `FSR_FG`, and `OFLOW_FG` need the system-wide install ([install.md](install.md)). `install.sh` puts a small `user_settings.py` into every Proton it can write to, which Proton runs before it starts a game (`tools/proton-hook.py`). If you already had a `user_settings.py` of your own, `install.sh` keeps it as `user_settings.user.py` next to it so your settings still apply. Any variable you set explicitly in the launch options wins over the variable a shorthand expands to.
+
+With the per-game install (`enable.sh`, [install.md](install.md)), put the wrapper last, after your variables:
 
 ```sh
 MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%
 ```
 
-The Proton hook shorthands are not available with `enable.sh`:
+With the per-game install (or on a root-owned distribution Proton where `install.sh` could not install `user_settings.py`), these five shorthands are not available:
+* Instead of `XESS=dp4a` and `XESS_LOG=1`, pass their underlying `IGDEXT_*` variables ([dev/debugging.md](dev/debugging.md)).
+* Instead of `FSR=xess` and `FSR_FG=xess`, run `tools/fsr-fg.sh` ([frame-generation.md](frame-generation.md); note that `tools/fsr-fg.sh all` only works on game folders that have the FSR frame generation DLL or the single `amd_fidelityfx_dx12.dll` and refuses folders with only `amd_fidelityfx_upscaler_dx12.dll`).
+* `XESS=latest`, `FSR_FG=inject`, and `OFLOW_FG` have no alternative without the hook (`XESS_FG` does not need the hook because `ControlLib.dll` and `igdext64.dll` read it inside the game process).
 
-- For `XESS=dp4a` and `XESS_LOG=1`, use the underlying variables ([dev/debugging.md](dev/debugging.md)).
-- For `FSR=xess` and `FSR_FG=xess`, run `tools/fsr-fg.sh` ([frame-generation.md](frame-generation.md)).
-- `XESS=latest`, `FSR_FG=inject`, and `OFLOW_FG` have no `enable.sh` equivalent.
+---
 
 ## Driver
 
-See [drivers.md](drivers.md) for details on the bundled drivers and `tools/switch-driver.sh`, and [install.md](install.md#using-the-systems-own-driver-for-one-game-xmx-stocksh) for `xmx-stock.sh`.
+See [drivers.md](drivers.md) for the drivers in the package and how to switch the default across all games (`tools/switch-driver.sh`, `XMX_DRIVER`), and [install.md](install.md) for the full details of `xmx-stock.sh`.
 
-| Launch option | What it does | When to use |
+| Launch option | What it does | When |
 |---|---|---|
-| `MESA=26.1 %command%` | Runs the game on the package's patched Mesa 26.1.2 driver (ANV, Mesa's Intel Vulkan driver). | A game misbehaves on Mesa 26.3 only (please report it). |
-| `MESA=26.3 %command%` | Runs the game on the package's patched Mesa 26.3 driver. | You changed the default to 26.1 and want 26.3 for one game, or on Xe3 to compare against the unpatched default. |
-| `/path/to/package/xmx-stock.sh %command%` | **Experimental**: runs the game on the system's own unpatched Mesa ANV with the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), which injects the XMX kernels from outside the driver. Other games keep the default driver. | You want the distribution's own Mesa for that game, or want to test the layer against the patched driver. The layer supports Mesa 26.1, 26.3, and 27.0 (SteamOS ships 26.1.2); on other versions XeSS falls back to DP4a (dot-product instructions, the generic non-XMX path). |
-| `INTEL_DEBUG=no-jay %command%` | Mesa 26.3 compiles the game's own shaders with the old compiler instead of Jay (Mesa's new shader compiler). XeSS is not affected. | A rendering bug or crash goes away with `MESA=26.1`: this tells you whether Jay is the cause. |
+| `MESA=26.1 %command%` | Runs this game on the package's patched Mesa 26.1.2 driver | A game misbehaves on Mesa 26.3 only (please report it) |
+| `MESA=26.3 %command%` | Runs this game on the package's patched Mesa 26.3 driver | You changed the default to 26.1 and one game should keep 26.3, or on Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`) you want to compare the patched 26.3 driver against the unpatched default |
+| `/path/to/package/xmx-stock.sh %command%` | **Experimental**: runs this game on your distribution's own unpatched Mesa ANV (Intel's Vulkan driver) with the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), which injects the XMX (Xe Matrix Extensions) kernels from outside the driver; the session's default driver stays in place for every other game | You want to keep your distribution's own Mesa for that game, or test the layer against the patched driver. The layer supports Xe3 GPUs with PCI device IDs `0xB080`–`0xB08F` or `0xFD80`–`0xFD8F` on Mesa 26.1, 26.3, and 27.0 (SteamOS ships 26.1.2); with another Mesa version or GPU, XeSS runs on DP4a (dot-product fallback) |
+| `INTEL_DEBUG=no-jay %command%` | Compiles the game's own shaders on Mesa 26.3 with the older `brw` compiler instead of `Jay` (XeSS is not affected) | A rendering bug or crash that goes away with `MESA=26.1`: tells whether Jay is the cause |
 
-`MESA` accepts a version or a version prefix (`26.1`, `26.3`, `26.1.2`). An unknown version falls back to the default driver and prints `xess-xmx: MESA=...: no such driver` to the game's stderr. To change the default driver for all games, run `tools/switch-driver.sh` (with no argument it lists the drivers and marks the default with `*`; see [drivers.md](drivers.md)).
+`MESA` takes a version or a prefix of one (`26.1`, `26.3`, `26.1.2`). An unknown version falls back to the default driver and prints `xess-xmx: MESA=...: no such driver` to the game's stderr.
 
-Put variables before `xmx-stock.sh`:
+`xmx-stock.sh` is a command wrapper, not a variable, because it must rewrite `VK_DRIVER_FILES` before Steam's runtime container (`pressure-vessel`) starts. Put variables before the wrapper:
 
 ```sh
 XESS=latest /path/to/package/xmx-stock.sh %command%
 ```
 
-Do not combine `xmx-stock.sh` with `xmx-launch.sh`, and note that `MESA` has no effect with it. See [install.md](install.md#using-the-systems-own-driver-for-one-game-xmx-stocksh) for what `xmx-stock.sh` sets and requires.
+If the layer files or a 64-bit system Intel ICD (Installable Client Driver) are missing, `xmx-stock.sh` logs a line to Steam's output and starts the game unchanged on the session's driver (the package's unpatched driver + layer in stock mode on Xe3 `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`, or the patched driver otherwise). `MESA` has no effect when using `xmx-stock.sh`. To use a custom unpatched Intel ICD JSON file instead of the system's, set `XMX_STOCK_ICD=<json>[:<json>]` before the wrapper. For the layer's logging and profiling switches (`XMX_LAYER_LOG=1` or `<file>`, `XMX_LAYER_PROF=1|2`, `XMX_LAYER_PROF_SEC=<sec>`), see [layer/README.md](../layer/README.md) and [dev/debugging.md](dev/debugging.md). For full setup details of `xmx-stock.sh`, see [install.md](install.md).
+
+---
 
 ## XeSS super resolution
 
-See [games.md](games.md) for per-game setups, D3D11 games, Vulkan games, and games with old XeSS libraries.
+See [games.md](games.md) for per-game guides, why DXVK (DirectX-to-Vulkan) hides the Intel GPU from XeSS older than 2.0.2.68, and how the D3D11 (Direct3D 11) and Vulkan paths work.
 
-| Launch option | What it does | When to use |
+| Launch option | What it does | When |
 |---|---|---|
-| `XESS=latest %command%` | Replaces the game's older XeSS libraries with Intel's XeSS SDK 3.0.2 libraries (XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) while the game runs. In a **D3D11** game (or with OptiScaler's XeSS in D3D11), it replaces `libxess_dx11.dll` with the package's D3D12 bridge ([games.md](games.md#xess-in-a-d3d11-game)). In a **Vulkan** game, it puts the package's `vulkan-1.dll` next to the executable so the layer runs XeSS on XMX ([games.md](games.md#xess-in-a-vulkan-game)). | A game ships XeSS older than 2.0.2.68 (where DXVK hides the Intel GPU; see [games.md](games.md)), a game has an older XeSS build, or the game uses XeSS on D3D11 or Vulkan. |
-| `XESS_VK=1` / `XESS_VK=0` (with `XESS=latest`) | Forces the Vulkan wrapper of `XESS=latest` on (for an executable that loads Vulkan at run time instead of importing `vulkan-1.dll`) or off. | A Vulkan game with XeSS stays on DP4a with `XESS=latest` alone (`XESS_VK=1`), or the Vulkan wrapper gets in the way in a non-Vulkan game (`XESS_VK=0`). |
-| `XESS=dp4a %command%` | Runs XeSS without Intel's extension: super resolution uses DP4a and frame generation uses its generic path (2x only). | Comparing XMX against DP4a, or checking whether the XMX path causes a problem. |
+| `XESS=latest %command%` | Runs the game with the XeSS libraries of Intel's XeSS SDK 3.0.2 (`xess/`, fetched by `install.sh` / `tools/get-xess.sh`: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) in place of its older ones; for a **D3D11** game, replaces `libxess_dx11.dll` with the package's D3D11-on-D3D12 bridge (`dx11bridge/libxess_dx11.dll`, [games.md](games.md#xess-in-a-d3d11-game)); for a **Vulkan** game, places the package's `vulkan-1.dll` (`vkwrap/`) next to the executable and enables the layer so XeSS runs on XMX on Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`; [games.md](games.md#xess-in-a-vulkan-game)). Restores the game's original files when it exits | A game with XeSS older than 2.0.2.68 (such as Cyberpunk 2077), a game whose XeSS is simply old, a D3D11 game with XeSS (or OptiScaler's XeSS in a D3D11 game), or a Vulkan game with XeSS |
+| `XESS_VK=1` / `XESS_VK=0` (with `XESS=latest`) | Forces the Vulkan part of `XESS=latest` on (`1`) for a game whose executable loads `vulkan-1.dll` dynamically at runtime rather than importing it in its PE header, or turns it off (`0`) | `XESS_VK=1`: a Vulkan game with XeSS that stays on DP4a with `XESS=latest` alone. `XESS_VK=0`: a non-Vulkan game where the Vulkan wrapper gets in the way |
+| `XESS=dp4a %command%` | Sets `IGDEXT_FORCE_FALLBACK=1` so the shim declines Intel's extension: XeSS super resolution runs on DP4a and XeSS frame generation runs on its generic path (2x only) | Comparing XMX against DP4a, or ruling out the XMX path as the cause of a problem |
 
-### How `XESS=latest` swaps files
+With `XESS=latest`, each `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` in the game folder that is older than the SDK's is renamed to `<name>.xmx-orig` and linked to `<package>/xess/` while the game runs; files as new as or newer than the SDK's are left alone. Every `libxess_dx11.dll` is replaced by `dx11bridge/libxess_dx11.dll` regardless of its version (with the SDK's `libxess.dll` added next to it if missing). When the game exits (or on the next start if the game was killed outright), the originals are put back so Steam updates and file verification see the unmodified game ([games.md](games.md)).
 
-`XESS=latest` changes files in the game folder only while the game runs:
+---
 
-- Every `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` older than the SDK copy is renamed to `<name>.xmx-orig` and replaced by a link to the SDK copy in `xess/` (downloaded once by `install.sh` or `tools/get-xess.sh` from `github.com/intel/xess`). Files as new as or newer than the SDK copy are left alone.
-- Every `libxess_dx11.dll` is replaced by `dx11bridge/libxess_dx11.dll` regardless of its version, and gets the SDK's `libxess.dll` next to it if the game has none there.
-- When the game exits, the hook restores the original files and removes any added files, so Steam updates and "Verify integrity of game files" see the unmodified game. If the game is killed before cleanup can run, the next start of that game (with or without `XESS`) restores the originals.
-- With `PROTON_LOG=1`, the game's stderr lists each replaced file with both versions.
+## Frame generation and low latency
 
-## Frame generation and FSR on XeSS
+See [frame-generation.md](frame-generation.md) for full instructions, tested games, HUD/camera notes, and all `FFX_XESS_*` / `FFX_XEFG_*` tuning variables.
 
-See [frame-generation.md](frame-generation.md) for how each frame generation path works, tested games, limitations, and extra DLL variables.
-
-| Launch option | What it does | When to use |
+| Launch option | What it does | When |
 |---|---|---|
-| `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | Sets XeSS frame generation to 3x or 4x (`XESS_FG=2` sets 2x), overriding the game's menu choice through `ControlLib.dll`. You still turn frame generation on and off in the game's menu, and the game needs XeSS-FG 1.2 or newer (combine with `XESS=latest` if older). | A game offers only 2x in its menu (such as Cyberpunk 2077), or you want to override its 2x/3x/4x menu. |
-| `XESS_FG=5` ... `XESS_FG=8 %command%` | **Experimental**: sets XeSS frame generation to 5x through 8x (the maximum), beyond the 4x that Intel supports. All work; 7x and 8x are not recommended because of latency. | You have a high-refresh-rate display that 4x does not fill. |
-| `FSR=xess %command%` | Runs the game's FSR 3.1+ upscaling on XeSS super resolution and its FSR frame generation on XeSS frame generation (combine with `XESS_FG` for multi-frame generation). | A game has FSR 3.1+ and no XeSS. If the game has native XeSS, use that instead; this route can flicker more. |
-| `FSR_FG=xess %command%` | Runs only the game's FSR 3.1+ frame generation on XeSS frame generation; keeps the game's own FSR upscaling. | Same as `FSR=xess`, when you want to keep the game's FSR upscaling. |
-| `FSR=xess FSR_FG=inject %command%` | Injects XeSS frame generation into a game that has FSR 3.1+ upscaling but no FSR frame generation, using inputs from the upscaler. Select FSR upscaling in the game. The HUD is interpolated too. | A game has FSR 3.1+ upscaling, while its frame generation is DLSS-G only (such as Forza Horizon 6). |
-| `OFLOW_FG=1 %command%` | **Experimental**: runs XeSS frame generation in any DX12 game by computing motion vectors from optical flow on the final image. `XESS_FG=<n>` sets the multiplier (default 2). The HUD is interpolated too, and the rendered frame rate is paced automatically. | A DX12 game has neither XeSS nor FSR 3.1+, such as Resident Evil 4 (2023) or Viewfinder (add `-force-d3d12` after `%command%`). |
-| `FSR_VENDOR=amd %command%` | Used with `FSR` or `FSR_FG`: makes DXVK report an AMD GPU to the game, while XeSS-FG and XeLL still see Intel. | A game shows FSR in its menu only on AMD GPUs (such as Wuthering Waves, though that game should use its own XeSS). |
+| `XESS_FG=3 %command%`, `XESS_FG=4 %command%` | Overrides XeSS frame generation to produce 3x or 4x frames (`XESS_FG=2` for 2x) through `ControlLib.dll` and the shim, regardless of what the game's menu offers or selects; you still switch frame generation on and off in the game menu | A game that offers only 2x in its menu (such as Cyberpunk 2077), or setting the multiplier for `FSR=xess`, `FSR_FG=xess`, or `OFLOW_FG=1`. Requires XeSS-FG 1.2 or newer (combine with `XESS=latest` if older) |
+| `XESS_FG=5` ... `XESS_FG=8 %command%` | **Experimental**: 5x to 8x (the maximum), raised by the shim inside `libxess_fg.dll` at runtime beyond Intel's supported 4x limit. All work; 7x and 8x are not recommended due to high latency | Filling a high-refresh-rate display that 4x does not fill |
+| `FSR=xess %command%` | Runs the game's FSR 3.1+ upscaling on XeSS super resolution (`amd_fidelityfx_upscaler_dx12.dll`) and its FSR frame generation on XeSS frame generation (`amd_fidelityfx_framegeneration_dx12.dll`); combine with `XESS_FG=<n>` for multi-frame generation | A DX12 game with FSR 3.1+ / FSR 4 and no native XeSS. If a game has native XeSS, use that instead; translating FSR can flicker more ([frame-generation.md](frame-generation.md)) |
+| `FSR_FG=xess %command%` | Runs only the game's FSR 3.1+ frame generation on XeSS frame generation; keeps the game's own FSR upscaling | Same as `FSR=xess`, when you want to keep the game's native FSR upscaler |
+| `FSR=xess FSR_FG=inject %command%` | Injects an XeSS-FG swap chain (`dxgi.dll` + `ffx_xefg_bridge.dll`) fed from the `FSR=xess` upscaler into a game with FSR 3.1+ upscaling and no FSR frame generation. Choose FSR upscaling in the game; the HUD is interpolated too ([frame-generation.md](frame-generation.md)) | A game whose frame generation is NVIDIA DLSS-G only, such as Forza Horizon 6 |
+| `OFLOW_FG=1 %command%` | **Experimental**: injects XeSS frame generation (`dxgi.dll` + `ffx_xefg_bridge.dll`) into any DX12 game using motion vectors computed from FidelityFX optical flow on the final image instead of game motion vectors (`FFX_XEFG_OFLOW=1`). `XESS_FG=<n>` sets the frames shown per rendered frame; the HUD is interpolated too, and the rendered frame rate is paced automatically ([frame-generation.md](frame-generation.md)) | A DX12 game with neither XeSS nor FSR 3.1+, such as Resident Evil 4 (2023) or Viewfinder (`-force-d3d12` after `%command%`) |
+| `FSR_VENDOR=amd %command%` | With `FSR=xess` or `FSR_FG=xess`: adds `dxgi.customVendorId = 1002` to `DXVK_CONFIG` so DXVK reports an AMD GPU to the game, while the package's DLLs still report Intel's `0x8086` vendor ID to XeSS-FG and XeLL | A game that offers FSR in its menu only on AMD GPUs, such as Wuthering Waves (which should rather use its own native XeSS) |
+| `IGDEXT_XELL_CAP=off %command%` | Turns off automatic low-latency pacing (which is on by default while native XeSS frame generation runs) | Comparing latency/frame rate, or if low-latency pacing costs frame rate in a game |
+| `IGDEXT_XELL_CAP=auto:<ms> %command%` | Keeps low-latency pacing on, starting each frame `<ms>` milliseconds earlier (or later if negative): gives more frame-rate headroom at the cost of a little more latency | A game whose frame rate drops with default low-latency pacing on |
+| `IGDEXT_XELL_CAP=<us> %command%` | Instead of automatic low-latency pacing, raises `minimumIntervalUs` to at least `<us>` microseconds per displayed frame (`0`..`1000000`; any other value turns both off) when the game calls `xellSetSleepMode` (if a game never calls `xellSetSleepMode`, no cap is applied) | Locking a steady fixed frame rate through XeLL |
+| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the XeLL 30 fps frame-cap fix (ignoring a non-zero cap set within 1.5 s of enabling frame generation) in this game | Another game shows the Wuthering Waves symptom (30 fps with frame generation until the pause menu is opened and closed) |
+| `IGDEXT_XELL_KEEPCAP=1 %command%` | Turns off the XeLL 30 fps frame-cap fix (by default it is on for Wuthering Waves only) | Testing whether the cap fix causes a problem |
 
-Keep a frame rate limiter on (the game's own or gamescope's) when using frame generation, or generated frames will reach the screen unevenly. With XeSS frame generation on, the game cannot use exclusive fullscreen and runs borderless instead (which looks the same under gamescope).
+Keep a frame rate limiter on (the game's own or gamescope's) when using frame generation so generated frames reach the screen evenly, and run in windowed or borderless mode (XeSS-FG refuses exclusive fullscreen). Low-latency pacing (`IGDEXT_XELL_CAP=auto`) applies to a game's native XeSS frame generation; on the FSR and optical-flow routes (`FSR=xess`, `FSR_FG`, `OFLOW_FG`), the package's frame generation DLL reports each present to XeLL right before the next sleep, so the shim sees no queue and does not add a wait ([frame-generation.md](frame-generation.md)).
 
-## Low latency (XeLL)
-
-Intel XeLL (`libxell.dll`) is Intel's low-latency library used alongside XeSS frame generation. By default, while a game's own XeSS frame generation is active, the shim paces frame starts so frames do not queue before the GPU. See [frame-generation.md](frame-generation.md) for latency measurements and details, and [dev/how-it-works.md](dev/how-it-works.md) for internals.
-
-| Launch option | What it does | When to use |
-|---|---|---|
-| `IGDEXT_XELL_CAP=off %command%` | Turns off the shim's low-latency pacing (which is on by default while XeSS frame generation runs). | Comparing latency, or checking whether low-latency pacing costs frame rate in a game. |
-| `IGDEXT_XELL_CAP=auto:<ms> %command%` | Keeps low-latency pacing on, starting each frame `<ms>` earlier (or later if negative) for more frame rate headroom at the cost of a little more latency. | A game loses frame rate with the default low-latency pacing. |
-| `IGDEXT_XELL_CAP=<us> %command%` | Replaces low-latency pacing with a fixed minimum interval of `<us>` microseconds per displayed frame through XeLL's frame cap (up to `1000000`; any other value turns both off). | You want a steady fixed frame rate. |
-| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves XeLL frame-cap fix (which ignores a 33.3 ms / 30 fps cap sent right after enabling frame generation) in this game. | Another game drops to 30 fps when enabling frame generation until you open and close the pause menu. |
-| `IGDEXT_XELL_KEEPCAP=1 %command%` | Turns off the XeLL frame-cap fix (on by default for Wuthering Waves only). | You suspect the fix causes a problem. |
+---
 
 ## Logs for a bug report
 
-See [troubleshooting.md](troubleshooting.md) for common symptoms and fixes, and [dev/debugging.md](dev/debugging.md) for all developer debug variables.
+See [troubleshooting.md](troubleshooting.md) for symptom-by-symptom fixes and [dev/debugging.md](dev/debugging.md) for every internal debug and trace variable.
 
 | Launch option | What it writes |
 |---|---|
-| `XESS_LOG=1 %command%` | Writes four logs into `C:\` inside the game's prefix: `C:\igdext_trace.log` (detected GPU, every extension call, each kernel; if the file is missing, the shim was not loaded), `C:\igdext_xell.log` (what the game passes to XeLL, real frame rate, latency), `C:\igdext_xefg.log` (XeSS frame generation messages, maximum and active multiplier), and `C:\igcl_stub.log` (the `XESS_FG` override served by `ControlLib.dll`). |
-| `PROTON_LOG=1 %command%` | Writes `~/steam-<appid>.log` with Proton's log and the game's stderr (`xess-xmx:` and `ANV CM:` lines). Slows the game down; use only for a bug report. |
-| `ANV_CM_DEBUG=1 %command%` | Logs each kernel the driver injects to the game's stderr (combine with `PROTON_LOG=1`). |
+| `XESS_LOG=1 %command%` | Sets `IGDEXT_TRACE=1`, `IGDEXT_XELL_LOG=1`, `IGDEXT_XEFG_LOG=1`, and `XESS_FG_LOG=1`. Writes in the game's prefix (`drive_c/`): `C:\igdext_trace.log` (the detected GPU, every extension call, each kernel; no file at all means the shim was not loaded), `C:\igdext_xell.log` (what the game passes to XeLL, the real frame rate, the latency), `C:\igdext_xefg.log` (XeSS frame generation's own messages, the maximum and active number of generated frames), and `C:\igcl_stub.log` (the `XESS_FG` override given by `ControlLib.dll`) |
+| `PROTON_LOG=1 %command%` | Writes `~/steam-<appid>.log`: Proton's log including the game's stderr (`xess-xmx:` and `ANV CM:` lines). Slows the game down; use only for a report |
+| `ANV_CM_DEBUG=1 %command%` | Logs each placeholder and kernel the patched driver injects to the game's stderr (use with `PROTON_LOG=1`) |
 
-The game's prefix is at `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/` (or in the `steamapps` folder of the Steam library on another drive).
+The prefix folder is `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/` (or under the `steamapps` folder of the Steam library on another drive).
 
-## GPU vendor visibility
+---
 
-| Launch option | What it does | When to use |
+## The game sees no Intel GPU
+
+| Launch option | What it does | When |
 |---|---|---|
-| `force_vk_vendor=-1 %command%` | Restores Mesa's own profile for this game, hiding the Intel vendor ID. (`install.sh` sets `force_vk_vendor=0` for all games so they see the Intel GPU; see [troubleshooting.md](troubleshooting.md).) | A game needs Mesa's vendor-hiding workaround to run. XeSS will then use DP4a in that game. |
+| `force_vk_vendor=-1 %command%` | Restores Mesa's own `drirc` profile for this game, hiding the Intel Vulkan vendor ID | A game that needs Mesa's vendor-hiding workaround; XeSS then runs on DP4a. `install.sh` and `enable.sh` set `force_vk_vendor=0` globally so games see the Intel GPU ([troubleshooting.md](troubleshooting.md)) |
 
-If a game hides the Intel GPU because its bundled `libxess.dll` is older than 2.0.2.68, use `XESS=latest %command%` instead (see [games.md](games.md)).
+A game that ships XeSS older than 2.0.2.68 also sees no Intel GPU because DXVK hides the Intel vendor ID from old `libxess.dll` builds: use `XESS=latest %command%` (see [XeSS super resolution](#xess-super-resolution) above and [games.md](games.md)).
