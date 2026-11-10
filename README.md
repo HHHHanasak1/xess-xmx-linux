@@ -50,8 +50,9 @@ once; after that they come from `~/.cache/xess-xmx`.
 What `install.sh` does:
 
 * writes `~/.config/environment.d/50-xess-xmx.conf`:
-  - the patched driver as the 64-bit Intel Vulkan driver (other GPUs' drivers and the 32-bit Intel driver stay in the
-    list) and the kernel compiler;
+  - the package's driver as the 64-bit Intel Vulkan driver (other GPUs' drivers and the 32-bit Intel driver stay in
+    the list) and the kernel compiler. On Xe3 that is Mesa 26.3 as Mesa ships it, with this project's Vulkan layer
+    (`layer/`) for the XMX kernels; on Xe-HPG and Xe2 the patched driver (see "The drivers" below);
   - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2`: the kernel binding code needs the first,
     and present wait 2 crashed games with frame generation (it applies to every D3D12 game of the session);
   - `force_vk_vendor=0`, because Mesa hides the Intel GPU from some games (see [docs/debugging.md](docs/debugging.md));
@@ -65,8 +66,8 @@ What `install.sh` does:
   each game the `XESS=...` and `FSR=...` launch options, e.g. `XESS=latest %command%`: Intel's newer XeSS libraries
   while the game runs, for a game whose XeSS is too old to see the Intel GPU
   ([docs/launch-options.md](docs/launch-options.md));
-* enables `xess-xmx-check.service`: before every graphical session it checks that the patched driver loads and finds
-  the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
+* enables `xess-xmx-check.service`: before every graphical session it checks that the package's driver loads and
+  finds the GPU. If a system update broke it, the other driver of the package takes over; if both are broken, the session
   uses the stock drivers and XeSS runs as DP4a. `~/.cache/xess-xmx/driver-status` says so, and
   `tools/rebuild-driver.sh` rebuilds a driver for the new Mesa version. The check also copies the two host libraries
   the Steam Linux Runtime does not have (SPIRV-Tools, libdisplay-info) into `lib/deps/`, where the driver finds them
@@ -83,31 +84,38 @@ the distribution's unpatched Mesa ANV with this project's Vulkan layer (`layer/`
 launchers) installs the shim into that prefix and writes the variables to `~/.config/xess-xmx.conf`; put
 `/path/to/package/xmx-launch.sh %command%` into the game's launch options. `disable.sh` undoes it.
 
-### Two drivers: Mesa 26.1.2 and Mesa 26.3
+### The drivers
 
-The archive carries the patched driver for two Mesa versions; both run the same XeSS kernels:
+The archive carries three drivers; all run the same XeSS kernels:
 
-* **Mesa 26.3.0** (the default): its new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own
-  shaders much faster. Patches by @kas5852 (#19). A release candidate: tested in fewer games so far.
-* **Mesa 26.1.2**: the driver of the earlier releases, the same version as SteamOS' own.
+* **Mesa 26.3.0 unpatched** (`lib/mesa-stock-26.3.0/`, the default on Xe3): Mesa as it ships, with this project's
+  Vulkan layer `VK_LAYER_XESS_xmx` putting the XMX kernels in from outside the driver. It performs like the patched
+  26.3 ([docs/performance.md](docs/performance.md)) and needs no patch carried across Mesa versions.
+* **Mesa 26.3.0 patched** (the default on Xe-HPG and Xe2): the layer serves Xe3 only, and those GPUs' 256-register
+  kernels need Large GRF Mode, which only the driver can switch (`patches/0003`). Patches by @kas5852 (#19).
+* **Mesa 26.1.2 patched**: the driver of the earlier releases, the same version as SteamOS' own.
 
-Choose per game in its Steam launch options:
+On both 26.3 drivers the new shader compiler Jay, the default on Xe2 and Xe3, makes the games' own shaders much
+faster. `install.sh` picks the session's driver by GPU; `XMX_DRIVER=patched ./install.sh` or
+`XMX_DRIVER=stock ./install.sh` chooses instead (kept for later runs; `XMX_DRIVER=auto` goes back to the choice by
+GPU), then re-login. Per game, in its Steam launch options:
 
-    MESA=26.1 %command%         # this game uses Mesa 26.1.2
-    MESA=26.3 %command%         # this game uses Mesa 26.3
+    MESA=26.1 %command%         # this game uses the patched Mesa 26.1.2
+    MESA=26.3 %command%         # this game uses the patched Mesa 26.3
 
-Games without `MESA` use the default, which `tools/switch-driver.sh` lists (`*`) and changes
+`tools/switch-driver.sh` lists the drivers (`*`) and sets which patched one the patched session uses
 (`tools/switch-driver.sh 26.1`); both take effect at the next game start, no re-login. If the default driver fails the
-check before a session (for example after a system update), the other one becomes the default automatically.
-`INTEL_DEBUG=no-jay %command%` runs a game's own shaders on Mesa 26.3 with the old compiler.
+check before a session (for example after a system update), the other patched one becomes the default automatically
+(in the stock session: the system's drivers, XeSS on DP4a). `INTEL_DEBUG=no-jay %command%` runs a game's own shaders
+on Mesa 26.3 with the old compiler.
 
 ### Requirements
 
 * An Intel GPU with XMX on the `xe` or `i915` kernel driver: Xe3 (Panther Lake; tested on an Arc B390), Xe2
   (Battlemage; tested by a user on an Arc B580, #16) or Xe-HPG (Alchemist; tested by a user on an Arc A310, #28).
   Lunar Lake and Arrow Lake-H are detected but untested. Xe-LPG (Meteor Lake) has no XMX units.
-* The drivers in the archive (Mesa 26.1.2 and 26.3.0 with the patches) replace the system's 64-bit ANV for the user
-  session only. For another Mesa version see [docs/building.md](docs/building.md).
+* The drivers in the archive (Mesa 26.3.0 unpatched, Mesa 26.1.2 and 26.3.0 with the patches) replace the system's
+  64-bit ANV for the user session only. For another Mesa version see [docs/building.md](docs/building.md).
 * The drivers are built on Arch Linux and need glibc 2.38 and libwayland-client 1.24 or newer. SPIRV-Tools and
   libdisplay-info 0.3 come with the archive (`lib/bundled/`) for systems that lack them. Checked to load on SteamOS,
   Arch, openSUSE Tumbleweed, Void Linux, Fedora 43 and Ubuntu 25.10; Debian 13 and Ubuntu 24.04 have libwayland-client
@@ -189,7 +197,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                                   patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
                                   cooperative matrix shaders
-    layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on the system's unpatched ANV, per game (experimental)
+    layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's session default; xmx-stock.sh:
+                                  the system's own, per game) and XeSS' Vulkan path on every driver of the package
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
     ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),

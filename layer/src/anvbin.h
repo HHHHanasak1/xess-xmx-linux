@@ -23,7 +23,7 @@ struct anvbin {
    uint8_t header[80];
    uint32_t stage, code_len;
    const uint8_t *code;
-   uint8_t prog_data[256];
+   uint8_t prog_data[768];   /* 664 on the patched 26.3 driver (layouts.h) */
    uint32_t num_relocs;
    const uint8_t *relocs;
    uint32_t num_stats;

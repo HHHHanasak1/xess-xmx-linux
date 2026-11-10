@@ -21,7 +21,7 @@ after the variables (`MESA=26.1 /path/to/xess-xmx-linux/xmx-launch.sh %command%`
 | Launch option | What it does | When |
 |---|---|---|
 | `MESA=26.1 %command%` | this game uses the package's Mesa 26.1.2 driver | a game misbehaves on Mesa 26.3 only (please report it) |
-| `MESA=26.3 %command%` | this game uses the package's Mesa 26.3 driver | the default was changed to 26.1 and one game should keep 26.3 |
+| `MESA=26.3 %command%` | this game uses the package's patched Mesa 26.3 driver | the default was changed to 26.1 and one game should keep 26.3; on Xe3, to compare with the unpatched default |
 | `/path/to/package/xmx-stock.sh %command%` | **experimental**: this game runs on the system's own, unpatched Mesa ANV with the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), which puts the XMX kernels in from outside the driver; the patched driver stays the default for every other game | a distribution whose own Mesa should stay (no patched driver for that game), or testing the layer against the patched driver. The layer knows Mesa 26.1, 26.3 and 27.0 (SteamOS ships 26.1.2); with another version XeSS runs on DP4a |
 | `INTEL_DEBUG=no-jay %command%` | Mesa 26.3 compiles the game's own shaders with the old compiler instead of Jay (XeSS is not affected) | a rendering bug or crash that goes away with `MESA=26.1`: tells whether Jay is the cause |
 

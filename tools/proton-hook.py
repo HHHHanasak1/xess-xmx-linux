@@ -313,9 +313,9 @@ def pe_imports(path):
 
 def xess_vulkan(game, swaps, found):
     """XESS=latest, a Vulkan game with XeSS (its exe imports vulkan-1.dll; XESS_VK=1 forces, XESS_VK=0 skips): the
-    package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and the layer on
-    the package's unpatched Mesa, which serves XeSS' Vulkan kernels (the patched driver's serialized shaders do not fit
-    the layer's template). Without the layer XeSS stays on DP4a: vkwrap checks that the layer serves the device."""
+    package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and the layer,
+    which serves XeSS' Vulkan kernels on the package's patched and unpatched Mesa (Xe3). Without the layer XeSS stays
+    on DP4a: vkwrap checks that the layer serves the device."""
     force = os.environ.get("XESS_VK", "")
     exe = sys.argv[2] if len(sys.argv) > 2 else ""
     if force == "0" or sys.argv[1] != "waitforexitandrun" or not exe.lower().endswith(".exe") or not os.path.isfile(exe):
@@ -336,16 +336,8 @@ def xess_vulkan(game, swaps, found):
         return
     swaps.link(f, ours_vk)
     s.dlloverrides["vulkan-1"] = "n,b"
-    mesa = s.env.get("MESA", "")
-    if not mesa.startswith("stock"):
-        try:
-            active = open(os.path.join(PKG, "lib", "active")).read().strip()
-        except OSError:
-            active = ""
-        if active and os.path.isdir(os.path.join(PKG, "lib", "mesa-stock-" + active)):
-            s.env["MESA"] = "stock-" + active
-        else:
-            say("XESS=latest (Vulkan): no unpatched Mesa in %s/lib for the layer; XeSS stays on DP4a" % PKG)
+    # the layer serves XeSS' Vulkan path on the package's patched and unpatched drivers alike (on the patched one it
+    # leaves D3D12 kernels to the driver), so the game keeps the driver the session or its launch options picked
     cur = s.env.get("VK_ADD_LAYER_PATH", "")
     if LAYER not in cur.split(":"):
         s.env["VK_ADD_LAYER_PATH"] = LAYER + (":" + cur if cur else "")

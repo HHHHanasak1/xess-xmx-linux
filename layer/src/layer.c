@@ -14,6 +14,8 @@
  *    CM shader modules, in pipeline layouts without sets; their descriptors come from XeSS' descriptor push, which
  *    vkwrap passes on as vkCmdPushDescriptorSetKHR with no layout and set XMX_VK_PUSH_SET (kept here, never passed
  *    on), surface k = the k-th pushed resource. The self-test also writes layer_canary, which vkwrap waits for.
+ * On this project's patched driver (its prog_data is longer, layouts.h) the layer serves only the Vulkan path: the
+ * driver injects a D3D12 game's kernels itself but has no use for XeSS' descriptor push.
  * Enabled with VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx (and VK_ADD_LAYER_PATH); log: XMX_LAYER_LOG=1 or a path. */
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -129,6 +131,7 @@ struct xdevice {
 #undef X
    bool binaries;               /* pipeline binaries enabled by the layer */
    const struct anv_layout *L;  /* the serialized-shader layout of this driver (layouts.h), NULL if unknown */
+   struct anv_layout Lp;        /* L with the patched driver's prog_data size, once a template showed it (L = &Lp) */
    bool ok;                     /* the self-test passed: placeholders are served */
    bool tested;
    mtx_t mtx;
@@ -403,7 +406,22 @@ template_get(struct xdevice *d, VkPipelineLayout layout, struct xlayer_set *ls, 
    struct xtemplate *t = calloc(1, sizeof(*t));
    char err[200];
    /* 26.1.2: the data is the serialized shader with no leading bytes, aligned from its start (probe, stage 3) */
-   if (!anvbin_parse(d->L, data, dn, 0, 0, 0, &t->bin, err, sizeof(err))) {
+   bool parsed = anvbin_parse(d->L, data, dn, 0, 0, 0, &t->bin, err, sizeof(err));
+   if (!parsed && d->L != &d->Lp && d->L->pd_size_patched) {
+      /* this project's patched driver: the same layout, prog_data longer by its C-for-Metal fields (layouts.h). Its
+       * own kernel injection only takes vkd3d's descriptor heap, so the layer serves XeSS' Vulkan path there too. */
+      struct anv_layout lp = *d->L;
+      lp.pd_size = lp.pd_size_patched;
+      char err2[200];
+      if (anvbin_parse(&lp, data, dn, 0, 0, 0, &t->bin, err2, sizeof(err2))) {
+         d->Lp = lp;
+         d->L = &d->Lp;
+         t->bin.L = d->L;
+         parsed = true;
+         xlog("template (set %u): the patched driver's layout (prog_data %u bytes)", set_index, lp.pd_size);
+      }
+   }
+   if (!parsed) {
       xlog("template (set %u) does not parse: %s", set_index, err);
       free(data);
       free(t);
@@ -741,6 +759,8 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
       xlog("kernel %s: unknown pipeline layout", ph->hash);
       return VK_NULL_HANDLE;
    }
+   if (d->L == &d->Lp && pl->nsets != 0)
+      return VK_NULL_HANDLE;   /* patched driver: a D3D12 game's kernel, which the driver injects itself */
    char name[32];
    if (ph->kind == XMX_PH_LEGACY_KERNEL)
       snprintf(name, sizeof(name), "dyn_%d", ph->dyn_id);
