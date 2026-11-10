@@ -4,8 +4,11 @@ A Vulkan layer that runs XeSS' XMX kernels on an **unpatched** Mesa ANV. It does
 the driver, but from outside, so the distribution's own `vulkan-intel` package can be used. It works with the
 same shim (`igdext64.dll`), both the hash placeholders and the id placeholders of older shims.
 
-Status: experimental. The release archive carries it (`layer/`) as an option per game, through the launch wrapper
-`xmx-stock.sh`; the patched driver stays the default. `install.sh` does not enable it anywhere.
+On Xe3 `install.sh` runs the whole session on the package's unpatched Mesa 26.3 (`lib/mesa-stock-<version>/`) with
+this layer; `xmx-stock.sh` runs one game on the system's own driver with it. On this project's patched driver (Xe-HPG
+and Xe2, or `XMX_DRIVER=patched`) the layer only serves XeSS' Vulkan path (`vkwrap/`): the patched driver's
+serialized shaders have a longer prog_data (`src/layouts.h`, `pd_size_patched`), and it injects a D3D12 game's kernels
+itself. The layer serves Xe3 only.
 
 ## How it works
 
@@ -50,7 +53,8 @@ keeps: `docs/launch-options.md`. The game's prefix needs the shim (`install.sh`,
     XMX_LAYER_HELPER=<package>/tools/cm-compile.sh XMX_IGC_DIR=<package>/igc \
     VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2 <game>
 
-The Vulkan driver must be an unpatched ANV, and only one Intel ICD may be in the list: changing `VK_DRIVER_FILES`
+The Vulkan driver must be an unpatched ANV (or this project's patched one, for the Vulkan path only), and only one
+Intel ICD may be in the list: changing `VK_DRIVER_FILES`
 inside the container (Proton's `user_settings.py`) loaded the container's copy of the patched ICD next to the stock one,
 and the games recreated their swap chain thousands of times a minute.
 

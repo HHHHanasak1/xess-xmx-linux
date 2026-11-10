@@ -71,8 +71,10 @@ With `XESS=latest %command%`, for a game whose executable imports `vulkan-1.dll`
 package puts its own `vulkan-1.dll` (`vkwrap/`) next to the executable while the game runs. It forwards every Vulkan
 call to Wine's and adds those interfaces: each XeSS kernel goes to `C:\igdext_kernels` like a D3D12 game's (same files,
 same compiled cache), the module XeSS gets is a placeholder, and the descriptors go to the package's Vulkan layer,
-which replaces the placeholder pipelines by the compiled kernels and binds them. The game runs on the package's
-unpatched Mesa with that layer (the layer cannot read the patched driver's shaders); nothing else changes for it.
+which replaces the placeholder pipelines by the compiled kernels and binds them. The game keeps its driver: the layer
+does this on the package's unpatched and patched drivers alike (on the patched one only for Vulkan games; the driver
+injects a D3D12 game's kernels itself). The layer serves Xe3 only, so on Xe-HPG and Xe2 a Vulkan game's XeSS stays on
+DP4a.
 `vulkan-1.dll` tells XeSS the path is available only after the layer has answered its self-test on the game's device,
 so without the layer XeSS stays on DP4a. `XESS_VK=1` sets this up for a game whose executable loads Vulkan at run time
 (no import), `XESS_VK=0` leaves it out; `VKWRAP_LOG=1` writes `vkwrap.log` next to the DLL. XeSS skips the Intel path

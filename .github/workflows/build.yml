@@ -3,7 +3,7 @@ name: build
 # Builds the binaries from source on every push / pull request and keeps them as workflow artifacts:
 #   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
-#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain)
+#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
 # plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
 # these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
@@ -216,8 +216,14 @@ jobs:
             mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
+          # unpatched (lib/mesa-stock-26.3.0/): Xe3's default driver, with the Vulkan layer for the XMX kernels
+          - name: stock-26.3.0
+            version: 26.3.0
+            mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
+            patches: ""
+            arch_snapshot: 2026/10/14
     env:
-      MESA_VERSION: ${{ matrix.name }}
+      MESA_VERSION: ${{ matrix.version || matrix.name }}
       MESA_SHA256: ${{ matrix.mesa_sha256 }}
       PATCHES: ${{ matrix.patches }}
       ARCH_SNAPSHOT: ${{ matrix.arch_snapshot }}
@@ -249,7 +255,7 @@ jobs:
       - name: apply patches
         run: |
           cd mesa
-          git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0*.patch
+          [ -z "$PATCHES" ] || git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0*.patch
       - name: configure
         run: |
           cd mesa

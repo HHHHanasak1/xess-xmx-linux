@@ -13,6 +13,11 @@
 #   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply
 #   for that long (a new prefix gets its driver store folder a few seconds after it appears, Steam may still be
 #   writing a Proton update), nothing else touched.
+#   The session's driver: on Xe3 (Panther Lake, Wildcat Lake) the package's unpatched Mesa 26.3 ANV
+#   (lib/mesa-stock-<version>/, picked with MESA=stock-<version>) with the Vulkan layer VK_LAYER_XESS_xmx (layer/) for
+#   the XMX kernels ("stock"); on every other GPU (Xe-HPG, Xe2: the layer does not serve them, and their 256-register
+#   kernels need patches/0003) the patched driver lib/active names ("patched"). XMX_DRIVER=stock or XMX_DRIVER=patched
+#   chooses instead and is kept in run/driver-mode for later runs; XMX_DRIVER=auto goes back to the choice by GPU.
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 . "$PKG/tools/steam-libraries.sh"
@@ -31,6 +36,40 @@ for f in "$SHIM" "$PKG/lib/libvulkan_intel.so" "$PKG/tools/cm-compile.sh"; do
   [ -f "$f" ] || { echo "missing $f - run this from the unpacked package"; exit 1; }
 done
 mkdir -p "$PKG/run"
+MODEF="$PKG/run/driver-mode"   # XMX_DRIVER of an earlier run, if one was given
+# the newest unpatched driver of the package
+STOCKV=""
+for d in "$PKG"/lib/mesa-stock-*/; do
+  [ -f "$d/libvulkan_intel.so" ] || continue
+  v=$(basename "$d"); v=${v#mesa-}
+  { [ -z "$STOCKV" ] || [ "$(printf '%s
+%s
+' "$STOCKV" "$v" | sort -V | tail -1)" = "$v" ]; } && STOCKV=$v
+done
+# Xe3: the GPUs the layer serves (layer.c, self_test: device id & 0xfff0 = 0xb080 or 0xfd80)
+xe3=0
+for dev in /sys/bus/pci/devices/*; do
+  [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] || continue
+  case "$(cat "$dev/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
+  id=$(( $(cat "$dev/device" 2>/dev/null || echo 0) & 0xfff0 ))
+  { [ "$id" = $((0xb080)) ] || [ "$id" = $((0xfd80)) ]; } && xe3=1
+done
+case "${XMX_DRIVER:-}" in
+  "") MODE=$(cat "$MODEF" 2>/dev/null) ;;
+  auto) MODE=""; [ "$MANUAL" = 1 ] && rm -f "$MODEF" ;;
+  patched|stock) MODE=$XMX_DRIVER; [ "$MANUAL" = 1 ] && echo "$MODE" > "$MODEF" ;;
+  *) echo "XMX_DRIVER=$XMX_DRIVER: unknown (auto, patched, stock)"; exit 1 ;;
+esac
+if [ -z "$MODE" ]; then
+  MODE=patched
+  [ "$xe3" = 1 ] && [ -n "$STOCKV" ] && [ -f "$PKG/layer/libVkLayer_xess_xmx.so" ] && MODE=stock
+fi
+if [ "$MODE" = stock ]; then
+  [ -n "$STOCKV" ] || { echo "XMX_DRIVER=stock needs an unpatched driver in $PKG/lib/mesa-stock-<version>/"; exit 1; }
+  [ -f "$PKG/layer/libVkLayer_xess_xmx.so" ] || { echo "XMX_DRIVER=stock needs $PKG/layer/libVkLayer_xess_xmx.so"; exit 1; }
+fi
+# what the session runs, for the session check (tools/session-check.sh)
+[ "$MANUAL" = 1 ] && echo "$MODE" > "$PKG/run/session-driver"
 grep -q "\"library_path\": \"$PKG/lib/libvulkan_intel.so\"" "$PKG/run/intel_icd.json" 2>/dev/null || \
   xmx_icd_json "$PKG/lib/libvulkan_intel.so" > "$PKG/run/intel_icd.json"
 # every igdext64.dll this package installed gets this file's modification time (an even whole second, so that any file
@@ -79,12 +118,32 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "force_vk_vendor=0"
     echo "# Protons without Intel's driver store (Proton 11.0) never load the shim from the prefix; XeSS looks here first"
     echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$ALT_EXT'"
+    if [ "$MODE" = stock ]; then
+      echo "# stock mode (the default on Xe3; XMX_DRIVER=patched ./install.sh for the patched driver): the package's"
+      echo "# unpatched Mesa, the XMX kernels from VK_LAYER_XESS_xmx"
+      echo "MESA=$STOCKV"
+      echo "VK_ADD_LAYER_PATH=$PKG/layer"
+      echo "VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx"
+      echo "XMX_LAYER_HELPER=$PKG/tools/cm-compile.sh"
+      echo "XMX_IGC_DIR=$PKG/igc"
+    fi
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
     "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
     "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$ALT_EXT" 2>/dev/null
+  if [ "$MODE" = stock ]; then
+    systemctl --user set-environment "MESA=$STOCKV" "VK_ADD_LAYER_PATH=$PKG/layer" \
+      "VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx" "XMX_LAYER_HELPER=$PKG/tools/cm-compile.sh" "XMX_IGC_DIR=$PKG/igc" 2>/dev/null
+  else
+    systemctl --user unset-environment MESA VK_ADD_LAYER_PATH VK_LOADER_LAYERS_ENABLE XMX_LAYER_HELPER XMX_IGC_DIR 2>/dev/null
+  fi
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
+  if [ "$MODE" = stock ]; then
+    echo "   driver: Mesa ${STOCKV#stock-} unpatched ($PKG/lib/mesa-$STOCKV) + VK_LAYER_XESS_xmx (stock mode)"
+  else
+    echo "   driver: the patched Mesa $(cat "$PKG/lib/active" 2>/dev/null) (patched mode)"
+  fi
 fi
 mkdir -p "$PKG/kernels" "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/kernels"
 # a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, a manual run
@@ -284,7 +343,7 @@ stock=""
 for d in /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d /etc/vulkan/icd.d "${XDG_DATA_HOME:-$HOME/.local/share}/vulkan/icd.d"; do
   for j in "$d"/*.json; do [ -f "$j" ] && stock="${stock:+$stock:}$j"; done
 done
-systemctl --user set-environment "VK_DRIVER_FILES=$stock" "VKD3D_DISABLE_EXTENSIONS=" "ANV_CM_KERNEL_DIR=" "ANV_CM_HELPER="
+systemctl --user set-environment "VK_DRIVER_FILES=$stock" "VKD3D_DISABLE_EXTENSIONS=" "ANV_CM_KERNEL_DIR=" "ANV_CM_HELPER=" "MESA=" "VK_ADD_LAYER_PATH=" "VK_LOADER_LAYERS_ENABLE="
 exit 0
 EOF
   } > "$CFGD/session-check.sh.new" && mv -f "$CFGD/session-check.sh.new" "$CFGD/session-check.sh"
@@ -304,6 +363,6 @@ EOF
   [ "$unit_changed" = 1 ] && systemctl --user daemon-reload 2>/dev/null
   systemctl --user enable xess-xmx-check.service >/dev/null 2>&1
   bash "$PKG/tools/session-check.sh" --dry-run >/dev/null 2>&1 && echo "== driver check: loads fine (xess-xmx-check.service enabled)" \
-    || echo "!! the patched driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
+    || echo "!! the package's driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
 fi
 echo "done. Reboot (or log out and in) once so Steam picks up the environment; then any game with XeSS runs on XMX."

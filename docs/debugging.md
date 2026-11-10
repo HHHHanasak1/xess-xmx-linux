@@ -119,7 +119,7 @@ Driver choice and the driver's own Mesa options (game environment):
 
 | Variable | Effect |
 |---|---|
-| `MESA=<version>` | this game uses that driver of the package instead of the default (`26.1`, `26.3`; a prefix is enough); stderr says `xess-xmx: using the Mesa ... driver`, or `no such driver` and the default |
+| `MESA=<version>` | this game uses that driver of the package instead of the default (`26.1`, `26.3`, `stock-26.3`; a prefix is enough); stderr says `xess-xmx: using the Mesa ... driver`, or `no such driver` and the default |
 | `INTEL_DEBUG=no-jay` | Mesa 26.3: the game's own shaders are compiled with the old compiler instead of Jay |
 
 Shim (game environment):

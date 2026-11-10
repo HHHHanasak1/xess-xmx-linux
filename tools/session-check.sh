@@ -20,6 +20,20 @@
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 # the default driver (lib/libvulkan_intel.so only forwards to the one lib/active names)
 LIB="${XMX_CHECK_LIB:-$PKG/lib/mesa-$(cat "$PKG/lib/active" 2>/dev/null)/libvulkan_intel.so}"
+# stock mode (install.sh's default on Xe3, or XMX_DRIVER=stock): the session's MESA=stock-<version> picks the
+# package's unpatched driver
+STOCK=0
+CHECK_MESA=""
+if [ "$(cat "$PKG/run/session-driver" 2>/dev/null)" = stock ] && [ -z "${XMX_CHECK_LIB:-}" ]; then
+  STOCK=1
+  CHECK_MESA="${MESA:-}"
+  case "$CHECK_MESA" in
+    stock-*) ;;
+    *) # install.sh's dry run: not in the session yet, the newest one (what install.sh writes)
+       CHECK_MESA=$(cd "$PKG/lib" && ls -d mesa-stock-*/ 2>/dev/null | sed 's|^mesa-||; s|/$||' | sort -V | tail -1) ;;
+  esac
+  LIB="$PKG/lib/mesa-$CHECK_MESA/libvulkan_intel.so"
+fi
 [ -f "$LIB" ] || LIB="$PKG/lib/libvulkan_intel.so"
 ICD="${XMX_CHECK_ICD:-$PKG/run/intel_icd.json}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx"
@@ -29,7 +43,8 @@ mkdir -p "$CACHE"
 fail() { # <reason> [stock]
   # another driver of the package (lib/mesa-<version>/) may still work: use it instead of the stock drivers (not with
   # "stock": the ICD file the session names is broken, which another driver would not mend)
-  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ] && [ "${2:-}" != stock ]; then
+  # (not in stock mode either: MESA=stock-<version> overrides lib/active, and the patched drivers do not go with the layer)
+  if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ] && [ "${2:-}" != stock ] && [ "$STOCK" = 0 ]; then
     local d v
     for d in "$PKG"/lib/mesa-*/; do
       [ -f "$d/libvulkan_intel.so" ] || continue
@@ -54,6 +69,7 @@ fail() { # <reason> [stock]
     for j in "$d"/*.json; do [ -f "$j" ] && stock="${stock:+$stock:}$j"; done
   done
   systemctl --user set-environment "VK_DRIVER_FILES=$stock" "VKD3D_DISABLE_EXTENSIONS=" "ANV_CM_KERNEL_DIR=" "ANV_CM_HELPER="
+  [ "$STOCK" = 1 ] && systemctl --user set-environment "MESA=" "VK_ADD_LAYER_PATH=" "VK_LOADER_LAYERS_ENABLE="
   exit 0
 }
 [ "${1:-}" = --dry-run ] && DRY=1
@@ -200,6 +216,7 @@ if old != set(gens):
 EOF
 fi
 
+[ "$STOCK" = 1 ] && [ ! -f "$PKG/layer/libVkLayer_xess_xmx.so" ] && fail "stock mode without $PKG/layer/libVkLayer_xess_xmx.so" stock
 # 1. the ICD file the session's VK_DRIVER_FILES names, and the library it points to (the loader gets nothing else)
 icdlib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$ICD" 2>/dev/null | head -1)
 [ -f "$ICD" ] || fail "no ICD file $ICD" stock
@@ -216,7 +233,7 @@ rc=$?
 # 2. instance + device enumeration through the loader, with nothing but the patched driver
 ours=""
 if command -v vulkaninfo >/dev/null 2>&1; then
-  out=$(MESA= VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
+  out=$(MESA="$CHECK_MESA" VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)
   ours=$(printf '%s\n' "$out" | grep -m1 "driverInfo" | sed 's/.*= *//')
   printf '%s\n' "$out" | grep -q "deviceName" || fail "vulkaninfo found no device ($(printf '%s' "$out" | grep -i -m1 "error" | cut -c1-120))"
 else
@@ -240,7 +257,7 @@ if [ -n "$ours" ] && command -v vulkaninfo >/dev/null 2>&1; then
   esac
   sys=$(cached system-mesa "$syslib" system_mesa)
   v_ours=$(printf '%s' "$ours" | grep -o 'Mesa [0-9.]*'); v_sys=$(printf '%s' "$sys" | grep -o 'Mesa [0-9.]*')
-  [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the patched driver is $v_ours)"
+  [ -n "$v_sys" ] && [ "$v_ours" != "$v_sys" ] && note=" (note: system has $v_sys, the package's driver is $v_ours)"
 fi
 # 4. per-game workarounds: a driver built with meson's default /usr/local prefix never reads /usr/share/drirc.d
 #    (report only; e.g. Wuthering Waves with ray tracing hangs the GPU without them)
@@ -248,5 +265,5 @@ if [ -d /usr/share/drirc.d ] && facts_of "$LIB" | grep -q '^drirc no$'; then
   note="$note (note: this driver does not read /usr/share/drirc.d, so Mesa's per-game workarounds are off - update the package or rebuild with tools/rebuild-driver.sh)"
 fi
 echo "ok $(date '+%F %T') $LIB ${ours}${note}" > "$STATUS"
-echo "patched ANV loads and finds the GPU: ${ours}${note}"
+echo "${CHECK_MESA:+stock mode, $CHECK_MESA: }the package's ANV loads and finds the GPU: ${ours}${note}"
 exit 0
