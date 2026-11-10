@@ -86,9 +86,9 @@ and make it the default driver (`tools/switch-driver.sh`, see the README). If th
 script says so. SteamOS has no compiler, so run it in an Arch Linux distrobox with the Mesa build dependencies:
 
     distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
-    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0-rc3  # or a given one
+    distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0      # or a given one
 
-There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0-rc3 (first
+There are two patch series: `patches/` for Mesa 26.1.2 and `patches/mesa-26.3/` for Mesa 26.3.0 (first
 contributed in #19, for rc1); other versions need a rebase. Both are built from the release tarballs, not the git tags: upstream
 deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was branched again. By hand, for 26.1.2 (for
 26.3: that tarball and that folder, the same meson options):
