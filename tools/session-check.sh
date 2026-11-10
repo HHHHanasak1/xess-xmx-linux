@@ -60,7 +60,7 @@ fail() { # <reason> [stock]
   fi
   echo "FAILED $(date '+%F %T') $LIB: $1" > "$STATUS"
   echo "patched ANV unusable ($1) - using the stock Intel driver for this session (XeSS runs as DP4a)" >&2
-  echo "fix: update the package or rebuild the driver (tools/rebuild-driver.sh); see docs/debugging.md" >&2
+  echo "fix: update the package or rebuild the driver (tools/rebuild-driver.sh); see docs/troubleshooting.md" >&2
   [ "${DRY:-0}" = 1 ] && exit 1
   # unset-environment cannot remove variables that come from environment.d, so they are overwritten instead: the
   # system's own driver list (stock Intel driver included) and no disabled vkd3d-proton extension, i.e. stock behaviour

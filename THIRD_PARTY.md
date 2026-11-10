@@ -1,5 +1,7 @@
 # Third-party components
 
+This table lists every third-party component that this repository or the release archive uses, builds against, or downloads onto your machine.
+
 | Component | Where | License | Notes |
 |---|---|---|---|
 | dxvk-igdext (GameTechDev) | `shim/` | MIT (`shim/LICENSE.md`) | base of the `igdext64.dll` shim; our additions live in `shim/src/dll/` |

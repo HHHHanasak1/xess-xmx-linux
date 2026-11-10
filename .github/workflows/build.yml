@@ -5,7 +5,7 @@ name: build
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
 #   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
-# plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/building.md);
+# plus syntax checks of the scripts. Release binaries are still built and tested on the device (see docs/dev/building.md);
 # these artifacts show that the tree builds and give Mesa ABI mismatches a place to surface.
 
 # A push that only touches docs/ or Markdown runs nothing. Path filters are not evaluated for tag pushes, so a release

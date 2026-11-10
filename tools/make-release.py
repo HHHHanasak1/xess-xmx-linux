@@ -65,7 +65,9 @@ if os.path.isfile(so):
     if not d.startswith(b"\x7fELF") or b"xmx_NegotiateLoaderLayerInterfaceVersion" not in d:
         sys.exit("layer/libVkLayer_xess_xmx.so is not the layer (layer/build.sh)")
 files += layer
-files += ["docs/" + d for d in sorted(os.listdir(os.path.join(root, "docs"))) if d.endswith(".md")]
+for dp, dn, fn in os.walk(os.path.join(root, "docs")):   # docs/ and docs/dev/
+    dn.sort()
+    files += [os.path.relpath(os.path.join(dp, d), root).replace(os.sep, "/") for d in sorted(fn) if d.endswith(".md")]
 missing = [f for f in files if not os.path.isfile(os.path.join(root, f))]
 if missing:
     sys.exit("missing: " + ", ".join(missing))
