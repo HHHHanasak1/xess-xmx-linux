@@ -187,8 +187,8 @@ XeSS picks (and why `SIMD16Required` matters), frame generation, XeLL.
     enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam launch wrapper
     patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                                   0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
-                                  patches/mesa-26.3/: the same for Mesa 26.3, plus 0004, the Jay crash fix for
-                                  RE Engine games, and 0006, a Jay crash fix for cooperative matrix shaders
+                                  patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
+                                  cooperative matrix shaders
     layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on the system's unpatched ANV, per game (experimental)
     shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
     controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
