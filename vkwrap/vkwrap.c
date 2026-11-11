@@ -14,9 +14,15 @@
  *  - vkCmdPushXeSSDescriptorsINTEL(cb, count, writes): the kernel's descriptors, as push descriptors without layout
  *    or set. Passed on as vkCmdPushDescriptorSetKHR(cb, COMPUTE, VK_NULL_HANDLE, 0x58455353, ...), which only the
  *    layer takes (VK_KHR_push_descriptor is enabled on every device for that).
- * XeSS is told "supported" only when the layer serves this device: vkCreateDevice creates the self-test placeholder
- * (1x1x19) and looks for the layer's C:\igdext_kernels\layer_canary. The patched driver answers the self-test too,
- * but has no descriptor push, hence the layer's own file.
+ * XeSS is told "supported" only when the layer or the package's patched driver serves this device: vkCreateDevice
+ * creates the self-test placeholder (1x1x19) and looks for C:\igdext_kernels\layer_canary (the layer's answer) or,
+ * without it, anv_canary (the patched driver's). With the layer, the push goes to it as above. With the patched driver
+ * alone ("driver mode", e.g. Xe-HPG and Xe2, which the layer does not serve), this DLL gives the driver what it knows
+ * from vkd3d-proton: a descriptor heap (one MUTABLE binding of HEAP_N descriptors, update-after-bind) and, per surface,
+ * its heap index in the last push constants (patches/0001: surface k = heap[pc[push_size - 4 * nsurf + 4 * k]]). The
+ * kernels' pipelines get that layout, and each push writes the resources into a ring of heap slots, binds the heap
+ * and pushes the slots' indices. VK_EXT_mutable_descriptor_type and the update-after-bind features are enabled on
+ * every device for that.
  * XeSS skips all of this when VkLayer_khronos_validation.dll is loaded. VKWRAP_LOG=1: vkwrap.log next to this DLL. */
 #include <windows.h>
 #include <stdint.h>
@@ -94,12 +100,42 @@ typedef int32_t (*PFN_ccp)(void *dev, uint64_t cache, uint32_t n, const struct c
 typedef void (*PFN_dp)(void *dev, uint64_t p, const void *alloc);
 typedef void (*PFN_push)(void *cb, uint32_t bp, uint64_t layout, uint32_t set, uint32_t n, const void *writes);
 typedef void (*PFN_gpdp2)(void *phys, void *props);
+typedef int32_t (*PFN_cdsl)(void *dev, const void *ci, const void *alloc, uint64_t *out);
+typedef int32_t (*PFN_cdpool)(void *dev, const void *ci, const void *alloc, uint64_t *out);
+typedef int32_t (*PFN_ads)(void *dev, const void *ai, uint64_t *out);
+typedef void (*PFN_uds)(void *dev, uint32_t nw, const void *writes, uint32_t nc, const void *copies);
+typedef void (*PFN_cbds)(void *cb, uint32_t bp, uint64_t layout, uint32_t first, uint32_t n, const uint64_t *sets,
+                         uint32_t ndyn, const uint32_t *dyn);
+typedef void (*PFN_cpc)(void *cb, uint64_t layout, uint32_t stages, uint32_t off, uint32_t size, const void *data);
+
+/* VkWriteDescriptorSet */
+struct write_ds {
+   uint32_t sType; const void *pNext; uint64_t set; uint32_t binding, element, count, type;
+   const void *images; const void *buffers; const void *texels;
+};
+#define STYPE_WRITE_DS 35
+#define DT_SAMPLER 0
+#define DT_COMBINED 1
+#define DT_UTB 4
+#define DT_STB 5
+#define DT_UBO 6
+#define DT_SSBO 7
+#define DT_MUTABLE 1000351000u
 
 static PFN_cdev sys_cdev;
 static PFN_csm sys_csm;
 static PFN_push sys_push;
 static PFN_gpdp2 sys_gpdp2, sys_gpdp2khr;
-static volatile LONG layer_ok = -1; /* -1: no device yet; 0/1: the layer's self-test on the last device created */
+/* -1: no device yet; else the self-test on the last device created: 0 none (DP4a), 1 the layer, 2 the patched driver */
+static volatile LONG layer_ok = -1;
+#define MODE_LAYER 1
+#define MODE_DRIVER 2
+static CRITICAL_SECTION heap_cs;
+/* the placeholder modules (w_csm), whose pipelines get the heap layout in driver mode */
+#define MAX_MODULES 4096
+static uint64_t g_mods[MAX_MODULES];
+static uint32_t g_nmods;
+
 
 /* unlinks the first structure of sType from a pNext chain; returns it, *link is where it goes back */
 static struct base *chain_unlink(const void *owner, uint32_t sType, struct base ***link)
@@ -146,6 +182,51 @@ static void placeholder(uint32_t *w, uint32_t z, uint32_t a, uint32_t b, uint32_
 }
 #define PLACEHOLDER_WORDS 51
 
+/* driver mode: the patched driver looks for the values in the shader's NIR, where unused constants are gone, so this
+ * placeholder stores them (to the first three words of a storage buffer at set 0, binding 0: the heap of g_pl) */
+static void placeholder_store(uint32_t *w, uint32_t z, uint32_t a, uint32_t b, uint32_t c)
+{
+   const uint32_t words[] = {
+      0x07230203, 0x00010000, 0, 20, 0,
+      0x00020011, 1,                                  /* OpCapability Shader */
+      0x0003000e, 0, 1,                               /* OpMemoryModel Logical GLSL450 */
+      0x0005000f, 5, 1, 0x6e69616d, 0,                /* OpEntryPoint GLCompute %1 "main" */
+      0x00060010, 1, 17, 1, 1, z,                     /* OpExecutionMode %1 LocalSize 1 1 z */
+      0x00040047, 9, 6, 4,                            /* OpDecorate %9 ArrayStride 4 */
+      0x00050048, 10, 0, 35, 0,                       /* OpMemberDecorate %10 0 Offset 0 */
+      0x00030047, 10, 3,                              /* OpDecorate %10 BufferBlock */
+      0x00040047, 13, 34, 0,                          /* OpDecorate %13 DescriptorSet 0 */
+      0x00040047, 13, 33, 0,                          /* OpDecorate %13 Binding 0 */
+      0x00020013, 2,                                  /* %2 = OpTypeVoid */
+      0x00030021, 3, 2,                               /* %3 = OpTypeFunction %2 */
+      0x00040015, 4, 32, 0,                           /* %4 = OpTypeInt 32 0 */
+      0x0003001d, 9, 4,                               /* %9 = OpTypeRuntimeArray %4 */
+      0x0003001e, 10, 9,                              /* %10 = OpTypeStruct %9 */
+      0x00040020, 11, 2, 10,                          /* %11 = OpTypePointer Uniform %10 */
+      0x00040020, 12, 2, 4,                           /* %12 = OpTypePointer Uniform %4 */
+      0x0004003b, 11, 13, 2,                          /* %13 = OpVariable %11 Uniform */
+      0x0004002b, 4, 5, a,                            /* %5 = OpConstant %4 a */
+      0x0004002b, 4, 6, b,                            /* %6 = OpConstant %4 b */
+      0x0004002b, 4, 7, c,                            /* %7 = OpConstant %4 c */
+      0x0004002b, 4, 14, 0,                           /* %14 = OpConstant %4 0 */
+      0x0004002b, 4, 15, 1,                           /* %15 = OpConstant %4 1 */
+      0x0004002b, 4, 16, 2,                           /* %16 = OpConstant %4 2 */
+      0x00050036, 2, 1, 0, 3,                         /* %1 = OpFunction %2 None %3 */
+      0x000200f8, 8,                                  /* %8 = OpLabel */
+      0x00060041, 12, 17, 13, 14, 14,                 /* %17 = OpAccessChain %12 %13 %14 %14 */
+      0x0003003e, 17, 5,                              /* OpStore %17 %5 */
+      0x00060041, 12, 18, 13, 14, 15,                 /* %18 = OpAccessChain %12 %13 %14 %15 */
+      0x0003003e, 18, 6,                              /* OpStore %18 %6 */
+      0x00060041, 12, 19, 13, 14, 16,                 /* %19 = OpAccessChain %12 %13 %14 %16 */
+      0x0003003e, 19, 7,                              /* OpStore %19 %7 */
+      0x000100fd,                                     /* OpReturn */
+      0x00010038,                                     /* OpFunctionEnd */
+   };
+   typedef char size_check[sizeof(words) == 4 * 128 ? 1 : -1];
+   memcpy(w, words, sizeof(words));
+}
+#define PLACEHOLDER_STORE_WORDS 128
+
 /* ---- CM kernels: files for the layer, a placeholder module ------------------------------------------------------- */
 
 static const char *const kdir = "C:\\igdext_kernels";
@@ -191,21 +272,191 @@ static int32_t w_csm(void *dev, const struct shader_module_ci *ci, const void *a
    BOOL ok = write_once(p, ci->pCode, ci->codeSize);
    snprintf(p, sizeof(p), "%s\\%016llx.opt", kdir, (unsigned long long)h);
    ok = ok && write_once(p, opts, strlen(opts));
-   uint32_t w[PLACEHOLDER_WORDS];
-   placeholder(w, XMX_HASH_WG_Z, XMX_MAGIC, (uint32_t)h, (uint32_t)(h >> 32));
-   struct shader_module_ci pci = { STYPE_SHADER_MODULE_CI, NULL, 0, sizeof(w), w };
+   uint32_t w[PLACEHOLDER_STORE_WORDS];
+   size_t n = sizeof(uint32_t) * PLACEHOLDER_WORDS;
+   if (layer_ok == MODE_DRIVER) {
+      placeholder_store(w, XMX_HASH_WG_Z, XMX_MAGIC, (uint32_t)h, (uint32_t)(h >> 32));
+      n = sizeof(w);
+   } else {
+      placeholder(w, XMX_HASH_WG_Z, XMX_MAGIC, (uint32_t)h, (uint32_t)(h >> 32));
+   }
+   struct shader_module_ci pci = { STYPE_SHADER_MODULE_CI, NULL, 0, n, w };
    const int32_t r = sys_csm(dev, &pci, alloc, out);
+   if (!r) {
+      EnterCriticalSection(&heap_cs);
+      if (g_nmods < MAX_MODULES)
+         g_mods[g_nmods++] = *out;
+      LeaveCriticalSection(&heap_cs);
+   }
    logx("CM kernel %016llx (%zu bytes, options \"%s\")%s -> placeholder %d", (unsigned long long)h, ci->codeSize, opts,
         ok ? "" : " FILES NOT WRITTEN", r);
    return r;
+}
+
+/* ---- driver mode: a vkd3d-style descriptor heap for the patched driver -------------------------------------------- */
+
+#define HEAP_N 65536u      /* the driver takes a MUTABLE binding of >= 1000 descriptors as vkd3d's heap */
+#define SLOTS 32u          /* heap slots per push (a kernel has at most 24 surfaces) */
+#define MAX_SURF 24u
+#define PC_BYTES (4u * (MAX_SURF + 1))   /* the surfaces' heap indices, then a sampler table's */
+static void *g_dev;
+static uint64_t g_set, g_pl;   /* the heap's set; the kernels' pipeline layout (set 0 = heap, PC_BYTES of constants) */
+static volatile LONG g_ring;
+static PFN_uds sys_uds;
+static PFN_cbds sys_cbds;
+static PFN_cpc sys_cpc;
+
+static BOOL heap_init(void *dev)
+{
+   PFN_cdsl cdsl = (PFN_cdsl)sys_gdpa(dev, "vkCreateDescriptorSetLayout");
+   PFN_cdpool cdp = (PFN_cdpool)sys_gdpa(dev, "vkCreateDescriptorPool");
+   PFN_ads ads = (PFN_ads)sys_gdpa(dev, "vkAllocateDescriptorSets");
+   PFN_cpl cpl = (PFN_cpl)sys_gdpa(dev, "vkCreatePipelineLayout");
+   sys_uds = (PFN_uds)sys_gdpa(dev, "vkUpdateDescriptorSets");
+   sys_cbds = (PFN_cbds)sys_gdpa(dev, "vkCmdBindDescriptorSets");
+   sys_cpc = (PFN_cpc)sys_gdpa(dev, "vkCmdPushConstants");
+   if (!cdsl || !cdp || !ads || !cpl || !sys_uds || !sys_cbds || !sys_cpc)
+      return FALSE;
+   /* the types XeSS pushes for surfaces: sampled / storage images, texel buffers, uniform / storage buffers */
+   static const uint32_t types[] = { 2, 3, DT_UTB, DT_STB, DT_UBO, DT_SSBO };
+   static const struct { uint32_t n; const uint32_t *t; } list = { 6, types };
+   static const struct { uint32_t sType; const void *pNext; uint32_t n; const void *lists; } mut = {
+      1000351002u, NULL, 1, &list };
+   static const uint32_t bflags = 0x1 | 0x2 | 0x4;   /* update after bind, unused while pending, partially bound */
+   const struct { uint32_t sType; const void *pNext; uint32_t n; const uint32_t *flags; } bf = {
+      1000161000u, &mut, 1, &bflags };
+   const struct { uint32_t binding, type, count, stages; const void *samplers; } b = { 0, DT_MUTABLE, HEAP_N, 0x20, NULL };
+   const struct { uint32_t sType; const void *pNext; uint32_t flags, n; const void *bindings; } lci = {
+      32, &bf, 0x2 /* update-after-bind pool */, 1, &b };
+   uint64_t sl = 0, pool = 0;
+   int32_t r = cdsl(dev, &lci, NULL, &sl);
+   if (r) {
+      logx("driver mode: heap set layout failed: %d", r);
+      return FALSE;
+   }
+   const struct { uint32_t type, count; } ps = { DT_MUTABLE, HEAP_N };
+   const struct { uint32_t sType; const void *pNext; uint32_t flags, max, n; const void *sizes; } pci = {
+      33, &mut, 0x2 /* update after bind */, 1, 1, &ps };
+   if ((r = cdp(dev, &pci, NULL, &pool))) {
+      logx("driver mode: heap pool failed: %d", r);
+      return FALSE;
+   }
+   const struct { uint32_t sType; const void *pNext; uint64_t pool; uint32_t n; const uint64_t *layouts; } ai = {
+      34, NULL, pool, 1, &sl };
+   if ((r = ads(dev, &ai, &g_set))) {
+      logx("driver mode: heap set failed: %d", r);
+      return FALSE;
+   }
+   const struct { uint32_t stages, off, size; } pc = { 0x20, 0, PC_BYTES };
+   struct pipeline_layout_ci plci = { STYPE_PIPELINE_LAYOUT_CI, NULL, 0, 1, &sl, 1, &pc };
+   if ((r = cpl(dev, &plci, NULL, &g_pl))) {
+      logx("driver mode: pipeline layout failed: %d", r);
+      return FALSE;
+   }
+   g_dev = dev;
+   return TRUE;
+}
+
+static BOOL is_placeholder_module(uint64_t m)
+{
+   BOOL r = FALSE;
+   EnterCriticalSection(&heap_cs);
+   for (uint32_t i = 0; i < g_nmods && !r; i++)
+      r = g_mods[i] == m;
+   LeaveCriticalSection(&heap_cs);
+   return r;
+}
+
+static void push_heap(void *cb, uint32_t n, const struct write_ds *w)
+{
+   struct write_ds out[MAX_SURF];
+   uint32_t k = 0;
+   BOOL sampler = FALSE;
+   const uint32_t slot = ((uint32_t)InterlockedIncrement(&g_ring) % (HEAP_N / SLOTS)) * SLOTS;
+   for (uint32_t i = 0; i < n; i++) {
+      if (w[i].type == DT_SAMPLER || w[i].type == DT_COMBINED)
+         sampler = TRUE;
+      if (w[i].type == DT_SAMPLER)
+         continue;   /* the driver uses XeSS' linear / clamp sampler state (patches/0001) */
+      for (uint32_t e = 0; e < w[i].count; e++) {
+         if (k == MAX_SURF) {
+            static LONG said;
+            if (!InterlockedExchange(&said, 1))
+               logx("driver mode: a push with more than %u resources, the rest left out", MAX_SURF);
+            break;
+         }
+         const BOOL buf = w[i].type == DT_UBO || w[i].type == DT_SSBO;
+         const BOOL texel = w[i].type == DT_UTB || w[i].type == DT_STB;
+         out[k] = (struct write_ds){ STYPE_WRITE_DS, NULL, g_set, 0, slot + k, 1,
+                                     w[i].type == DT_COMBINED ? 2 : w[i].type, NULL, NULL, NULL };
+         if (buf)
+            out[k].buffers = (const uint8_t *)w[i].buffers + 24 * e;
+         else if (texel)
+            out[k].texels = (const uint8_t *)w[i].texels + 8 * e;
+         else
+            out[k].images = (const uint8_t *)w[i].images + 24 * e;
+         k++;
+      }
+   }
+   EnterCriticalSection(&heap_cs);
+   sys_uds(g_dev, k, out, 0, NULL);
+   LeaveCriticalSection(&heap_cs);
+   /* the driver reads surface k at PC_BYTES - 4 * nsurf + 4k; a kernel that samples has one more table after the
+    * surfaces, its sampler's (patches/0005; no sampler heap here, so the value is not used) */
+   uint32_t idx[MAX_SURF + 1], np = k;
+   for (uint32_t i = 0; i < k; i++)
+      idx[i] = slot + i;
+   if (sampler)
+      idx[np++] = 0;
+   sys_cbds(cb, 1 /* COMPUTE */, g_pl, 0, 1, &g_set, 0, NULL);
+   if (np)
+      sys_cpc(cb, g_pl, 0x20, PC_BYTES - 4 * np, 4 * np, idx);
 }
 
 /* ---- the descriptor push ----------------------------------------------------------------------------------------- */
 
 static void push_xess_descriptors(void *cb, uint32_t n, const void *writes)
 {
-   if (sys_push)
+   if (layer_ok == MODE_DRIVER)
+      push_heap(cb, n, writes);
+   else if (sys_push)
       sys_push(cb, 1 /* VK_PIPELINE_BIND_POINT_COMPUTE */, 0, PUSH_SET, n, writes);
+}
+
+/* driver mode: the kernels' pipelines take the heap layout */
+static PFN_ccp sys_ccp;
+static int32_t w_ccp(void *dev, uint64_t cache, uint32_t n, const struct compute_pipeline_ci *ci, const void *alloc,
+                     uint64_t *out)
+{
+   if (layer_ok != MODE_DRIVER || !n || n > 64)
+      return sys_ccp(dev, cache, n, ci, alloc, out);
+   struct compute_pipeline_ci c[64];
+   BOOL any = FALSE;
+   for (uint32_t i = 0; i < n; i++) {
+      c[i] = ci[i];
+      if (ci[i].stage.module && is_placeholder_module(ci[i].stage.module)) {
+         c[i].layout = g_pl;
+         c[i].stage.name = "main";   /* the placeholder's entry point; XeSS names the CM kernel's */
+         any = TRUE;
+      }
+   }
+   const int32_t r = sys_ccp(dev, cache, n, any ? c : ci, alloc, out);
+   if (any && r)
+      logx("driver mode: %u kernel pipeline(s) failed: %d", n, r);
+   return r;
+}
+
+static PFN_dsm sys_dsm;
+static void w_dsm(void *dev, uint64_t m, const void *alloc)
+{
+   EnterCriticalSection(&heap_cs);
+   for (uint32_t i = 0; i < g_nmods; i++)
+      if (g_mods[i] == m) {
+         g_mods[i] = g_mods[--g_nmods];
+         break;
+      }
+   LeaveCriticalSection(&heap_cs);
+   sys_dsm(dev, m, alloc);
 }
 
 /* ---- the properties query ---------------------------------------------------------------------------------------- */
@@ -225,12 +476,12 @@ static void props2(PFN_gpdp2 sys, void *phys, void *props)
    uint32_t *f = (uint32_t *)((uint8_t *)x + 16);
    /* supported, XMX, f2 (needed: XeSS' model selection fails without it), SIMD16 (Xe2 and later), f4 */
    const BOOL dg2 = (device & 0xff00) == 0x5600; /* Xe-HPG (Arc A): SIMD8 */
-   f[0] = vendor == 0x8086 && layer_ok == 1;
+   f[0] = vendor == 0x8086 && (layer_ok == MODE_LAYER || layer_ok == MODE_DRIVER);
    f[1] = 1;
    f[2] = 1;
    f[3] = !dg2;
    f[4] = 0;
-   logx("XeSS properties for %04x:%04x: supported %u (layer %ld), xmx %u, simd16 %u", vendor, device, f[0], layer_ok, f[1],
+   logx("XeSS properties for %04x:%04x: supported %u (mode %ld), xmx %u, simd16 %u", vendor, device, f[0], layer_ok, f[1],
         f[3]);
 }
 
@@ -247,10 +498,12 @@ static void layer_test(void *dev)
    PFN_dpl dpl = (PFN_dpl)sys_gdpa(dev, "vkDestroyPipelineLayout");
    PFN_ccp ccp = (PFN_ccp)sys_gdpa(dev, "vkCreateComputePipelines");
    PFN_dp dp = (PFN_dp)sys_gdpa(dev, "vkDestroyPipeline");
-   char mark[MAX_PATH];
+   char mark[MAX_PATH], amark[MAX_PATH];
    snprintf(mark, sizeof(mark), "%s\\layer_canary", kdir);
+   snprintf(amark, sizeof(amark), "%s\\anv_canary", kdir);
    CreateDirectoryA(kdir, NULL);
    DeleteFileA(mark);
+   DeleteFileA(amark);
    LONG ok = 0;
    if (csm && dsm && cpl && dpl && ccp && dp) {
       uint32_t w[PLACEHOLDER_WORDS];
@@ -264,7 +517,25 @@ static void layer_test(void *dev)
                                             l, 0, -1 };
          if (!ccp(dev, 0, 1, &pci, NULL, &p) && p)
             dp(dev, p, NULL);
-         ok = GetFileAttributesA(mark) != INVALID_FILE_ATTRIBUTES;
+         if (GetFileAttributesA(mark) != INVALID_FILE_ATTRIBUTES)
+            ok = MODE_LAYER;
+      }
+      /* no layer: the patched driver's test, with the placeholder it can see (its values stored to the heap) */
+      if (!ok && heap_init(dev)) {
+         uint32_t ws[PLACEHOLDER_STORE_WORDS];
+         placeholder_store(ws, XMX_CANARY_WG_Z, XMX_MAGIC, XMX_CANARY_LO, XMX_CANARY_HI);
+         struct shader_module_ci sci = { STYPE_SHADER_MODULE_CI, NULL, 0, sizeof(ws), ws };
+         uint64_t ms = 0, ps = 0;
+         if (!csm(dev, &sci, NULL, &ms)) {
+            struct compute_pipeline_ci pci = { STYPE_COMPUTE_PIPELINE_CI, NULL, 0,
+                                               { STYPE_PIPELINE_SHADER_STAGE_CI, NULL, 0, 0x20, ms, "main" },
+                                               g_pl, 0, -1 };
+            if (!ccp(dev, 0, 1, &pci, NULL, &ps) && ps)
+               dp(dev, ps, NULL);
+            dsm(dev, ms, NULL);
+         }
+         if (GetFileAttributesA(amark) != INVALID_FILE_ATTRIBUTES)
+            ok = MODE_DRIVER;
       }
       if (l)
          dpl(dev, l, NULL);
@@ -272,25 +543,91 @@ static void layer_test(void *dev)
          dsm(dev, m, NULL);
    }
    InterlockedExchange(&layer_ok, ok);
-   logx("layer self-test: %s", ok ? "the layer serves this device (XeSS on XMX)" : "no layer (XeSS stays on DP4a)");
+   logx("layer self-test: %s", ok == MODE_LAYER ? "the layer serves this device (XeSS on XMX)" :
+        ok == MODE_DRIVER ? "the patched driver serves this device (XeSS on XMX, driver mode)" :
+        "neither the layer nor the patched driver (XeSS stays on DP4a)");
 }
+
+/* the features driver mode needs, set in the application's own structures where it has them (and put back after the
+ * call), else in ours put in front of its chain */
+#define STYPE_VK12_FEATURES 51
+#define STYPE_DI_FEATURES 1000161001u
+#define STYPE_MUTABLE_FEATURES 1000351000u
+#define DI_UAB_FIRST 10   /* VkPhysicalDeviceDescriptorIndexingFeatures: UBO, sampled, storage image, SSBO, UTB, STB */
+#define DI_UAB_N 8        /* update after bind, then update unused while pending and partially bound */
+#define VK12_DI_FIRST 10  /* VkPhysicalDeviceVulkan12Features: the descriptor indexing fields start at index 10 */
 
 static int32_t w_cdev(void *phys, const struct device_ci *ci, const void *alloc, void **out)
 {
    if (!sys_cdev)
       sys_cdev = (PFN_cdev)sys_gipa(NULL, "vkCreateDevice");
-   static const char ext[] = "VK_KHR_push_descriptor";
-   BOOL have = FALSE;
-   for (uint32_t i = 0; i < ci->next; i++)
-      have |= !strcmp(ci->exts[i], ext);
+   static const char *const want[] = { "VK_KHR_push_descriptor", "VK_EXT_mutable_descriptor_type" };
+   const char *exts[256];
+   uint32_t next = 0;
    int32_t r = -1;
-   if (!have && ci->next < 255) {
-      const char *exts[256];
+   if (ci->next <= 254) {
       memcpy(exts, ci->exts, ci->next * sizeof(char *));
-      exts[ci->next] = ext;
+      next = ci->next;
+      for (uint32_t w = 0; w < 2; w++) {
+         BOOL have = FALSE;
+         for (uint32_t i = 0; i < ci->next; i++)
+            have |= !strcmp(ci->exts[i], want[w]);
+         if (!have)
+            exts[next++] = want[w];
+      }
+      /* features: the application's structures if it has them, else ours in front of its chain */
+      uint32_t *di = NULL, *mut = NULL, save_di[DI_UAB_N], save_mut = 0;
+      for (struct base *b = (struct base *)ci->pNext; b; b = b->pNext) {
+         if (b->sType == STYPE_VK12_FEATURES && !di)
+            di = (uint32_t *)((uint8_t *)b + 16) + VK12_DI_FIRST + DI_UAB_FIRST;
+         else if (b->sType == STYPE_DI_FEATURES && !di)
+            di = (uint32_t *)((uint8_t *)b + 16) + DI_UAB_FIRST;
+         else if (b->sType == STYPE_MUTABLE_FEATURES && !mut)
+            mut = (uint32_t *)((uint8_t *)b + 16);
+      }
+      struct { uint32_t sType; const void *pNext; uint32_t f[20]; } my_di = { STYPE_DI_FEATURES };
+      struct { uint32_t sType; const void *pNext; uint32_t f; } my_mut = { STYPE_MUTABLE_FEATURES };
       struct device_ci c = *ci;
       c.exts = exts;
-      c.next = ci->next + 1;
+      c.next = next;
+      if (di) {
+         memcpy(save_di, di, sizeof(save_di));
+         for (uint32_t i = 0; i < DI_UAB_N; i++)
+            di[i] = 1;
+      } else {
+         for (uint32_t i = 0; i < DI_UAB_N; i++)
+            my_di.f[DI_UAB_FIRST + i] = 1;
+         my_di.pNext = c.pNext;
+         c.pNext = &my_di;
+      }
+      if (mut) {
+         save_mut = *mut;
+         *mut = 1;
+      } else {
+         my_mut.f = 1;
+         my_mut.pNext = c.pNext;
+         c.pNext = &my_mut;
+      }
+      r = sys_cdev(phys, &c, alloc, out);
+      if (di)
+         memcpy(di, save_di, sizeof(save_di));
+      if (mut)
+         *mut = save_mut;
+      if (r)
+         logx("vkCreateDevice with the push descriptor / mutable / update-after-bind additions failed (%d): as asked", r);
+   }
+   if (r && ci->next <= 254) {
+      /* the push descriptor extension alone (the layer's mode) */
+      BOOL have = FALSE;
+      for (uint32_t i = 0; i < ci->next; i++)
+         have |= !strcmp(ci->exts[i], want[0]);
+      memcpy(exts, ci->exts, ci->next * sizeof(char *));
+      next = ci->next;
+      if (!have)
+         exts[next++] = want[0];
+      struct device_ci c = *ci;
+      c.exts = exts;
+      c.next = next;
       r = sys_cdev(phys, &c, alloc, out);
    }
    if (r)
@@ -335,6 +672,14 @@ static PFN_void own(void *device, const char *name, PFN_void sys)
       sys_csm = (PFN_csm)sys;
       return (PFN_void)w_csm;
    }
+   if (!strcmp(name, "vkDestroyShaderModule")) {
+      sys_dsm = (PFN_dsm)sys;
+      return (PFN_void)w_dsm;
+   }
+   if (!strcmp(name, "vkCreateComputePipelines")) {
+      sys_ccp = (PFN_ccp)sys;
+      return (PFN_void)w_ccp;
+   }
    if (!strcmp(name, "vkGetPhysicalDeviceProperties2")) {
       sys_gpdp2 = (PFN_gpdp2)sys;
       return (PFN_void)w_gpdp2;
@@ -372,6 +717,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
    self = inst;
    DisableThreadLibraryCalls(inst);
    InitializeCriticalSection(&log_cs);
+   InitializeCriticalSection(&heap_cs);
    char e[8];
    if (GetEnvironmentVariableA("VKWRAP_LOG", e, sizeof(e)) > 0 && strcmp(e, "0")) {
       char path[MAX_PATH];
