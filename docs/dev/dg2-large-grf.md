@@ -62,3 +62,27 @@ nix-build nix/mesa.nix
 This builds a package and does not activate it. Adding the overlay to a NixOS
 configuration and rebuilding/activating the system is a separate step. The overlay
 rejects other Mesa versions rather than silently applying unvalidated patches.
+
+### Flake
+
+The committed `flake.lock` pins nixpkgs and Mesa 26.3.0. The flake currently exposes
+`x86_64-linux` only. Build the Intel ANV + Iris package or the full Mesa package:
+
+```sh
+nix build .#mesa-intel  # also the default package
+nix build .#mesa
+nix flake check        # patch application and SPIR-V/harness build; no GPU test
+nix develop
+```
+
+These commands do not install or activate a system driver. For a private Vulkan
+test after `nix build .#mesa-intel`, select its generated manifest explicitly:
+
+```sh
+VK_DRIVER_FILES="$PWD/result/share/vulkan/icd.d/intel_icd.x86_64.json" vulkaninfo --summary
+```
+
+Consumers can use `inputs.xess-xmx-linux.overlays.default` in their own nixpkgs
+import. The receiving nixpkgs must provide Mesa 26.3.0; an input override/follows
+with another Mesa version fails explicitly. Updating the lock requires checking
+that the patch series still applies and rerunning the GPU test before activation.
