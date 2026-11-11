@@ -47,6 +47,7 @@ fail() { # <reason> [stock]
   if [ "${DRY:-0}" != 1 ] && [ -z "${XMX_CHECK_LIB:-}" ] && [ "${2:-}" != stock ] && [ "$STOCK" = 0 ]; then
     local d v
     for d in "$PKG"/lib/mesa-*/; do
+      case "$d" in */mesa-stock-*/) continue ;; esac   # unpatched: no XMX without the layer (stock mode only)
       [ -f "$d/libvulkan_intel.so" ] || continue
       cmp -s "$d/libvulkan_intel.so" "$LIB" && continue
       v=$(basename "$d"); v=${v#mesa-}
