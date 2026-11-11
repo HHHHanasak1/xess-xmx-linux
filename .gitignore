@@ -20,3 +20,5 @@ ffx/
 layer/out/
 layer/tests/out/
 layer/libVkLayer_xess_xmx.so
+
+/tools/tests/dg2-large-grf/.build/

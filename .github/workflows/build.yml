@@ -22,6 +22,15 @@ permissions:
   contents: read
 
 jobs:
+  dg2-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ pkg-config libvulkan-dev glslang-tools spirv-tools
+      - name: compile the DG2 harness and validate its SPIR-V
+        run: bash tools/tests/dg2-large-grf/run.sh --build-only
+
   scripts:
     runs-on: ubuntu-latest
     steps:
