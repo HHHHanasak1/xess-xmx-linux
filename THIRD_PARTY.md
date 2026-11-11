@@ -1,4 +1,4 @@
-# Third-party components
+# Third-Party Components
 
 The code written for this project is licensed under the MIT License (see [LICENSE](LICENSE)). Third-party components keep their own licenses, as listed below.
 

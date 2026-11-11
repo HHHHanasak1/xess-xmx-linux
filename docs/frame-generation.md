@@ -4,12 +4,12 @@ Without Intel's driver extensions, **XeSS frame generation** (XeSS-FG, `libxess_
 
 This guide covers all four ways to run XeSS frame generation on XMX, how to set the frame multiplier, and how low-latency pacing works:
 
-1. **The game's own XeSS-FG (`XESS_FG=<n>`):** Override the multiplier to 2x, 3x, or 4x, or experimentally up to **8x**.
-2. **FSR 3.1+ games (`FSR=xess`, `FSR_FG=xess`):** Run a game's AMD FidelityFX Super Resolution (FSR) 3.1+ upscaling and frame generation on XeSS.
-3. **FSR 3.1+ upscaling games without FSR frame generation (`FSR=xess FSR_FG=inject`):** Inject an XeSS-FG swap chain fed by the FSR upscaler (for games where frame generation is NVIDIA DLSS-G only).
-4. **Any Direct3D 12 (DX12) game via optical flow (`OFLOW_FG=1`, experimental):** Run XeSS-FG using motion vectors computed from the final image.
+* **The game's own XeSS-FG (`XESS_FG=<n>`, section 1; low-latency pacing in section 2):** Override the frame generation multiplier.
+* **FSR 3.1+ games (`FSR=xess`, `FSR_FG=xess`, section 3):** Run a game's AMD FidelityFX Super Resolution (FSR) 3.1+ upscaling and frame generation on XeSS.
+* **FSR 3.1+ upscaling games without FSR frame generation (`FSR=xess FSR_FG=inject`, section 4):** Inject an XeSS-FG swap chain fed by the FSR upscaler (for games where frame generation is NVIDIA DLSS-G only).
+* **Any Direct3D 12 (DX12) game via optical flow (`OFLOW_FG=1`, experimental, section 5):** Run XeSS-FG using motion vectors computed from the final image.
 
-For internal implementation details of `ControlLib.dll`, the shim hooks, the FidelityFX translation DLLs, and optical flow, see [dev/how-it-works.md](dev/how-it-works.md). For game-specific notes and OptiScaler setups, see [games.md](games.md). For all launch options in one list, see [launch-options.md](launch-options.md).
+For internal implementation details of `ControlLib.dll`, the shim hooks, the FidelityFX translation DLLs, and optical flow, see [dev/how-it-works.md](dev/how-it-works.md). For what to use in a given game, see [games.md](games.md). For all launch options in one list, see [launch-options.md](launch-options.md).
 
 ---
 
@@ -25,7 +25,7 @@ Many games (such as Cyberpunk 2077) only offer 2x frame generation in their menu
 XESS=latest XESS_FG=4 %command%
 ```
 
-* **2x to 4x (`XESS_FG=2`, `XESS_FG=3`, `XESS_FG=4`):** Matches the range of the frame generation override in Intel Graphics Software on Windows. `install.sh` and `enable.sh` place `ControlLib.dll` (`C:\windows\system32\ControlLib.dll`) into each prefix to answer `libxess_fg.dll`'s override query (`ControlLib.dll` itself accepts values up to `16`, clamping anything above `4` to `3`, i.e. 4x).
+* **2x to 4x (`XESS_FG=2`, `XESS_FG=3`, `XESS_FG=4`):** Matches the range of the frame generation override in Intel Graphics Software on Windows. `install.sh` and `enable.sh` place `ControlLib.dll` (`C:\windows\system32\ControlLib.dll`) into each prefix to answer `libxess_fg.dll`'s override query (`ControlLib.dll` accepts `XESS_FG` up to `16` and reports anything above `4` as 4x).
 * **5x to 8x (`XESS_FG=5` .. `XESS_FG=8`, experimental):** `libxess_fg.dll` ignores `ControlLib.dll` overrides above 4x, so the shim (`igdext64.dll`) raises the maximum number of interpolated frames inside `libxess_fg.dll` at runtime (capped at `8`; if verification through the public API fails, the game stays at 4x). Intel does not support more than 4x. All four multipliers (`5` to `8`) work and were tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390, but every step above 4x lowers the base rendered frame rate and adds input latency. **7x and 8x are not recommended** because of the latency.
 * **In-game toggles:** You still switch frame generation on and off in the game's menu. In a game with its own multi-frame menu (such as Wuthering Waves, which offers 2x/3x/4x), `XESS_FG` takes precedence over the menu's number while still letting you turn frame generation off in the menu.
 * **Fallback limit:** If the XMX path falls back to generic shaders (because the self-test failed or a kernel failed to compile), generic XeSS frame generation is limited to 2x. A game set to 3x or 4x will run at 2x until the XMX path works again.
@@ -41,11 +41,11 @@ XESS=latest XESS_FG=4 %command%
 
 When a game is GPU-limited or CPU-limited with frame generation on, frames queue up before the GPU finishes earlier work. Waiting in that queue accounts for most of the game's latency.
 
-Games with XeSS frame generation use **Intel XeLL** (`libxell.dll`, Xe Low Latency). Under Wine and Proton, XeLL's hardware driver mode does not start, so XeLL runs in its cross-vendor built-in context ([dev/how-it-works.md](dev/how-it-works.md)). In that mode, XeLL only sleeps for a manual frame cap, because its own CPU time estimate includes the wait in the queue.
+Games with XeSS frame generation use **Intel XeLL** (`libxell.dll`, Xe Low Latency). Under Wine and Proton, XeLL's hardware driver mode does not start, so XeLL runs in its cross-vendor built-in context ([dev/how-it-works.md](dev/how-it-works.md)). In that mode, XeLL sleeps only to honour a manual frame cap; its own estimate of the CPU time already includes the time spent waiting in the queue, so it never shortens that wait.
 
 To remove the queue, the shim (`igdext64.dll`) hooks XeLL and paces each frame so that it reaches the GPU right when the GPU gets free.
 
-* **On by default:** Low-latency pacing is on by default whenever a game's native XeSS frame generation is active, and off while frame generation is off. If a game has no queue (for example, CONTROL), the pacer does not wait and changes nothing.
+* **On by default:** Low-latency pacing is on by default whenever a game's native XeSS frame generation is active, and off while frame generation is off. If a game has no queue, the pacer does not wait and changes nothing.
 * **Native XeSS-FG only:** This low-latency mode works for a game's own XeSS frame generation only. With `FSR=xess`, `FSR_FG`, and `OFLOW_FG`, the package's frame generation DLL reports each present to XeLL right before the next frame's sleep, so the shim sees no queue in flight and does not wait.
 * **Measured latency reduction:** Tested in Wuthering Waves on an Arc B390 at 22 W SoC with 3x frame generation (`IGDEXT_XELL_LOG=1`, measuring simulation start to present end):
   - **GPU-limited** (fixed spot, 10 minutes): **69.0 ms -> 34.8 ms (−50%)** at ~25.1 ms frame time.
@@ -59,10 +59,10 @@ To remove the queue, the shim (`igdext64.dll`) hooks XeLL and paces each frame s
 |---|---|---|
 | `IGDEXT_XELL_CAP=off %command%` (or `0`) | Turns low-latency pacing off | Comparing latency/frame rate, or if low-latency pacing costs frame rate or causes uneven pacing in a game |
 | `IGDEXT_XELL_CAP=auto:<ms> %command%` | Keeps low-latency pacing on, starting each frame `<ms>` milliseconds earlier (or later if negative) | Giving the game more frame-rate headroom at the cost of a little more latency (for example, `IGDEXT_XELL_CAP=auto:2 %command%`) |
-| `IGDEXT_XELL_CAP=<us> %command%` | Turns low-latency pacing off and, when the game calls `xellSetSleepMode`, raises any smaller interval to `<us>` microseconds per displayed frame (`1` to `1000000`) through XeLL's frame cap (any other value turns both off; a game that never calls `xellSetSleepMode` gets no cap from it) | Locking a steady fixed frame rate through XeLL |
+| `IGDEXT_XELL_CAP=<us> %command%` | Turns low-latency pacing off and, when the game calls `xellSetSleepMode`, raises any smaller interval to `<us>` microseconds per displayed frame (`1` to `1000000`; `0` = off) through XeLL's frame cap (any other value turns both off; a game that never calls `xellSetSleepMode` gets no cap from it) | Locking a steady fixed frame rate through XeLL |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves 30 fps frame-cap fix in any game | Another game drops to 30 fps when enabling frame generation until a menu is opened and closed |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | Turns the Wuthering Waves 30 fps frame-cap fix off | Ruling out the cap fix when debugging |
-| `IGDEXT_XELL_LOG=1 %command%` | Writes `C:\igdext_xell.log` inside the game's prefix | Checking low-latency pacing state: logs `low latency: on` / `low latency: ...` at start, `auto: frame generation on/off (...)`, `auto: frame time ...` once learned, `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames |
+| `IGDEXT_XELL_LOG=1 %command%` | Writes `C:\igdext_xell.log` inside the game's prefix | Checking low-latency pacing state: logs `low latency: on`, `fixed cap` or `off` at start, `auto: frame generation on/off (...)`, `auto: frame time ...` once learned, `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames |
 
 **Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
 
@@ -84,8 +84,8 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 | Game Ships | `FSR=xess` | `FSR_FG=xess` |
 |---|---|---|
 | FSR 2, FSR 3.0, or FSR compiled into the game | Nothing changes (no FidelityFX DLLs to replace) | Nothing changes |
-| **FSR 3.1.0 to 3.1.3:** one `amd_fidelityfx_dx12.dll` | XeSS SR + **XeSS-FG**, 2x to 8x | AMD's FSR 3.1.6 (FSR SDK 2.4.0) + **XeSS-FG**, 2x to 8x |
-| **FSR 3.1.4+ / FSR 4:** `amd_fidelityfx_loader_dx12.dll` with the upscaler and frame generation DLLs | XeSS SR + **XeSS-FG**, 2x to 8x | The game's own FSR upscaling + **XeSS-FG**, 2x to 8x |
+| **FSR 3.1.0 to 3.1.3:** one `amd_fidelityfx_dx12.dll` | XeSS SR + **XeSS-FG** | AMD's FSR 3.1.6 (FSR SDK 2.4.0) + **XeSS-FG** |
+| **FSR 3.1.4+ / FSR 4:** `amd_fidelityfx_loader_dx12.dll` with the upscaler and frame generation DLLs | XeSS SR + **XeSS-FG** | The game's own FSR upscaling + **XeSS-FG** |
 
 ### Tested Games
 
@@ -93,7 +93,7 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 * **Resident Evil Requiem:** 4x and 5x (`FSR=xess` / `FSR_FG=xess`). The game ships XeSS frame generation as well, but does not offer it under Proton, so its FSR frame generation is the way to run XeSS-FG there.
 * **Cyberpunk 2077:** The "FSR 4" upscaling option (XeSS SR) and 5x (`FSR=xess`). The game's own XeSS (`XESS=latest`) is better there.
 * **Wuthering Waves** (FSR 3.1.1 in one DLL): XeSS SR and 5x (`FSR=xess FSR_VENDOR=amd`). The game's own XeSS is the one to use.
-* **Forza Horizon 6** with `FSR=xess FSR_FG=inject`: XeSS SR and 2x, 3x (see [Section 4](#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)).
+* **Forza Horizon 6** with `FSR=xess FSR_FG=inject`: XeSS SR and 2x, 3x (see [Section 4]([#4](https://github.com/HHHHanasak1/xess-xmx-linux/issues/4)-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)).
 
 ### How to Use `FSR=xess` and `FSR_FG=xess`
 
@@ -105,7 +105,7 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 
    * `FSR=xess` links the package's upscaler and frame generation DLLs into the game folder while the game runs (`tools/proton-hook.py`, the same way as `XESS=latest`: originals are kept as `<name>.xmx-orig` and restored when the game exits). Next to them go the XeSS SDK's `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` (`xess/`, fetched by `install.sh` / `tools/get-xess.sh`); if the game has a newer copy of its own, that copy stays.
    * `FSR_FG=xess` replaces only the frame generation DLL and keeps the game's FSR upscaling.
-   * `XESS_FG=<n>` sets the number of frames (`2` to `8`); without it, XeSS-FG runs at 2x. The game's own frame generation menu (often 2x only) no longer decides the number.
+   * `XESS_FG=<n>` sets the number of frames ([Setting the Multiplier](#setting-the-multiplier-xess_fg)); without it, XeSS-FG runs at 2x. The game's own frame generation menu (often 2x only) no longer decides the number.
    * For a game with FSR 3.1.0 to 3.1.3 (upscaling and frame generation in one `amd_fidelityfx_dx12.dll`), AMD's loader from FSR SDK 2.4.0 (`ffx/amd_fidelityfx_loader_dx12.dll`, fetched by `install.sh` / `tools/get-ffx.sh`; license in `ffx/license.md`) takes that file's place, with the package's DLLs next to it (or AMD's upscaler + the package's frame generation when using `FSR_FG=xess`).
 
 2. In the game, choose **FSR** upscaling and turn on **FSR frame generation**. The menu still says FSR.
@@ -139,7 +139,7 @@ FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
 
 ### Known Limits of `FSR=xess` / `FSR_FG=xess`
 
-* **CONTROL Resonant with HDR:** With HDR10 (PQ) on, bright sunlit clouds flicker at 3x and higher while the camera turns; with HDR off, or at 2x, they do not. Other tested games did not show this with HDR on.
+* **CONTROL Resonant with HDR:** Sunlit clouds flicker at 3x and higher with HDR10 on (see [Tested Games](#tested-games)). Other tested games did not show this with HDR on.
 * **HUD ghosting (`FFX_XEFG_HUDLESS=0`):** When a game passes FSR a HUD-less image, the DLL enables XeSS-FG's UI composition from it. Setting `FFX_XEFG_HUDLESS=0` leaves UI composition off so XeSS-FG interpolates the whole image, UI included; in Cyberpunk 2077 that leaves less ghosting on dialog text.
 
 ---
@@ -179,7 +179,7 @@ Measured in Forza Horizon 6 on an Arc B390 at 27 W SoC, 1920x1200 output (1280x8
 | 2x (`XESS_FG=2`) | ~46 fps | ~93 fps |
 | 3x (`XESS_FG=3`) | ~38 fps | ~115 fps |
 
-The SoC is at its power limit in both runs. At 3x, the third frame costs about 4.8 ms: about 2.7 ms in XeSS-FG, 0.9 ms for gamescope to compose it, and the rest unattributed. The Steam performance overlay made no measurable difference.
+The SoC is at its power limit in both runs. The second generated frame (3x instead of 2x) costs about 4.8 ms: about 2.7 ms in XeSS-FG, 0.9 ms for gamescope to compose it, and the rest unattributed. The Steam performance overlay made no measurable difference.
 
 ---
 
@@ -211,7 +211,7 @@ Tested on an Arc B390, SteamOS, 1920x1200, 144 Hz VRR display:
 
 | Game | Engine | Without Frame Generation | Rendered | Shown | Frame Time of the Rendered Frames |
 |---|---|---|---|---|---|
-| **Resident Evil 4 (2023)** | RE Engine, FSR 2 only | about 50 fps | about 40 fps | about 80 fps | 95th percentile within 0.01 to 1.8 ms of the median |
+| **Resident Evil 4 (2023)** | RE Engine, FSR 2 only | about 50 fps | about 41 fps | about 82 fps | 95th percentile within 0.01 to 1.8 ms of the median |
 | **Viewfinder** | Unity 2022.3 (`-force-d3d12`) | not measured | about 70 fps | about 140 fps (the display's limit) | 95th percentile within 0.01 to 0.03 ms of the median |
 
 The image was accurate in both games, including where Viewfinder swaps large parts of the scene at once.
@@ -225,7 +225,7 @@ The image was accurate in both games, including where Viewfinder swaps large par
 | Motion vector expansion (`oflow_expand.hlsl`) | about 0.1 ms |
 | XeSS-FG interpolation | about 2.6 ms (same as with a game's own motion vectors) |
 
-In Resident Evil 4 at 1920x1200, frame rate is about 50 fps without frame generation and about 41 fps rendered (82 fps shown) with `OFLOW_FG=1`. Half-resolution optical flow (`FFX_XEFG_OFLOW_DIV=2`) gave only 3 to 4 more frames after frame generation with a worse image, so full resolution (`1`) is the default.
+In Resident Evil 4 at 1920x1200, frame rate is about 50 fps without frame generation and about 41 fps rendered (82 fps shown) with `OFLOW_FG=1`. Half-resolution optical flow (`FFX_XEFG_OFLOW_DIV=2`) gave only 3 to 4 fps more with frame generation with a worse image, so full resolution (`1`) is the default.
 
 **Automatic rendered frame-rate cap (`FFX_XEFG_CAP=auto`):**
 Because generated frames sit between two rendered ones, an uneven rendered frame rate shows directly (uncapped Resident Evil 4 swung between 20 and 28 ms per rendered frame). By default with `OFLOW_FG=1`, the DLL limits the rendered frame rate through XeLL's frame cap (`FFX_XEFG_CAP=auto`):
@@ -236,7 +236,7 @@ Because generated frames sit between two rendered ones, an uneven rendered frame
 
 ### Limits of `OFLOW_FG=1`
 
-* **Latency:** Generated frames add the wait for the next rendered frame, and XeLL cannot see where the game reads input (the game sends no XeLL simulation markers), so it cannot reduce latency the way it does for a native XeSS game. Below about 50 fps rendered, input feel matches the rendered frame rate regardless of how many frames are shown.
+* **Latency:** Generated frames add the wait for the next rendered frame, and XeLL cannot see where the game reads input (the game sends no XeLL simulation markers), so it cannot reduce latency the way it does for a native XeSS game. Below about 50 fps rendered, the game feels as sluggish as its rendered frame rate, however smooth the shown frames look.
 * **HUD smear:** Because there is no HUD-less image, the HUD is interpolated with the rest of the image; text and fast HUD elements can smear slightly.
 * **Disocclusion wobble:** Where something appears that was hidden in the previous frame, optical flow has nothing to follow, and with no depth buffer either, edges of moving objects can wobble.
 * **DX12 only:** XeSS-FG only supports D3D12 swap chains (no D3D11 or Vulkan swap chain).

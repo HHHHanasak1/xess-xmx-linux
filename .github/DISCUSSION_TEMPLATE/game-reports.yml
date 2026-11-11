@@ -1,0 +1,78 @@
+title: "[Game] <game name> on <GPU>"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us how a game runs with this package, whether it works or not. One game and one GPU per report.
+        If something is broken and you want it fixed, also open an issue with the log ([how to collect it](https://github.com/HHHHanasak1/xess-xmx-linux/blob/main/docs/troubleshooting.md#logs-for-a-bug-report)).
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: Name and version or build, if you know it.
+      placeholder: Cyberpunk 2077 2.31
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU
+      placeholder: Arc B390 (Xe3)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System, package release, Proton
+      placeholder: SteamOS 3.8, release 20261111, GE-Proton 11-6
+    validations:
+      required: true
+  - type: dropdown
+    id: driver
+    attributes:
+      label: Driver
+      description: The first line of ~/.cache/xess-xmx/driver-status names the driver your session loaded; a per-game MESA= option overrides it.
+      options:
+        - Unpatched 26.3.0 + layer (Xe3 default)
+        - Patched 26.3.0
+        - Patched 26.1.2
+        - System Mesa + layer (xmx-stock.sh)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: options
+    attributes:
+      label: Launch options
+      placeholder: "XESS=latest XESS_FG=3 %command%"
+  - type: dropdown
+    id: sr
+    attributes:
+      label: Super resolution
+      options:
+        - XeSS on XMX
+        - XeSS on DP4a
+        - FSR on XeSS (FSR=xess)
+        - Not used / not available
+        - Does not work
+    validations:
+      required: true
+  - type: dropdown
+    id: fg
+    attributes:
+      label: Frame generation
+      options:
+        - XeSS-FG works
+        - From FSR (FSR=xess / FSR_FG=xess)
+        - Injected (FSR_FG=inject)
+        - Optical flow (OFLOW_FG=1)
+        - Not used / not available
+        - Does not work
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Frame rate, image problems, crashes, anything else worth knowing.

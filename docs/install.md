@@ -40,8 +40,8 @@ It leaves the unpacked package folder, the downloaded bundles (`igc/`, `xess/`, 
 
 ### Updating or Moving the Package Folder
 
-* **Updating to a new release:** Unpack the new release over the previous version (into the same folder), run `./install.sh`, and reboot or re-login. If the compiler toolchain or `.cmk` packer format changed, `xess-xmx-check.service` removes the patched driver's `*.cmk` files from the old toolchain in `~/.cache/xess-xmx/kernels` (the layer's `*.cml` files are not removed; new ones get new file names) and recompiles kernels on next use.
-* **Moving or deleting the package folder:** Only moving the package to another folder (or deleting it) needs `./uninstall.sh` from the old folder first; after moving, run `./install.sh` from the new location. If you delete or move the folder without running `./uninstall.sh`, `~/.config/xess-xmx/session-check.sh` detects that the folder is missing at your next login, points the session back to the system's stock Vulkan drivers so your desktop and games keep working (on DP4a, the 8-bit integer dot-product fallback), and writes `FAILED ... package folder ... not found` to `~/.cache/xess-xmx/driver-status`.
+* **Updating to a new release:** Unpack the new release over the previous version (into the same folder), run `./install.sh`, and reboot or re-login. If the compiler toolchain or `.cmk` packer format changed, `xess-xmx-check.service` removes the patched driver's `*.cmk` files from the old toolchain in `~/.cache/xess-xmx/kernels` (the layer's `*.cml` files are not removed; new ones get new file names); the driver or layer compiles them again on next use.
+* **Moving or deleting the package folder:** Before you move or delete the package folder, run `./uninstall.sh` from it; after moving, run `./install.sh` from the new location. If you delete or move the folder without running `./uninstall.sh`, `~/.config/xess-xmx/session-check.sh` detects that the folder is missing at your next login, points the session back to the system's stock Vulkan drivers so your desktop and games keep working (on DP4a, the 8-bit integer dot-product fallback), and writes `FAILED ... package folder ... not found` to `~/.cache/xess-xmx/driver-status`.
 
 ---
 
@@ -50,11 +50,11 @@ It leaves the unpacked package folder, the downloaded bundles (`igc/`, `xess/`, 
 ### Hardware
 
 * An Intel GPU with **XMX** (Xe Matrix Extensions, hardware matrix engines) running on the Linux `xe` or `i915` kernel driver:
-  - **Xe3 (Panther Lake, Wildcat Lake):** The shim's GPU table (`shim/src/dll/GpuInfo.cpp`) covers PCI IDs `0xB080`–`0xB0FF` and `0xFD80`–`0xFD8F`. `install.sh` and `VK_LAYER_XESS_xmx` treat a GPU as Xe3 when `(device_id & 0xfff0)` is `0xb080` or `0xfd80` (PCI IDs `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`); only those IDs get stock mode by default and are served by `VK_LAYER_XESS_xmx` (a Panther Lake GPU at `0xB090`–`0xB0FF` is detected by the shim and runs on the patched driver). Tested on an Arc B390 (ONEXPLAYER 3).
-  - **Xe2 (Battlemage, Lunar Lake):** PCI IDs `0xE200`–`0xE2FF` (Battlemage, tested by a user on an Arc B580, #16) and `0x6420`–`0x64FF` (Lunar Lake, detected, untested).
-  - **Xe-HPG (Alchemist / DG2):** PCI IDs `0x5690`–`0x56FF`. Tested by a user on an Arc A310 (#28).
+  - **Xe3 (Panther Lake, Wildcat Lake):** The shim's GPU table (`shim/src/dll/GpuInfo.cpp`) covers PCI IDs `0xB080`–`0xB0FF` and `0xFD80`–`0xFD8F`. `install.sh` and `VK_LAYER_XESS_xmx` treat a GPU as Xe3 when `(device_id & 0xfff0)` is `0xb080` or `0xfd80` (PCI IDs `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`); only those IDs get stock mode by default and are served by `VK_LAYER_XESS_xmx` (a Panther Lake GPU at `0xB090`–`0xB0FF` is detected by the shim and runs on the patched driver). Tested on an Arc B390 (ONEXPLAYER 3); Wildcat Lake is detected but untested.
+  - **Xe2 (Battlemage, Lunar Lake):** PCI IDs `0xE200`–`0xE2FF` (Battlemage, tested by a user on an Arc B580, [#16](https://github.com/HHHHanasak1/xess-xmx-linux/issues/16)) and `0x6420`–`0x64FF` (Lunar Lake, detected, untested).
+  - **Xe-HPG (Alchemist / DG2):** PCI IDs `0x5690`–`0x56FF`. Tested by a user on an Arc A310 ([#28](https://github.com/HHHHanasak1/xess-xmx-linux/issues/28)).
   - **Xe-LPG+ (Arrow Lake-H):** PCI IDs `0x7D51`, `0x7DD1` (detected, untested).
-* **Xe-LPG (Meteor Lake and non-H Arrow Lake, `0x7D40`–`0x7DFF` except `0x7D51` / `0x7DD1`)** has no XMX units; the shim reports `XMX=0` and games stay on DP4a. Unknown Intel PCI IDs automatically fall back to DP4a unless declared with `IGDEXT_GMD` ([troubleshooting.md](troubleshooting.md)).
+* **Xe-LPG (Meteor Lake and non-H Arrow Lake, `0x7D40`–`0x7DFF` except `0x7D51` / `0x7DD1`)** has no XMX units; the shim's trace shows `XMX 0` and games stay on DP4a. Unknown Intel PCI IDs automatically fall back to DP4a unless declared with `IGDEXT_GMD` ([troubleshooting.md](troubleshooting.md)).
 
 ### Software
 
@@ -62,7 +62,7 @@ It leaves the unpacked package folder, the downloaded bundles (`igc/`, `xess/`, 
 * **Proton 11 / GE-Proton 11 / Proton Experimental** (for their `vkd3d-proton`, Proton's D3D12-to-Vulkan translation layer).
 * **System libraries for the prebuilt drivers:** The drivers in the release archive (`lib/mesa-stock-26.3.0/`, `lib/mesa-26.3.0/`, `lib/mesa-26.1.2/`) are built on Arch Linux and require **glibc 2.38** and **libwayland-client 1.24** or newer.
   - Checked to load on SteamOS, Arch Linux, openSUSE Tumbleweed, Void Linux, Fedora 43, and Ubuntu 25.10.
-  - Debian 13 and Ubuntu 24.04 ship `libwayland-client` 1.23 (`undefined symbol: wl_fixes_interface`); on those distributions, build the driver against your system libraries with `tools/rebuild-driver.sh` ([drivers.md](drivers.md), [dev/building.md](dev/building.md)).
+  - Debian 13 and Ubuntu 24.04 ship `libwayland-client` 1.23 (`undefined symbol: wl_fixes_interface`); on those distributions, build the driver against your system libraries with `tools/rebuild-driver.sh` ([drivers.md](drivers.md), [dev/building.md](dev/building.md)); on Xe3, then switch to it with `XMX_DRIVER=patched ./install.sh`.
   - `libSPIRV-Tools.so` and `libdisplay-info.so.3` are bundled in `lib/bundled/` for distributions that lack them or name them differently.
 * **Command-line tools for `install.sh`:** `curl`, `ar` (from `binutils`), `tar`, and `zstd` to unpack the compiler bundle; `python3` for the Proton hook, compiler helper, session check, and `tools/fsr-fg.sh`; `unzip` or `python3` to unpack the XeSS SDK download.
 

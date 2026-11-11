@@ -1,6 +1,6 @@
 # Performance (2026-11-05)
 
-**Device**: OneXPlayer 3, Intel Arc B390 (Panther Lake, Arc G3 Extreme), SteamOS, 1920x1200, SoC (system-on-chip power limit) 27 W.
+**Device**: ONEXPLAYER 3, Intel Arc B390 (Panther Lake, Arc G3 Extreme), SteamOS, 1920x1200, SoC (system-on-chip) power limit 27 W.
 
 **Method**: the built-in benchmarks of Forza Horizon 6 and Cyberpunk 2077, one run each.
 
@@ -9,7 +9,7 @@
 - **XMX** (Xe Matrix Extensions, the GPU's hardware matrix engines): the native path this project enables.
 - **FG 3x**: XeSS frame generation at 3x (`XESS_FG=3`). XeSS's generic path offers at most 2x, so DP4a is compared without frame generation only.
 - **26.1.2 / 26.3**: this project's patched Mesa ANV (Intel's open-source Vulkan driver) builds from release `20261104` (Mesa `26.1.2` / `26.3.0-rc3`).
-- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels (`xmx-stock.sh`, experimental, from release `20261107`; now the session default on Xe3, see [drivers.md](drivers.md)).
+- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels (first as `xmx-stock.sh`, experimental, from release `20261107`; the package's unpatched driver + layer is now the session default on Xe3 `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`, see [drivers.md](drivers.md)).
 - All runs use the libraries from Intel's XeSS SDK 3.0.2 (`XESS=latest`).
 
 ---
@@ -28,7 +28,7 @@
 | XMX + FG 3x, unpatched + layer | — | 118.9 (104.4 / 136.3) |
 
 - XMX is about 5% faster than DP4a (26.3: +4.6%, 26.1.2: +4.9%).
-- 26.3 is about 22% faster than 26.1.2, mostly because Jay (Mesa's new shader compiler backend) compiles the game's own shaders better.
+- 26.3 is about 22% faster than 26.1.2, mostly because Jay (Mesa's new shader compiler backend) makes the game's own shaders run faster.
 - Frame generation 3x: on 26.3, frame rate rises from 61.3 to 117.0 fps (about 1.9x).
 
 ---
@@ -57,11 +57,11 @@ Super resolution (SR) comes from one of two sources: the game's own XeSS ("XeSS-
 
 ---
 
-## 3. Latency (the low-latency mode with frame generation)
+## 3. Latency (Low-Latency Mode with Frame Generation)
 
 Frame generation lets rendered frames queue before they are shown, which adds input latency. On Windows, Intel's XeLL (Xe Low Latency) relies on the graphics driver to pace the game; under Proton, that driver mode does not start and XeLL runs in its generic cross-vendor mode.
 
-This project implements its own low-latency mode on top of the XeLL API (`shim/src/dll/XellHook.cpp`): the shim intercepts the game's XeLL calls, reads the per-frame timestamps the game reports to XeLL (simulation, render submit, present) to detect when frames are queuing, and waits before starting the next frame so the queue drains. It is enabled by default while frame generation is active and can be turned off with `IGDEXT_XELL_CAP=off` (since release `20261104`). It applies to a game's own XeSS frame generation; on the FSR routes (`FSR=xess`, `FSR_FG`, `OFLOW_FG`), the package's frame generation DLL reports each present right before the next frame's sleep, so the shim sees no queue and does not wait (see [frame-generation.md](frame-generation.md)).
+This project implements its own low-latency mode on top of the XeLL API (`shim/src/dll/XellHook.cpp`): the shim intercepts the game's XeLL calls, reads the per-frame timestamps the game reports to XeLL (simulation, render submit, present) to detect when frames are queuing, and waits before starting the next frame so the queue drains. It is on by default (since release `20261104`) while frame generation is active; `IGDEXT_XELL_CAP=off` turns it off. It applies to a game's own XeSS frame generation; on the FSR and optical-flow routes (`FSR=xess`, `FSR_FG`, `OFLOW_FG`), the package's frame generation DLL reports each present right before the next frame's sleep, so the shim sees no queue and does not wait (see [frame-generation.md](frame-generation.md)).
 
 **Test**: Wuthering Waves, frame generation 3x, SoC 22 W. Latency is the time from the start of a frame's simulation to the end of its present, taken from those XeLL timestamps (`IGDEXT_XELL_LOG=1`). The builds measured were development versions; their algorithm is the default mode in the release.
 
@@ -92,7 +92,7 @@ The baseline is the behavior **without this project**: Mesa 26.1.2 + DP4a (Steam
 
 - Super resolution alone, moving from "without this project" to "26.3 + XMX": Cyberpunk 2077 is 28% faster, with about 23 percentage points coming from the newer driver (Jay) and about 5 from XMX. Forza Horizon 6, held back by its render thread, gains 7% in overall frame rate and 16% on the GPU.
 - With frame generation 3x on top, both games run at 2.3–2.5 times the starting frame rate, and the low-latency mode built on the XeLL API removes 36–50% of the latency that the frame queue would otherwise add.
-- Issue #19 also has a Final Fantasy VII Rebirth comparison showing about +15% total gain (roughly half from Jay, half from XMX). Not measured yet: image quality differences and the cost of disabling `VK_EXT_descriptor_buffer`.
+- Issue [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) also has a Final Fantasy VII Rebirth comparison showing about +15% total gain (roughly half from Jay, half from XMX). Not measured yet: image quality differences, and how much the game itself slows down because vkd3d-proton runs without `VK_EXT_descriptor_buffer`.
 
 ---
 

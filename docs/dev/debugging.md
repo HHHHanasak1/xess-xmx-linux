@@ -119,7 +119,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `IGDEXT_SKIP_SELFTEST=1` | Skips the `anv_canary` self-test pipeline and assumes the patched driver or layer is active. |
 | `IGDEXT_FORCE_FALLBACK=1` | Declines the D3D12 extension context (`E_NOTIMPL`): XeSS uses DP4a, and XeSS frame generation uses its generic 2x path. The shim also does this automatically for an Intel PCI device ID not in its table (trace: `fallback: unknown Intel device id`) unless `IGDEXT_GMD` is set. |
 | `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS1)`. |
-| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS2)` for non-FG callers (default from the detected GPU: `1,1,0` on Xe2/Xe3, `0,1,0` on Xe-HPG). Does not apply to calls from `libxess_fg.dll`. |
+| `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS2)` for non-FG callers (default from the detected GPU: `1,1,0` on Xe2/Xe3, `0,1,0` on Xe-HPG / Xe-LPG(+)). Does not apply to calls from `libxess_fg.dll`. |
 | `IGDEXT_OPTIONS2_FG=<simd16>,<lsc>,<legacy>` | Overrides `CheckFeatureSupport(INTC_D3D12_FEATURE_D3D12_OPTIONS2)` for calls coming from `libxess_fg.dll` (when unset, `libxess_fg.dll` calls use the GPU default). |
 | `IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN=<n>`, `IGDEXT_GTNAME=<name>`, `IGDEXT_EUS=<eus>,<cores>` | Override the reported GMD architecture/release, `GTGeneration`, `GTGenerationName`, and `EUCount`/`XeCoresCount` in `INTCDeviceInfo1`. Setting `IGDEXT_GMD` also allows an unrecognized Intel PCI device ID to use the extension context. |
 | `IGDEXT_XELL_LOG=1` | Enables `C:\igdext_xell.log`, including the average simulation-start to present-end latency from XeLL's frame reports every 100 frames. |
@@ -128,7 +128,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `XESS_FG=<n>` | Frame generation multiplier override (`<n>`x): `2..4` is answered through `ControlLib.dll` (`ControlLib.c` accepts `2..16` and clamps values above `4` to `3`, i.e., 4x); `5..8` (`8` is the maximum) is raised in `libxess_fg.dll` memory by `XellHook.cpp` (`XefgRaise`) and is **experimental** (all work; `7` and `8` are not recommended due to latency). |
 | `IGDEXT_XEFG_LOG=1` | Enables `C:\igdext_xefg.log`: XeSS-FG's own log (`xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, tagged resources/constants, and every change of the number. |
 | `XESS_FG_LOG=1` | Enables `C:\igcl_stub.log`: logs every call `ControlLib.dll` answers. |
-| `IGDEXT_XELL_PROBE=<version>` | Hides `wine_get_version` from `libxell.dll`, reports the Intel `PRODUCT_FAMILY` ID as `GTGeneration`, claims XeLL driver-mode support (interface `<version>`), accepts the `Set*` pacing calls, and logs XeLL's use of the timing buffers (`tools/xell-probe.sh`, [Section 2](#2-xell-driver-mode-probe)). |
+| `IGDEXT_XELL_PROBE=<version>` | Hides `wine_get_version` from `libxell.dll`, reports the Intel `PRODUCT_FAMILY` ID as `GTGeneration`, claims XeLL driver-mode support (interface `<version>`), accepts the `Set*` pacing calls, and logs XeLL's use of the timing buffers (`tools/xell-probe.sh`, [Section 2]([#2](https://github.com/HHHHanasak1/xess-xmx-linux/issues/2)-xell-driver-mode-probe)). |
 | `IGDEXT_FAMILY=<id>` | Overrides the `PRODUCT_FAMILY` ID reported in `GTGeneration` when `IGDEXT_XELL_PROBE` is active (default from the detected GPU). |
 | `IGDEXT_XELL_TELEMETRY=1` | With `IGDEXT_XELL_PROBE`: answers `_INTC_D3D12_GetDisplayTelemetry` with a zeroed buffer (`S_OK`) instead of `E_NOTIMPL`. |
 
@@ -143,7 +143,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `ANV_CM_SPV_DIR` | Directory where the shim's `.spv` and `.opt` files live (default `$WINEPREFIX/drive_c/igdext_kernels`). |
 | `ANV_CM_COMPILE_JOBS=<n>` | Maximum number of detached background worker threads started on a cache miss to prefetch and compile uncached `.spv` kernels in `ANV_CM_SPV_DIR` (default: `min(online_cpus - 1, 8)`, max `32`; `0` turns background prefetching off). |
 | `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). |
-| `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1](#1-logs)). |
+| `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1]([#1](https://github.com/HHHHanasak1/xess-xmx-linux/issues/1)-logs)). |
 
 #### Driver Debug Tools (`0002-anv-cm-debug-tools.patch`, included in release drivers)
 
@@ -154,7 +154,7 @@ All hash-format placeholders share the workgroup size `(1, 1, 23)`, so each kern
 | `ANV_CM_PC=1` | Prints the non-table push constant dwords of each dispatch (requires `ANV_CM_TRACE`). |
 | `ANV_CM_CAPTURE="x,y:N;..."` | CPU-side dump of every raw buffer surface (`format == 0x1ff`) that kernel `x,y` reads at its `N`-th dispatch into `ANV_CM_CAP_DIR` (`cap_x_y_nN_s<surf>.bin`). |
 | `ANV_CM_GCAP="x,y:N;..."` | GPU-side copy (`mi_memcpy` into a 4 MiB host-coherent BO right before the dispatch) of every small (`<= 4 KiB`) raw buffer surface at the `N`-th dispatch of kernel `x,y`, written to `ANV_CM_CAP_DIR` (`gcap_x_y_nN_s<surf>.bin`) 40 dispatches of that kernel later. |
-| `ANV_CM_CAP_DIR=<dir>` | Output folder for `ANV_CM_CAPTURE` and `ANV_CM_GCAP` (default `~/.cache/xess-xmx/cap`, or `$XDG_CACHE_HOME/xess-xmx/cap`; no capture happens if neither `ANV_CM_CAP_DIR`, `XDG_CACHE_HOME`, nor `HOME` is an absolute path). |
+| `ANV_CM_CAP_DIR=<dir>` | Output folder for `ANV_CM_CAPTURE` and `ANV_CM_GCAP` (default `~/.cache/xess-xmx/cap`, or `$XDG_CACHE_HOME/xess-xmx/cap`; no capture happens if `ANV_CM_CAP_DIR` is unset and neither `XDG_CACHE_HOME` nor `HOME` is an absolute path). |
 | `ANV_CM_VIEW="x,y:s=X,Y:S;..."` | Makes surface `s` of kernel `x,y` use the most recently recorded 64-byte surface state `S` of kernel `X,Y` (for probe kernels inspecting intermediate buffers). |
 | `ANV_CM_ONLY="x,y ..."`, `ANV_CM_SKIP="x,y ..."` | Injects only (`ONLY`) or never (`SKIP`) the listed kernels; skipped kernels stay no-op placeholders. |
 | `ANV_CM_SYNC=1` | Emits a full end-of-pipe sync and cache flush/invalidate before every CM kernel dispatch. |
@@ -206,7 +206,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](building.md)):
 * `FFX_XESS_JITTER=<f>`: multiplies upscaler jitter offsets by `<f>` (`-1` negates jitter).
 * `FFX_XEFG_CAMERA=0..6`: `0` identity view and projection matrices; `1` normal (default); `2` transposed; `3` projection not depth-inverted; `4` both transposed and not inverted; `5` all zero; `6` ignores camera vectors (fixed view, real projection).
-* `FFX_XEFG_JITTER=<f>`: multiplies frame generation jitter offsets by `<f>` (`0` disables, `-1` negates).
+* `FFX_XEFG_JITTER=<n>`: multiplies frame generation jitter offsets by the integer `<n>` (`0` disables, `-1` negates).
 * `FFX_XEFG_RENDERTIME=<ms>`: overrides `frameRenderTime` with `<ms>`.
 * `FFX_XEFG_RENDERSCALE=<f>`: multiplies the game's `frameTimeDelta` by `<f>` (`0.001` = seconds).
 * `FFX_XEFG_DUMP=<n>`: dumps depth and motion vectors of two consecutive frames every `<n>` frames to `ffx_xefg_<frame>_depth.bin` and `ffx_xefg_<frame>_mv.bin` (up to 16 dumps total, 8 pairs).

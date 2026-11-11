@@ -12,8 +12,8 @@ For initial installation and `xmx-stock.sh` (running a single game on your Linux
 
 | Driver in `lib/` | Description | How it is selected |
 |---|---|---|
-| **Mesa 26.3.0 unpatched** (`lib/mesa-stock-26.3.0/`) | Upstream Mesa 26.3.0 as Mesa ships it, with no patches. This project's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`) puts the XMX kernels in from outside the driver. It performs like the patched 26.3.0 driver ([performance.md](performance.md)) and needs no patch carried across Mesa versions. | Session default on **Xe3** (`0xB080`–`0xB08F` Panther Lake, `0xFD80`–`0xFD8F` Wildcat Lake) |
-| **Mesa 26.3.0 patched** (`lib/mesa-26.3.0/`) | Mesa 26.3.0 with `patches/mesa-26.3/` applied (initial 26.3 patches by @kas5852, #19). Used on Xe-HPG and Xe2 because `VK_LAYER_XESS_xmx` serves Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`) only, and 256-register CM kernels on Xe-HPG and Xe2 require hardware Large GRF Mode, which only the driver can switch (`patches/0003`, contributed in #16 for Xe2 and extended to Xe-HPG in #31, #32, and #39). | Session default on **Xe-HPG** (Alchemist), **Xe2** (Battlemage, Lunar Lake), and any other non-Xe3 PCI ID |
+| **Mesa 26.3.0 unpatched** (`lib/mesa-stock-26.3.0/`) | Upstream Mesa 26.3.0 as Mesa ships it, with no patches. This project's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`) injects the XMX kernels from outside the driver. It performs like the patched 26.3.0 driver ([performance.md](performance.md)) and needs no patch carried across Mesa versions. | Session default on **Xe3** (`0xB080`–`0xB08F` Panther Lake, `0xFD80`–`0xFD8F` Wildcat Lake) |
+| **Mesa 26.3.0 patched** (`lib/mesa-26.3.0/`) | Mesa 26.3.0 with `patches/mesa-26.3/` applied (initial 26.3 patches by @kas5852, [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19)). Used on Xe-HPG and Xe2 because `VK_LAYER_XESS_xmx` serves Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`) only, and 256-register CM kernels on Xe-HPG and Xe2 require hardware Large GRF Mode, which only the driver can switch (`patches/0003`, contributed in [#16](https://github.com/HHHHanasak1/xess-xmx-linux/issues/16) for Xe2 and extended to Xe-HPG in [#31](https://github.com/HHHHanasak1/xess-xmx-linux/issues/31), [#32](https://github.com/HHHHanasak1/xess-xmx-linux/issues/32), and [#39](https://github.com/HHHHanasak1/xess-xmx-linux/issues/39)). | Session default on **Xe-HPG** (Alchemist), **Xe2** (Battlemage, Lunar Lake), and every other PCI ID, including Panther Lake `0xB090`–`0xB0FF` |
 | **Mesa 26.1.2 patched** (`lib/mesa-26.1.2/`) | Mesa 26.1.2 with `patches/` applied. This is the driver from earlier releases and is the same Mesa version as SteamOS's own. | Per game (`MESA=26.1`), chosen with `tools/switch-driver.sh 26.1`, or switched to by the session check if 26.3.0 fails to load |
 
 On both 26.3.0 drivers, Mesa's new shader compiler backend **Jay** (the default on Xe2 and Xe3) makes the games' own shaders much faster ([performance.md](performance.md)).
@@ -39,7 +39,7 @@ To override the automatic choice and save it in `run/driver-mode` for future run
 
 ```bash
 XMX_DRIVER=patched ./install.sh   # use the patched driver named in lib/active for the whole session
-XMX_DRIVER=stock ./install.sh     # use stock-26.3.0 + VK_LAYER_XESS_xmx (on Xe-HPG and Xe2 the layer declines its self-test and XeSS runs on DP4a)
+XMX_DRIVER=stock ./install.sh     # use stock-26.3.0 + VK_LAYER_XESS_xmx (outside 0xB080-0xB08F / 0xFD80-0xFD8F the layer declines its self-test and XeSS runs on DP4a)
 XMX_DRIVER=auto ./install.sh      # remove run/driver-mode and return to the automatic choice by GPU
 ```
 
@@ -82,7 +82,7 @@ To run one game on your distribution's own unpatched system Mesa ANV instead of 
 
 ## Pre-Session Driver Check and Automatic Fallback
 
-Because `install.sh` puts only the package's 64-bit Intel ICD (`run/intel_icd.json`) into `VK_DRIVER_FILES`, a system update that broke the driver's library dependencies would otherwise leave the desktop session (including `gamescope` on SteamOS) without Vulkan on the Intel GPU.
+Because `install.sh` replaces the system's 64-bit Intel ICD with the package's (`run/intel_icd.json`) in `VK_DRIVER_FILES`, a system update that broke the driver's library dependencies would otherwise leave the desktop session (including `gamescope` on SteamOS) without Vulkan on the Intel GPU.
 
 To prevent this, `install.sh` enables the systemd user unit `xess-xmx-check.service`, which runs `~/.config/xess-xmx/session-check.sh` (calling `tools/session-check.sh`) before every graphical session (`graphical-session-pre.target`, `gamescope-session.service`, `gamescope-session-plus@steam.service`, `steam-launcher.service`, `plasma-workspace.target`).
 
@@ -98,7 +98,7 @@ To prevent this, `install.sh` enables the systemd user unit `xess-xmx-check.serv
    * Runs `vulkaninfo --summary` (if `vulkaninfo` is installed) with `VK_DRIVER_FILES` set to the package's ICD and checks that `deviceName` is found.
 4. **Switches or falls back on failure:**
    * **In `patched` mode:** If the active patched driver fails to load or enumerate the GPU, `session-check.sh` switches to the other patched driver of the package (`lib/mesa-26.1.2/` or `lib/mesa-26.3.0/`) via `tools/switch-driver.sh`. If it passes, it becomes the new default in `lib/active` automatically; if none loads, the session falls back to the system's drivers.
-   * **In `stock` mode, when no patched driver loads, or if the package folder was deleted or moved without running `uninstall.sh`:** The script falls back to the system's drivers by overwriting `VK_DRIVER_FILES` in the user systemd environment with the system's stock Vulkan ICDs (`/usr/share/vulkan/icd.d/*.json`, etc.) and clearing `VKD3D_DISABLE_EXTENSIONS`, `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER`, `MESA`, `VK_ADD_LAYER_PATH`, and `VK_LOADER_LAYERS_ENABLE`. Your session and games start normally on the system's stock Intel driver, and the shim's self-test puts XeSS on its generic DP4a path.
+   * **In `stock` mode, when no patched driver loads, or when the package folder was deleted or moved without running `uninstall.sh`:** The script falls back to the system's drivers by overwriting `VK_DRIVER_FILES` in the user systemd environment with the system's stock Vulkan ICDs (`/usr/share/vulkan/icd.d/*.json`, etc.) and clearing `VKD3D_DISABLE_EXTENSIONS`, `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER`, `MESA`, `VK_ADD_LAYER_PATH`, and `VK_LOADER_LAYERS_ENABLE` (the last three only when they were set, that is in `stock` mode). Your session and games start normally on the system's stock Intel driver, and the shim's self-test puts XeSS on its generic DP4a path.
 
 ### Checking Driver Status
 
@@ -119,7 +119,7 @@ You can also run the check manually without changing the session environment (th
 
 ## Rebuilding a Driver After a System Update
 
-If a system update (such as a new SteamOS update) breaks the prebuilt drivers in the archive—or if your distribution ships `libwayland-client` older than 1.24 (Debian 13, Ubuntu 24.04)—use `tools/rebuild-driver.sh` to build a patched driver against your system's libraries.
+If a system update (such as a new SteamOS update) breaks the prebuilt drivers in the archive—or if your distribution ships `libwayland-client` older than 1.24 (Debian 13, Ubuntu 24.04)—use `tools/rebuild-driver.sh` to build a patched driver against your system's libraries. On Xe3 in `stock` mode (the default there), the rebuilt patched driver is used only after you switch the session to it with `XMX_DRIVER=patched ./install.sh` and log in again.
 
 ### What `tools/rebuild-driver.sh` Does
 

@@ -14,7 +14,7 @@ patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-tim
                               patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
                               cooperative matrix shaders
 layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's session default; xmx-stock.sh:
-                              the system's own, per game) and XeSS' Vulkan path on every driver of the package
+                              the system's own, per game) and XeSS's Vulkan path on Xe3, with every driver of the package
 shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
 controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
 ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
@@ -24,8 +24,8 @@ ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR up
                               Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
                               optical flow libraries
 dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
-vkwrap/                       vulkan-1.dll source: XeSS' Intel Vulkan interfaces for Vulkan games
-icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver MESA or the default names
+vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interfaces for Vulkan games
+icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
 tools/cm-compile.sh           run-time compiler helper called by the driver
 tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
 tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
@@ -45,7 +45,7 @@ tools/make-release.py         builds the release archive (the developer tools st
 docs/                         user guides (install, drivers, games, frame generation, launch options, performance, troubleshooting)
 docs/dev/                     developer documents (how it works, building, debugging)
 .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the D3D11/Vulkan DLLs, the ICD,
-                              both patched drivers, the unpatched driver and the layer, checks the scripts
+                              both patched drivers, the unpatched driver, the bundled libraries (lib/bundled) and the layer, checks the scripts
 ```
 
 The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
@@ -113,7 +113,7 @@ This runs `cl /nologo /O2 /W3 /MT /LD ControlLib.c /Fobuild\ /Fe:build\ControlLi
 
 Building the DLLs in `ffxfg/` ([../frame-generation.md](../frame-generation.md)) requires two prerequisites that are not tracked in git:
 
-1. **Public headers (`ffxfg/inc/`):** Run `ffxfg/get-headers.sh` in a Bash shell (requires `curl` and `sha256sum`). It downloads headers from AMD FSR SDK `v2.4.0` and Intel XeSS SDK (commit `de0fb9c1c510661c571164e1418ceca8101dab69`, the commit after `v3.0.2` that put the XeLL headers under the MIT license) into `ffxfg/inc/` and checks each file by SHA-256:
+1. **Public headers (`ffxfg/inc/`):** Run `ffxfg/get-headers.sh` in a Bash shell (requires `curl` and `sha256sum`). It downloads headers from AMD FidelityFX SDK `v2.4.0` (FSR headers) and Intel XeSS SDK (commit `de0fb9c1c510661c571164e1418ceca8101dab69`, the commit after `v3.0.2` that put the XeLL headers under the MIT license) into `ffxfg/inc/` and checks each file by SHA-256:
 
    ```bash
    bash ffxfg/get-headers.sh
@@ -142,9 +142,12 @@ Both components need the XeSS headers fetched by `bash ffxfg/get-headers.sh` ([.
 
 ```bat
 bash ffxfg/get-headers.sh
-dx11bridge\build.bat                          -> dx11bridge\build\libxess_dx11.dll
+rem -> dx11bridge\build\libxess_dx11.dll
+dx11bridge\build.bat
+mkdir vkwrap\build
 python vkwrap\gen.py vkwrap\exports.txt vkwrap\build
-vkwrap\build.bat                              -> vkwrap\build\vulkan-1.dll
+rem -> vkwrap\build\vulkan-1.dll
+vkwrap\build.bat
 ```
 
 * `dx11bridge\build.bat` compiles `depth_copy.hlsl` with `fxc /T cs_5_0` into `build\depth_copy_cs.h`, compiles `version.rc` (FileVersion `2.0.2.68`, so DXVK does not hide the Intel GPU), and links `xess_dx11.cpp` into `dx11bridge\build\libxess_dx11.dll`.
@@ -197,7 +200,7 @@ python3 layer/tests/layout_bytes.py /tmp/exported <pd_size> 0 <pd_size>
 If you change the prologue instruction sequence in `layer/tools/prologue_asm.py`, regenerate `layer/src/prologue_table.inc` using `libiga64.so.2` from the IGC bundle:
 
 ```bash
-IGC=<package>/igc/igc python3 layer/tools/gen_prologue_table.py layer/src/prologue_table.inc
+IGC=<package>/igc python3 layer/tools/gen_prologue_table.py layer/src/prologue_table.inc
 ```
 
 ---
@@ -236,7 +239,7 @@ distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0      # 
 
 ### 4. Building Mesa ANV by Hand
 
-There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0` (first contributed in #19 for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
+There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0` (first contributed in [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
 
 To build patched Mesa `26.1.2` by hand (for `26.3.0`, use `mesa-26.3.0.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.0/` driver is the same `26.3.0` tarball built with the same Meson options and no patches):
 
@@ -289,7 +292,7 @@ python3 tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>
 
 ### `0003-anv-cm-xe2-large-grf.patch` (26.1.2 and 26.3.0)
 
-Contributed in #16 for Xe2, and extended to Xe-HPG in #31, #32, and #39. Switches `STATE_COMPUTE_MODE` Large GRF Mode on around 256-GRF CM kernels on Xe-HPG and Xe2, and switches it off before non-CM compute walkers, Mesa's own BLORP compute work (`blorp_exec_on_compute`), ray tracing (`cmd_buffer_trace_rays`), internal simple shaders (`genX_simple_shader.c`), device-generated commands (`genX_cmd_dgc.c` on 26.3), at the end of command buffers, and before executing secondary command buffers (see [how-it-works.md](how-it-works.md)). It also drops direct CM dispatches with a zero workgroup count in any dimension, which the Vulkan specification makes a no-op, on every generation. Applies cleanly with or without `0002`.
+Contributed in [#16](https://github.com/HHHHanasak1/xess-xmx-linux/issues/16) for Xe2, and extended to Xe-HPG in [#31](https://github.com/HHHHanasak1/xess-xmx-linux/issues/31), [#32](https://github.com/HHHHanasak1/xess-xmx-linux/issues/32), and [#39](https://github.com/HHHHanasak1/xess-xmx-linux/issues/39). Switches `STATE_COMPUTE_MODE` Large GRF Mode on around 256-GRF CM kernels on Xe-HPG and Xe2, and switches it off before non-CM compute walkers, Mesa's own BLORP compute work (`blorp_exec_on_compute`), ray tracing (`cmd_buffer_trace_rays`), internal simple shaders (`genX_simple_shader.c`), device-generated commands (`genX_cmd_dgc.c` on 26.3), at the end of command buffers, and before executing secondary command buffers (see [how-it-works.md](how-it-works.md)). It also drops direct CM dispatches with a zero workgroup count in any dimension, which the Vulkan specification makes a no-op, on every generation. Applies cleanly with or without `0002`.
 
 *(There is no `0004` patch any more. It was a Mesa bug fix for Resident Evil Requiem and its demo, Pragmata, and Monster Hunter Stories 3: Mesa's `drirc` enabled `anv_emulate_divergent_barriers` for them, a lowering that only works with `brw`, causing a crash at startup in `jay_opt_propagate_forwards` when Jay was active. Mesa 26.3's `drirc` now pairs `anv_emulate_divergent_barriers` with `anv_disable_jay` for those games, and SteamOS's 26.1.2 `drirc` has no ANV entries for them, so the patch was dropped with 26.3.0.)*
 
