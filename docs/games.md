@@ -13,7 +13,7 @@ For every other case, find what your game ships in the list below. All launch op
 * **No XeSS Frame Generation and no FSR frame generation, but FSR 3.1+ upscaling:** `FSR=xess FSR_FG=inject %command%` adds XeSS frame generation fed by the FSR upscaler ([frame-generation.md](frame-generation.md#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)). *Example: Forza Horizon 6, whose own frame generation is NVIDIA DLSS-G only.*
 * **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds experimental frame generation from optical flow on the final image; there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1-experimental)). *Examples: Resident Evil 4 (2023), Viewfinder.*
 * **D3D11 with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-d3d11-game)).
-* **Vulkan with XeSS (Xe3 only):** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)). Xe3 here means `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`.
+* **Vulkan with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)). Not yet tested on Xe-HPG and Xe2.
 
 If the game still runs XeSS on DP4a or sees no Intel GPU, see [troubleshooting.md](troubleshooting.md).
 
@@ -97,7 +97,7 @@ For the internal design of the D3D11 bridge, see [dev/how-it-works.md](dev/how-i
 
 XeSS's Vulkan backend only runs its XMX kernels when the Vulkan driver provides private Intel interfaces outside the Khronos Vulkan registry. Wine (`winevulkan`) only passes standard registry functions and structures through, so under stock Proton XeSS logs `Unable to initialize Intel Extensions layer. Using suboptimal implementation.` and falls back to DP4a.
 
-To run XeSS on XMX in a Vulkan game (on **Xe3** GPUs `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`):
+To run XeSS on XMX in a Vulkan game:
 
 1. Set the game's Steam launch options to:
    ```text
@@ -110,15 +110,15 @@ To run XeSS on XMX in a Vulkan game (on **Xe3** GPUs `0xB080`–`0xB08F` and `0x
    (To prevent `XESS=latest` from placing `vulkan-1.dll` in a non-Vulkan game where it gets in the way, set `XESS_VK=0`.)
 2. Enable **XeSS** in the game's graphics settings.
 
-When `XESS=latest` detects a game that has `libxess.dll` and imports `vulkan-1.dll`, or when `XESS_VK=1` is set, the hook does two things while the game runs. It places the package's `vkwrap/vulkan-1.dll` next to the game executable, and it enables `VK_LAYER_XESS_xmx` (`layer/`). This `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`. It intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer.
+When `XESS=latest` detects a game that has `libxess.dll` and imports `vulkan-1.dll`, or when `XESS_VK=1` is set, the hook does two things while the game runs. It places the package's `vkwrap/vulkan-1.dll` next to the game executable, and it enables `VK_LAYER_XESS_xmx` (`layer/`). This `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`. It intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer, or, on GPUs the layer does not serve, to the patched driver.
 
 Notes and requirements for Vulkan games:
-* **Xe3 GPUs `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F` only:** `VK_LAYER_XESS_xmx` serves only these. On Xe-HPG, Xe2 and other Xe3 IDs, the layer does not answer `vulkan-1.dll`'s self-test (`layer_canary`), so `vulkan-1.dll` reports the Intel path as unavailable and XeSS stays on DP4a.
-* **Unpatched and patched drivers:** The game keeps the driver your session or `MESA=` selected; `VK_LAYER_XESS_xmx` serves Vulkan XeSS on both the unpatched `stock-26.3.0` driver and the patched drivers (on a patched driver it leaves D3D12 games to the driver).
+* **Xe3 through the layer, other GPUs through the patched driver:** `VK_LAYER_XESS_xmx` serves Xe3 GPUs `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`. On Xe-HPG, Xe2 and other Xe3 IDs, the layer does not answer the self-test (`layer_canary`). There `vulkan-1.dll` gives the kernels to the patched driver, which these GPUs use anyway (it answers with `anv_canary`). For that, `vulkan-1.dll` sets up a descriptor heap the way vkd3d-proton does for D3D12 games. This path has not been tested on Xe-HPG or Xe2 GPUs yet. Reports are welcome.
+* **Unpatched and patched drivers:** The game keeps the driver your session or `MESA=` selected. On Xe3, `VK_LAYER_XESS_xmx` serves Vulkan XeSS on both the unpatched `stock-26.3.0` driver and the patched drivers (on a patched driver it leaves D3D12 games to the driver).
 * **No Khronos validation layer:** XeSS skips its Intel path whenever `VkLayer_khronos_validation.dll` is loaded.
 * **Logging:** `VKWRAP_LOG=1` writes `vkwrap.log` next to `vulkan-1.dll`.
 
-Tested with the XeSS SDK's Vulkan sample and `vkwrap/test/vktest.exe` (low-resolution motion vectors and depth, output verified) on an Arc B390: all 63 kernels run on XMX (~7 ms per frame for 1080p output at Performance). No retail Vulkan game with XeSS has been tested yet.
+Tested with the XeSS SDK's Vulkan sample and `vkwrap/test/vktest.exe` (low-resolution motion vectors and depth, output verified) on an Arc B390: all 63 kernels run on XMX (~7 ms per frame for 1080p output at Performance). The patched-driver path also passes `vktest.exe` there, with the layer off, on the patched 26.1.2 and 26.3.0 drivers. No retail Vulkan game with XeSS has been tested yet.
 
 For the internal design of `vkwrap/vulkan-1.dll` and `VK_LAYER_XESS_xmx`, see [dev/how-it-works.md](dev/how-it-works.md).
 
