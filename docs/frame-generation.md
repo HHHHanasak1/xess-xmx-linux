@@ -85,9 +85,9 @@ Measured on an Arc B390 (frame start to the end of its present, the game standin
 | CONTROL Resonant, 3x | 34.7 ms | **19.0 ms** | 28.5 -> 29.3 fps |
 | CONTROL Resonant, 6x | 44.3 ms | **33.2 ms** | 22.4 fps (no change) |
 | Resident Evil Requiem, 3x | 37.8 ms | **27.0 ms** | 26.1 -> 31.5 fps |
-| Forza Horizon 6, 3x (`FSR_FG=inject`) | 42.0 ms | **24.9 ms** | 23.5 -> 39.4 fps |
+| Forza Horizon 6, 3x, car page (`FSR_FG=inject`) | 42.0 ms | **24.9 ms** | 23.5 -> 39.4 fps |
 
-The wait costs less than 1% of the frame rate. Full data and method are in [performance.md](performance.md). `ffx_xefg.log` shows the state in its `low latency:` lines.
+The frame rate gains come from the GPU no longer idling. They show where the GPU has room to spare, such as Forza Horizon 6's car page. Where the GPU is already fully busy, the frame rate rises only slightly: in Forza Horizon 6's built-in benchmark, 101 -> 103 fps, with the game's average latency 86.7 -> 81.8 ms. The wait costs less than 1% of the frame rate. Full data and method are in [performance.md](performance.md). `ffx_xefg.log` shows the state in its `low latency:` lines.
 
 **Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
 

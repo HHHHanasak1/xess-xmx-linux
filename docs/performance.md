@@ -77,7 +77,7 @@ This project implements its own low-latency mode on top of the XeLL API (`shim/s
 - In all three cases, the frame rate does not change and latency drops by 36–50%.
 - In the CPU-limited and moving scenes, the runs with and without low-latency mode did not cover the exact same stretch of gameplay, so only the rough magnitude of the reduction counts.
 
-**Test (FSR routes)**: CONTROL Resonant (`FSR=xess`), Resident Evil Requiem (`FSR_FG=xess`) and Forza Horizon 6 (`FSR=xess FSR_FG=inject`). Arc B390, XeSS-FG 1.3.1, 2026-11-11. The game stood at one spot without input.
+**Test (FSR routes)**: CONTROL Resonant (`FSR=xess`), Resident Evil Requiem (`FSR_FG=xess`) and Forza Horizon 6 (`FSR=xess FSR_FG=inject`). Arc B390, XeSS-FG 1.3.1, 2026-11-11. The game stood at one spot without input. Forza Horizon 6 stood on its 3D car page, a light load for the GPU.
 
 Three settings took turns of 20 s within one run (`FFX_XEFG_AB=20 FFX_XEFG_AB_OLD=1`). Each setting got 4 turns and 1600 to 2400 frames:
 
@@ -117,6 +117,7 @@ The controller read was checked against XeLL in Wuthering Waves, with its own Xe
 - **The wait** then removes the queue as far as the GPU allows. Against the answers alone, frame start to present end drops by 14.7 ms (−44%) in CONTROL Resonant at 3x, by 10.9 ms (−25%) at 6x, and by 4.7 ms (−15%) in Resident Evil Requiem at 3x.
 - **Where nothing queues, the game does not wait:** Resident Evil Requiem at 6x (the GPU is still rendering when XeSS-FG takes the frame) and Forza Horizon 6. There the last two rows differ by chance only.
 - **Cost of the wait** in frame rate, against the answers alone: 0.4% in CONTROL Resonant at 3x, 0.7% at 6x, nothing measurable in Resident Evil Requiem at 3x.
+- **Forza Horizon 6 benchmark:** the built-in benchmark, with the settings of section 2 and FG 3x (`FSR=xess FSR_FG=inject XESS_FG=3`, unpatched + layer), the second of two runs each. Average latency from the result screen: 86.7 -> 81.8 ms. Stutters: 137 -> 77. The frame rate rises only slightly (101 -> 103 fps). On the race track the GPU is busy for about 26 ms of each 28 ms frame, XeSS-FG's work included, so there is no idle GPU time to win back. The game's "GPU limited" figure (2.4%) counts only the game's own work.
 - **Left open:** At 3x, CONTROL Resonant's first work still waits 8.7 ms in the GPU queue. A longer wait would use that, but then the DLL can no longer tell whether the GPU or the game is the limit. A fixed wait of 21 ms (`FFX_XEFG_HOLD=21`) gave 33.9 ms to GPU done but cost 7% of the frame rate.
 
 ---
