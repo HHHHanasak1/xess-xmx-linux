@@ -62,7 +62,7 @@ XeSS: hiding Intel GPU Vendor ID
 
 Because the game sees no Intel GPU, XeSS never loads `igdext64.dll` (the shim's trace log stays empty) and runs its generic DP4a fallback, and because XeSS-FG before 1.2 runs only on Intel GPUs, games with it hide the XeSS Frame Generation option completely. Forcing DXVK to report the Intel vendor ID to the old libraries (`DXVK_CONFIG="dxgi.customVendorId = 8086"`) does not work: Cyberpunk 2077's `libxess_fg.dll` 1.1.0.19 crashes at startup.
 
-*(Mesa has a second mechanism that hides the Intel vendor ID in certain games via `force_vk_vendor=-1` in its `drirc` profiles; `install.sh` and `enable.sh` override it with `force_vk_vendor=0`. See [troubleshooting.md](troubleshooting.md).)*
+Mesa has a second mechanism that hides the Intel vendor ID in certain games: `force_vk_vendor=-1` in its `drirc` profiles. `install.sh` and `enable.sh` override it with `force_vk_vendor=0`. See [troubleshooting.md](troubleshooting.md).
 
 ### Replacing the Files Manually (Without the Hook)
 

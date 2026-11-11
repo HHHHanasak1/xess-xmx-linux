@@ -93,7 +93,7 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 * **Resident Evil Requiem:** 4x and 5x (`FSR=xess` / `FSR_FG=xess`). The game ships XeSS frame generation as well, but does not offer it under Proton, so its FSR frame generation is the way to run XeSS-FG there.
 * **Cyberpunk 2077:** The "FSR 4" upscaling option (XeSS SR) and 5x (`FSR=xess`). The game's own XeSS (`XESS=latest`) is better there.
 * **Wuthering Waves** (FSR 3.1.1 in one DLL): XeSS SR and 5x (`FSR=xess FSR_VENDOR=amd`). The game's own XeSS is the one to use.
-* **Forza Horizon 6** with `FSR=xess FSR_FG=inject`: XeSS SR and 2x, 3x (see [Section 4]([#4](https://github.com/HHHHanasak1/xess-xmx-linux/issues/4)-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)).
+* **Forza Horizon 6** with `FSR=xess FSR_FG=inject`: XeSS SR and 2x, 3x (see [Section 4](#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)).
 
 ### How to Use `FSR=xess` and `FSR_FG=xess`
 

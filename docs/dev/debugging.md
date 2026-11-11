@@ -128,7 +128,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `XESS_FG=<n>` | Frame generation multiplier override (`<n>`x): `2..4` is answered through `ControlLib.dll` (`ControlLib.c` accepts `2..16` and clamps values above `4` to `3`, i.e., 4x); `5..8` (`8` is the maximum) is raised in `libxess_fg.dll` memory by `XellHook.cpp` (`XefgRaise`) and is **experimental** (all work; `7` and `8` are not recommended due to latency). |
 | `IGDEXT_XEFG_LOG=1` | Enables `C:\igdext_xefg.log`: XeSS-FG's own log (`xefgSwapChainSetLoggingCallback`), the maximum number of generated frames after context creation and initialization, tagged resources/constants, and every change of the number. |
 | `XESS_FG_LOG=1` | Enables `C:\igcl_stub.log`: logs every call `ControlLib.dll` answers. |
-| `IGDEXT_XELL_PROBE=<version>` | Hides `wine_get_version` from `libxell.dll`, reports the Intel `PRODUCT_FAMILY` ID as `GTGeneration`, claims XeLL driver-mode support (interface `<version>`), accepts the `Set*` pacing calls, and logs XeLL's use of the timing buffers (`tools/xell-probe.sh`, [Section 2]([#2](https://github.com/HHHHanasak1/xess-xmx-linux/issues/2)-xell-driver-mode-probe)). |
+| `IGDEXT_XELL_PROBE=<version>` | Hides `wine_get_version` from `libxell.dll`, reports the Intel `PRODUCT_FAMILY` ID as `GTGeneration`, claims XeLL driver-mode support (interface `<version>`), accepts the `Set*` pacing calls, and logs XeLL's use of the timing buffers (`tools/xell-probe.sh`, [Section 2](#2-xell-driver-mode-probe)). |
 | `IGDEXT_FAMILY=<id>` | Overrides the `PRODUCT_FAMILY` ID reported in `GTGeneration` when `IGDEXT_XELL_PROBE` is active (default from the detected GPU). |
 | `IGDEXT_XELL_TELEMETRY=1` | With `IGDEXT_XELL_PROBE`: answers `_INTC_D3D12_GetDisplayTelemetry` with a zeroed buffer (`S_OK`) instead of `E_NOTIMPL`. |
 
@@ -143,7 +143,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `ANV_CM_SPV_DIR` | Directory where the shim's `.spv` and `.opt` files live (default `$WINEPREFIX/drive_c/igdext_kernels`). |
 | `ANV_CM_COMPILE_JOBS=<n>` | Maximum number of detached background worker threads started on a cache miss to prefetch and compile uncached `.spv` kernels in `ANV_CM_SPV_DIR` (default: `min(online_cpus - 1, 8)`, max `32`; `0` turns background prefetching off). |
 | `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). |
-| `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1]([#1](https://github.com/HHHHanasak1/xess-xmx-linux/issues/1)-logs)). |
+| `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1](#1-logs)). |
 
 #### Driver Debug Tools (`0002-anv-cm-debug-tools.patch`, included in release drivers)
 
