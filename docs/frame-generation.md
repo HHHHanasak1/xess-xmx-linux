@@ -46,7 +46,7 @@ Games with XeSS frame generation use **Intel XeLL** (`libxell.dll`, Xe Low Laten
 To remove the queue, the shim (`igdext64.dll`) hooks XeLL and paces each frame so that it reaches the GPU right when the GPU gets free.
 
 * **On by default:** Low-latency pacing is on by default whenever a game's native XeSS frame generation is active, and off while frame generation is off. If a game has no queue, the pacer does not wait and changes nothing.
-* **Native XeSS-FG only:** This low-latency mode works for a game's own XeSS frame generation only. With `FSR=xess`, `FSR_FG`, and `OFLOW_FG`, the package's frame generation DLL reports each present to XeLL right before the next frame's sleep, so the shim sees no queue in flight and does not wait.
+* **FSR routes:** With `FSR=xess` and `FSR_FG`, the game sends XeLL no time stamps. There the package's frame generation DLL does the pacing itself, with times it measures. See [Low Latency on the FSR Routes](#low-latency-on-the-fsr-routes) below. With `OFLOW_FG`, the frame cap paces the frames instead.
 * **Measured latency reduction:** Tested in Wuthering Waves on an Arc B390 at 22 W SoC with 3x frame generation (`IGDEXT_XELL_LOG=1`, measuring simulation start to present end):
   - **GPU-limited** (fixed spot, 10 minutes): **69.0 ms -> 34.8 ms (−50%)** at ~25.1 ms frame time.
   - **CPU-limited** (CPU held to ~2 W, 4–6 minutes): **76.1 ms -> 47.8 ms (−37%)** at 28.7 ms frame time.
@@ -63,6 +63,31 @@ To remove the queue, the shim (`igdext64.dll`) hooks XeLL and paces each frame s
 | `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves 30 fps frame-cap fix in any game | Another game drops to 30 fps when enabling frame generation until a menu is opened and closed |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | Turns the Wuthering Waves 30 fps frame-cap fix off | Ruling out the cap fix when debugging |
 | `IGDEXT_XELL_LOG=1 %command%` | Writes `C:\igdext_xell.log` inside the game's prefix | Checking low-latency pacing state. At start, it logs `low latency: on`, `fixed cap` or `off`. It logs `auto: frame generation on/off (...)` and, once learned, `auto: frame time ...`. It logs `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames |
+
+### Low Latency on the FSR Routes
+
+On the FSR routes (`FSR=xess`, `FSR_FG=xess`, `FSR_FG=inject`), the frame generation DLL handles the low latency. It is on by default. The same `IGDEXT_XELL_CAP` launch option controls it: `off` turns it off, and `auto:<ms>` starts each frame `<ms>` milliseconds earlier.
+
+Two things made these games slow or laggy before:
+
+* **XeSS-FG's Present blocks.** It waits until XeSS-FG has finished presenting the previous frame. A game that reaches Present early waits there with its frame already made, so its input is old by the time the frame is shown.
+* **The game's questions to the swap chain block.** Right after Present, many games ask the swap chain for its frame statistics (`GetFrameStatistics`). DXVK locks the swap chain for a whole Present, so the question can wait for XeSS-FG. When it does, the GPU idles while the game works, and the frame rate drops. The games switched between the two states every few seconds.
+
+The DLL fixes both:
+
+1. **It answers those questions itself**, with values taken right before XeSS-FG's Present. The frame rate becomes higher and steady.
+2. **It holds the game in Present for a short time** when frames arrive early. It measures each frame and adjusts the wait. If nothing queues (the game is CPU-limited, at a frame limit, or at the display's limit), it does not wait.
+
+Measured on an Arc B390 (frame start to the end of its present, the game standing still):
+
+| Game | Before | Low latency | Frame rate |
+|---|---|---|---|
+| CONTROL Resonant, 3x | 34.7 ms | **19.0 ms** | 28.5 -> 29.3 fps |
+| CONTROL Resonant, 6x | 44.3 ms | **33.2 ms** | 22.4 fps (no change) |
+| Resident Evil Requiem, 3x | 37.8 ms | **27.0 ms** | 26.1 -> 31.5 fps |
+| Forza Horizon 6, 3x (`FSR_FG=inject`) | 42.0 ms | **24.9 ms** | 23.5 -> 39.4 fps |
+
+The wait costs less than 1% of the frame rate. Full data and method are in [performance.md](performance.md). `ffx_xefg.log` shows the state in its `low latency:` lines.
 
 **Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
 
@@ -237,6 +262,7 @@ Because generated frames sit between two rendered ones, an uneven rendered frame
 ### Limits of `OFLOW_FG=1`
 
 * **Latency:** Generated frames add the wait for the next rendered frame, and XeLL cannot see where the game reads input (the game sends no XeLL simulation markers), so it cannot reduce latency the way it does for a native XeSS game. Below about 50 fps rendered, the game feels as sluggish as its rendered frame rate, however smooth the shown frames look.
+* **No FSR-route low latency by default:** The frame cap above paces the frames instead. With `FFX_XEFG_CAP=0`, the wait of the FSR routes is on, and `FFX_XEFG_POLLS=1` adds the answers. This has not been measured with optical flow.
 * **HUD smear:** Because there is no HUD-less image, the HUD is interpolated with the rest of the image; text and fast HUD elements can smear slightly.
 * **Disocclusion wobble:** Where something appears that was hidden in the previous frame, optical flow has nothing to follow, and with no depth buffer either, edges of moving objects can wobble.
 * **DX12 only:** XeSS-FG only supports D3D12 swap chains (no D3D11 or Vulkan swap chain).
@@ -250,7 +276,7 @@ Because generated frames sit between two rendered ones, an uneven rendered frame
 The FSR and optical-flow DLLs write logs for the last run into the game's folder (Steam's file check ignores them):
 
 * `ffx_xess.log` (next to `amd_fidelityfx_upscaler_dx12.dll`, disabled with `FFX_XESS_LOG=0`): logs the `libxess.dll` version, context creation, the quality setting and flags XeSS was initialized with, the first 3 upscale dispatches, and every 600th dispatch.
-* `ffx_xefg.log` (next to `amd_fidelityfx_framegeneration_dx12.dll` / `ffx_xefg_bridge.dll`, disabled with `FFX_XEFG_LOG=0`): logs the upscalers the game's FidelityFX loader offers on this GPU, swap chain parameters, the maximum interpolations XeSS-FG reports and the number set, the first 10 presents (`presented 4` = 4x, with sync interval and flags), the first 5 prepares and every 600th prepare, XeSS-FG warnings, `oflow: GPU time` lines, and `cap auto:` interval changes.
+* `ffx_xefg.log` (next to `amd_fidelityfx_framegeneration_dx12.dll` / `ffx_xefg_bridge.dll`, disabled with `FFX_XEFG_LOG=0`): logs the upscalers the game's FidelityFX loader offers on this GPU, swap chain parameters, the maximum interpolations XeSS-FG reports and the number set, the first 10 presents (`presented 4` = 4x, with sync interval and flags), the first 5 prepares and every 600th prepare, XeSS-FG warnings, `oflow: GPU time` lines, and `cap auto:` interval changes. The `low latency:` lines say what is on. Every 300 presents, they also give how often and how long the game waited, and the time from frame start to present end.
 * `dxgi_xefg.log` (next to `dxgi.dll`, with `FSR_FG=inject` or `OFLOW_FG=1`): logs the system `dxgi.dll` path and what became of each swap chain.
 
 For native XeSS-FG, XeLL, and `ControlLib.dll` logs, see [troubleshooting.md](troubleshooting.md) and [dev/debugging.md](dev/debugging.md). These logs are `C:\igdext_xefg.log`, `C:\igdext_xell.log`, and `C:\igcl_stub.log` in the prefix. They are enabled with `XESS_LOG=1`, or individually via `IGDEXT_XEFG_LOG=1`, `IGDEXT_XELL_LOG=1`, and `XESS_FG_LOG=1`.
@@ -272,6 +298,9 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_SLEEP=0` | Skip calling `xellSleep` after each present (XeLL stays on, as XeSS-FG requires it) |
 | `FFX_XEFG_OWNWAIT=0` | Hand the game the XeSS-FG proxy's own frame-latency waitable object instead of the DLL's semaphore (deadlocks CONTROL Resonant) |
 | `FFX_XEFG_PACE=1` | Release the DLL's waitable object when a GPU fence after the present finishes (with a 200 ms watchdog), instead of when `Present` returns (off by default; CONTROL Resonant at 6x showed no gain) |
+| `FFX_XEFG_POLLS=0\|1` | `0`: the game's `GetFrameStatistics` and `CheckColorSpaceSupport` go to the swap chain each time, as before. `1`: the DLL answers them where that is off by default (`OFLOW_FG`, `IGDEXT_XELL_CAP=off`) |
+| `FFX_XEFG_AB=<s>` | Measuring aid: the low latency's wait is off and on in turns of `<s>` seconds. With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait |
+| `FFX_XEFG_HOLD=<ms>` | Measuring aid: a fixed wait in Present instead of the measured one |
 | `FFX_XEFG_VALIDITY=0` | Measuring aid: tag depth and motion vectors as `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids copying them at prepare time to measure what the copy costs; can flicker if the game overwrites them before present) |
 | `FFX_XEFG_EXCLUSIVE=1` | Let exclusive fullscreen requests through to the swap chain (XeSS-FG then refuses to interpolate) |
 | `FFX_XEFG_VENDOR=0` | Disable the adapter `GetDesc*` hook that reports Intel's `0x8086` vendor ID to XeSS-FG and XeLL when DXVK spoofs another vendor (such as `FSR_VENDOR=amd`) |
@@ -284,4 +313,4 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_REFRESH=<Hz>` | Override the display refresh rate for `FFX_XEFG_CAP=auto` when Windows/Wine reports a wrong one (default from `EnumDisplaySettingsA`, or `144` Hz) |
 | `FFX_XEFG_TIMES=1` | Log frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow GPU time every 300 runs |
 
-*(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`.)*
+*(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`, and the frame time line `FFX_XEFG_TRACE=1`.)*

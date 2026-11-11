@@ -75,3 +75,4 @@ EXPORTS
     _INTC_D3D12_SetNumGeneratedFrames
     _INTC_D3D12_SetPresentSequenceNumber
     _INTC_D3D12_TransferHostRTAS
+    IgdextXellExternalPacing

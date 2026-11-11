@@ -11,7 +11,12 @@
 //   IGDEXT_XELL_CAP=off     no low latency;  IGDEXT_XELL_CAP=auto:<ms>  start each frame <ms> earlier (later if negative)
 //   IGDEXT_XELL_CAP=<us>    instead: at least this interval per displayed frame (XeLL's frame cap, in both of its modes),
 //                           up to 1000000; any other value turns both off
-//   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log
+//   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log;
+//                           with it, XInputGetState is watched too, for a second latency figure: from where the game
+//                           reads its input to the end of the frame's present (InputWatch below)
+// The package's own frame generation DLL (ffxfg/ffx_xefg.cpp, the FSR routes) sets the game's frame start itself, by
+// keeping the game in Present ("Low latency" there), and registers its XeLL context with IgdextXellExternalPacing:
+// xellSleep of such a context gets no AutoPaceWait.
 #include "Stdafx.h"
 #include "Trace.h"
 #include <algorithm>
@@ -68,6 +73,88 @@ static void XLog(const char* fmt, ...)
 static void XellLogCb(const char* msg, uint32_t level)
 {
     if (msg) XLog("XeLL[%u] %s", level, msg);
+}
+
+// IGDEXT_XELL_LOG: where the game reads its input. XInputGetState of Wine's xinput DLLs is hooked (they start with an
+// 8-byte hot-patch no-op: a jump to the hook goes there, the original runs from behind it) and the time of each call is
+// kept. The latency line then has a second figure next to simulation start -> present end: from the frame's input read
+// (the first XInputGetState from 1 ms before its simulation start on) to the end of its present, and how long after the
+// simulation start that read came. It is the check that such a read marks the start of a frame, for the routes where a
+// game sends XeLL no markers (the FSR routes time their frames from where Present returns to the game, see
+// ffxfg/ffx_xefg.cpp).
+namespace
+{
+struct InputRead { uint64_t ns; uint32_t tid; };
+InputRead g_inputReads[1024];
+volatile LONG g_inputN = 0;
+void* g_inputOrig[6];
+
+uint64_t NowNs()
+{
+    LARGE_INTEGER now, qf; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&qf);
+    return (uint64_t) (now.QuadPart / qf.QuadPart) * 1000000000ull + (uint64_t) (now.QuadPart % qf.QuadPart) * 1000000000ull / (uint64_t) qf.QuadPart;
+}
+
+template <int I> DWORD WINAPI Hook_XInputGetState(DWORD index, void* state)
+{
+    const LONG n = InterlockedIncrement(&g_inputN) - 1;
+    InputRead& r = g_inputReads[n & 1023];
+    r.tid = GetCurrentThreadId(); r.ns = NowNs();
+    return ((DWORD (WINAPI*)(DWORD, void*)) g_inputOrig[I])(index, state);
+}
+
+const struct { const wchar_t* dll; const char* name; void* hook; } kInputHooks[6] = {
+    { L"xinput1_4.dll", "XInputGetState", (void*) Hook_XInputGetState<0> }, { L"xinput1_3.dll", "XInputGetState", (void*) Hook_XInputGetState<1> },
+    { L"xinput9_1_0.dll", "XInputGetState", (void*) Hook_XInputGetState<2> }, { L"xinputuap.dll", "XInputGetState", (void*) Hook_XInputGetState<3> },
+    { L"xinput1_4.dll", "XInputGetStateEx", (void*) Hook_XInputGetState<4> }, { L"xinput1_3.dll", "XInputGetStateEx", (void*) Hook_XInputGetState<5> },
+};
+bool g_inputDone[6];
+}
+
+static HMODULE SelfModule(DWORD flags);
+
+// called now and then from the log path: a game loads its input library late
+static void InputWatch()
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        if (g_inputDone[i]) continue;
+        HMODULE m = GetModuleHandleW(kInputHooks[i].dll);
+        if (!m) continue;
+        g_inputDone[i] = true;
+        uint8_t* p = (uint8_t*) GetProcAddress(m, kInputHooks[i].name);
+        static const uint8_t kHot[8] = { 0x48, 0x8d, 0xa4, 0x24, 0, 0, 0, 0 };   // lea rsp,[rsp+0]
+        const bool hot = p && memcmp(p, kHot, 8) == 0;
+        // somebody's jump of the same kind is there already (the frame generation DLL's trace, ffxfg/ffx_trace.h): ours
+        // goes in front of it
+        const bool taken = p && p[0] == 0xE9 && p[5] == 0x0F && p[6] == 0x1F && p[7] == 0x00;
+        const intptr_t d = p ? (uint8_t*) kInputHooks[i].hook - (p + 5) : 0;
+        DWORD old;
+        if (!(hot || taken) || d > INT32_MAX || d < INT32_MIN || !SelfModule(GET_MODULE_HANDLE_EX_FLAG_PIN) ||
+            !VirtualProtect(p, 8, PAGE_EXECUTE_READWRITE, &old))
+        { XLog("input: %ls!%s not watched (not there, or no hot-patch start)", kInputHooks[i].dll, kInputHooks[i].name); continue; }
+        g_inputOrig[i] = hot ? p + 8 : p + 5 + *(int32_t*) (p + 1);
+        // jmp rel32 and a 3-byte no-op in the place of the 8-byte one, in one write
+        InterlockedExchange64((volatile LONG64*) p, (LONG64) (0xE9ull | ((uint64_t) (uint32_t) (int32_t) d << 8) | (0x001F0Full << 40)));
+        VirtualProtect(p, 8, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), p, 8);
+        XLog("input: %ls!%s watched", kInputHooks[i].dll, kInputHooks[i].name);
+    }
+}
+
+// the input read of the frame whose simulation started at simS and whose present ended at prE: the first one from
+// 1 ms before the start on, by the thread `tid` (0 = any)
+static uint64_t InputReadOf(uint64_t simS, uint64_t prE, uint32_t tid)
+{
+    uint64_t best = 0;
+    const LONG n = g_inputN;
+    for (LONG k = 0; k < 1024 && k < n; ++k)
+    {
+        const InputRead& r = g_inputReads[k];
+        if (r.ns + 1000000ull < simS || r.ns >= prE || (tid && r.tid != tid)) continue;
+        if (!best || r.ns < best) best = r.ns;
+    }
+    return best;
 }
 
 static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
@@ -207,15 +294,38 @@ static void AutoPaceWait(void* ctx, uint32_t frame)
     }
 }
 
+// XeLL contexts whose caller paces the frame start itself (IgdextXellExternalPacing): a few slots, read without a lock
+// on every xellSleep
+static void* volatile g_extPaced[4];
+
+extern "C" void IgdextXellExternalPacing(void* ctx, int on)
+{
+    if (!ctx) return;
+    for (int i = 0; i < 4; ++i) if (!on && InterlockedCompareExchangePointer(&g_extPaced[i], nullptr, ctx) == ctx)
+    { XLog("xell context %p: frame start no longer paced by its caller", ctx); return; }
+    if (!on) return;
+    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return;
+    for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&g_extPaced[i], ctx, nullptr) == nullptr)
+    { XLog("xell context %p: frame start paced by its caller (no AutoPaceWait)", ctx); return; }
+    XLog("xell context %p: no free slot, AutoPaceWait stays on for it", ctx);
+}
+
+static bool ExternallyPaced(void* ctx)
+{
+    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return true;
+    return false;
+}
+
 static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
-    if (!g_log) { const uint32_t rr = g_origSleep(ctx, frame); if (g_capAuto) AutoPaceWait(ctx, frame); return rr; }
+    const bool pace = g_capAuto && !ExternallyPaced(ctx);
+    if (!g_log) { const uint32_t rr = g_origSleep(ctx, frame); if (pace) AutoPaceWait(ctx, frame); return rr; }
     if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
     LARGE_INTEGER qa, qb, qf; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qa);
     uint32_t rr = g_origSleep(ctx, frame);
-    if (g_capAuto) AutoPaceWait(ctx, frame);
+    if (pace) AutoPaceWait(ctx, frame);
     QueryPerformanceCounter(&qb);
     static double sum = 0, mx = 0; static int cnt = 0; static LARGE_INTEGER t0;
     double d = (qb.QuadPart - qa.QuadPart) * 1000.0 / qf.QuadPart;
@@ -238,6 +348,41 @@ static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
                     lat += (r[i].prE - r[i].simS) / 1e6; sub += (r[i].rsS > r[i].simS ? (r[i].rsS - r[i].simS) / 1e6 : 0); ++k;
                 }
                 if (k) XLog("xell latency: simulation start -> present end avg %.1f ms (sim -> render submit %.1f ms) over %d frames", lat / k, sub / k, k);
+                // the same from the input read of each frame, by the thread that reads once a frame: of the threads with
+                // a read in at least 8 of 10 of these frames, the one with the fewest reads in their time (a game can
+                // have another thread that polls the controller more often: Resident Evil Requiem)
+                InputWatch();
+                uint64_t from = ~0ull, to = 0;
+                for (int i = 0; i < 64; ++i)
+                {
+                    if (!r[i].id || !r[i].simS || r[i].prE <= r[i].simS) continue;
+                    from = std::min(from, r[i].simS); to = std::max(to, r[i].prE);
+                }
+                uint32_t tid = 0; int fewest = 0;
+                uint32_t tried[8] = {}; int nTried = 0;
+                const LONG nIn = g_inputN;
+                for (LONG a = 0; a < 1024 && a < nIn && nTried < 8; a += 13)
+                {
+                    const uint32_t t = g_inputReads[a].tid;
+                    bool seen = false;
+                    for (int j = 0; j < nTried; ++j) seen |= tried[j] == t;
+                    if (seen) continue;
+                    tried[nTried++] = t;
+                    int c = 0, frames = 0;
+                    for (LONG b = 0; b < 1024 && b < nIn; ++b) c += g_inputReads[b].tid == t && g_inputReads[b].ns >= from && g_inputReads[b].ns < to;
+                    for (int i = 0; i < 64; ++i)
+                        if (r[i].id && r[i].simS && r[i].prE > r[i].simS && InputReadOf(r[i].simS, r[i].prE, t)) ++frames;
+                    if (frames * 10 >= k * 8 && (!tid || c < fewest)) { tid = t; fewest = c; }
+                }
+                double inLat = 0, inAfter = 0; int ki = 0;
+                for (int i = 0; tid && i < 64; ++i)
+                {
+                    if (!r[i].id || !r[i].simS || r[i].prE <= r[i].simS || r[i].prE - r[i].simS > 1000000000ull) continue;
+                    const uint64_t in = InputReadOf(r[i].simS, r[i].prE, tid);
+                    if (!in) continue;
+                    inLat += (r[i].prE - in) / 1e6; inAfter += ((double) in - (double) r[i].simS) / 1e6; ++ki;
+                }
+                if (ki) XLog("input latency: input read (XInputGetState, thread %lu) -> present end avg %.1f ms, the read %.1f ms after the simulation start, over %d of %d frames", (unsigned long) tid, inLat / ki, inAfter / ki, ki, k);
             }
         }
         sum = mx = 0; cnt = 0; t0 = qb;

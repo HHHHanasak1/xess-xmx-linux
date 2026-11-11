@@ -61,7 +61,7 @@ Super resolution (SR) comes from one of two sources: the game's own XeSS ("XeSS-
 
 Frame generation lets rendered frames queue before they are shown, which adds input latency. On Windows, Intel's XeLL (Xe Low Latency) relies on the graphics driver to pace the game; under Proton, that driver mode does not start and XeLL runs in its generic cross-vendor mode.
 
-This project implements its own low-latency mode on top of the XeLL API (`shim/src/dll/XellHook.cpp`): the shim intercepts the game's XeLL calls, reads the per-frame timestamps the game reports to XeLL (simulation, render submit, present) to detect when frames are queuing, and waits before starting the next frame so the queue drains. It is on by default (since release `20261104`) while frame generation is active; `IGDEXT_XELL_CAP=off` turns it off. It applies to a game's own XeSS frame generation; on the FSR and optical-flow routes (`FSR=xess`, `FSR_FG`, `OFLOW_FG`), the package's frame generation DLL reports each present right before the next frame's sleep, so the shim sees no queue and does not wait (see [frame-generation.md](frame-generation.md)).
+This project implements its own low-latency mode on top of the XeLL API (`shim/src/dll/XellHook.cpp`): the shim intercepts the game's XeLL calls, reads the per-frame timestamps the game reports to XeLL (simulation, render submit, present) to detect when frames are queuing, and waits before starting the next frame so the queue drains. It is on by default (since release `20261104`) while frame generation is active; `IGDEXT_XELL_CAP=off` turns it off. The first test below is for a game's own XeSS frame generation. On the FSR routes (`FSR=xess`, `FSR_FG`), the game sends XeLL no time stamps. There the package's frame generation DLL does the same work with times it measures itself, behind the same switch. That is the second test.
 
 **Test**: Wuthering Waves, frame generation 3x, SoC 22 W. Latency is the time from the start of a frame's simulation to the end of its present, taken from those XeLL timestamps (`IGDEXT_XELL_LOG=1`). The builds measured were development versions; their algorithm is the default mode in the release.
 
@@ -76,6 +76,48 @@ This project implements its own low-latency mode on top of the XeLL API (`shim/s
 
 - In all three cases, the frame rate does not change and latency drops by 36–50%.
 - In the CPU-limited and moving scenes, the runs with and without low-latency mode did not cover the exact same stretch of gameplay, so only the rough magnitude of the reduction counts.
+
+**Test (FSR routes)**: CONTROL Resonant (`FSR=xess`), Resident Evil Requiem (`FSR_FG=xess`) and Forza Horizon 6 (`FSR=xess FSR_FG=inject`). Arc B390, XeSS-FG 1.3.1, 2026-11-11. The game stood at one spot without input.
+
+Three settings took turns of 20 s within one run (`FFX_XEFG_AB=20 FFX_XEFG_AB_OLD=1`). Each setting got 4 turns and 1600 to 2400 frames:
+
+* **before:** the swap chain answers the game's questions, and there is no wait. This is the old behaviour, and what `IGDEXT_XELL_CAP=off` gives.
+* **answers:** the DLL answers the questions, with no wait.
+* **low latency:** the answers and the wait. This is the default.
+
+The times come from the DLL's time line (`FFX_XEFG_TRACE=1` in a debug build, read by `tools/fsr-trace.py`). Latency is given two ways:
+
+* from the frame's start (its Present returned to the game) to the end of its present, as XeLL counts it;
+* from the game's controller read (`XInputGetState`) to the moment the GPU has finished the frame's interpolation. That is when its first image can go to the display.
+
+The controller read was checked against XeLL in Wuthering Waves, with its own XeSS-FG. It comes 0.10 ms after the game's simulation start marker. It gives XeLL's latency in both states: 72.7 against 72.8 ms with pacing off, 34.3 against 34.4 ms with pacing on.
+
+"Held up" is the time from the game's Present call to the moment XeSS-FG takes the frame.
+
+| Game | Setting | Frame rate (fps) | Frame time mean / p95 / p99 (ms) | Held up (ms) | Frame start -> present end (ms) | Controller read -> GPU done (ms) |
+|---|---|---|---|---|---|---|
+| CONTROL Resonant, 3x | before | 28.5 | 35.1 / 39.3 / 41.6 | 7.3 | 34.7 | 47.7 |
+| | answers | 29.4 | 34.0 / 35.1 / 35.6 | 18.0 | 33.7 | 61.3 |
+| | low latency | 29.3 | 34.1 / 35.6 / 36.6 | 3.0 | **19.0** | **46.3** |
+| CONTROL Resonant, 6x | before | 22.4 | 44.6 / 47.3 / 48.6 | 21.5 | 44.3 | 55.1 |
+| | answers | 22.5 | 44.4 / 47.2 / 48.1 | 27.7 | 44.1 | 61.3 |
+| | low latency | 22.4 | 44.7 / 47.7 / 48.6 | 16.6 | **33.2** | **50.6** |
+| Resident Evil Requiem, 3x | before | 26.1 | 38.3 / 49.9 / 52.7 | 2.4 | 37.8 | 49.3 |
+| | answers | 31.1 | 32.1 / 34.0 / 36.7 | 8.7 | 31.7 | 57.7 |
+| | low latency | 31.5 | 31.8 / 33.7 / 35.4 | 5.4 | **27.0** | **52.7** |
+| Resident Evil Requiem, 6x | before | 22.1 | 45.2 / 48.8 / 52.7 | 16.5 | 44.7 | 56.6 |
+| | answers | 23.0 | 43.5 / 46.0 / 50.5 | 20.6 | 43.1 | 59.5 |
+| | low latency | 23.1 | 43.3 / 46.0 / 49.1 | 20.5 | 42.9 | 59.4 |
+| Forza Horizon 6, 3x | before | 23.5 | 42.6 / 60.2 / 64.6 | 1.0 | 42.0 | 41.4 |
+| | answers | 39.4 | 25.4 / 26.4 / 31.0 | 2.0 | 25.0 | 39.4 |
+| | low latency | 39.4 | 25.4 / 27.0 / 29.8 | 0.9 | 24.9 | 40.9 |
+
+- **Before**, each game switched every few seconds between two states. In one, frames queue in front of Present. In the other, the next frame starts only when the GPU has finished this one, and the GPU idles meanwhile.
+- **The answers** end that. The frame rate is the higher one and steady: p95 frame time 39.3 -> 35.1 ms in CONTROL Resonant, 49.9 -> 34.0 ms in Resident Evil Requiem, 60.2 -> 26.4 ms in Forza Horizon 6.
+- **The wait** then removes the queue as far as the GPU allows. Against the answers alone, frame start to present end drops by 14.7 ms (−44%) in CONTROL Resonant at 3x, by 10.9 ms (−25%) at 6x, and by 4.7 ms (−15%) in Resident Evil Requiem at 3x.
+- **Where nothing queues, the game does not wait:** Resident Evil Requiem at 6x (the GPU is still rendering when XeSS-FG takes the frame) and Forza Horizon 6. There the last two rows differ by chance only.
+- **Cost of the wait** in frame rate, against the answers alone: 0.4% in CONTROL Resonant at 3x, 0.7% at 6x, nothing measurable in Resident Evil Requiem at 3x.
+- **Left open:** At 3x, CONTROL Resonant's first work still waits 8.7 ms in the GPU queue. A longer wait would use that, but then the DLL can no longer tell whether the GPU or the game is the limit. A fixed wait of 21 ms (`FFX_XEFG_HOLD=21`) gave 33.9 ms to GPU done but cost 7% of the frame rate.
 
 ---
 
