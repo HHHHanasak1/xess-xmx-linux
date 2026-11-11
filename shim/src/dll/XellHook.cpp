@@ -36,7 +36,7 @@ static uint32_t g_mfg = 0;   // generated frames per rendered frame, 0 = frame g
 // Whether frame generation is on, from two places: XeLL's xellSetFgEnabled (g_mfg; missed when a game enables frame
 // generation before XellThread's hooks are in, 200 ms after the library maps) and XeSS-FG's own switch
 // xefgSwapChainSetEnabled (Hook_XefgSetEnabled). The newer call of the two decides (Wuthering Waves switches frame
-// generation off in its menu through XeLL only, CONTROL's FSR route through XeSS-FG only). Neither seen = off: a game
+// generation off in its menu through XeLL only, CONTROL Resonant's FSR route through XeSS-FG only). Neither seen = off: a game
 // that loads libxess_fg.dll but keeps frame generation off never calls either.
 static volatile bool g_fgSeen = false;
 static volatile LONG g_fgState = -1;   // -1 not seen, 0 off, 1 on: the newer of the two calls

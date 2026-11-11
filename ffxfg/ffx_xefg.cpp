@@ -1545,7 +1545,7 @@ static ScState* ScFromSwapChain(void* p)
 // XeSS-FG takes the depth direction and the kind of motion vectors when the swap chain is created, and games create
 // the swap chain before the frame generation context that says what they are. The flags a game gave last time are
 // kept per game (C:\users\<user>\AppData\Local\ffx_xefg\<exe>.flags in the prefix); without them inverted depth is
-// assumed, as in Unreal Engine, Northlight (Control) and RE Engine. With the wrong depth direction XeSS-FG takes the
+// assumed, as in Unreal Engine, Northlight (CONTROL Resonant) and RE Engine. With the wrong depth direction XeSS-FG takes the
 // foreground for the background: moving characters flicker, the more the lower the frame rate.
 static const uint32_t kXefgFfxFlags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED |
                                       FFX_FRAMEGENERATION_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION |
