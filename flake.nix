@@ -7,10 +7,12 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; overlays = [ self.overlays.default ]; };
-      mesaIntel = pkgs.mesa.override {
+      mesaIntel = (pkgs.mesa.override {
         galliumDrivers = [ "iris" ];
         vulkanDrivers = [ "intel" ];
-      };
+      }).overrideAttrs (old: {
+        mesonFlags = old.mesonFlags ++ [ "-Dgallium-va=disabled" ];
+      });
     in {
       overlays.default = import ./nix/overlay.nix;
 
