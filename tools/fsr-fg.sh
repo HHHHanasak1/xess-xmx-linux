@@ -2,7 +2,7 @@
 # fsr-fg.sh all|on|off|status <Steam app id | game folder> - a game's FSR 3.1+ on XeSS, kept until "off". Meant for
 # a Proton without the package's hook (one install.sh could not write to, such as a distribution package's); with the
 # hook (GE-Proton has it too), FSR=xess / FSR_FG=xess %command% do the same for each run only
-# (docs/fsr-frame-generation.md).
+# (docs/frame-generation.md).
 #   all     upscaling on XeSS SR and frame generation on XeSS-FG: the game's amd_fidelityfx_upscaler_dx12.dll and
 #           amd_fidelityfx_framegeneration_dx12.dll are replaced by the package's (ffxfg/), and the XeSS SDK's
 #           libxess.dll / libxess_fg.dll / libxell.dll go next to them (a newer one of the game's own stays). FSR
@@ -118,7 +118,7 @@ on() {
   fi
   [ "$SR" = 1 ] && echo "FSR upscaling runs on XeSS SR in $game: choose FSR (3.1 or 4) upscaling in the game."
   echo "FSR frame generation runs on XeSS-FG in $game. Turn on FSR frame generation in the game; XESS_FG=<n> in the"
-  echo "launch options sets the number of frames (docs/fsr-frame-generation.md)."
+  echo "launch options sets the number of frames (docs/frame-generation.md)."
 }
 
 package_copy() { # <file>: true when it is a copy of one of the package's DLLs of that name (all the files "on" can add)

@@ -1,0 +1,354 @@
+# How It Works
+
+Stock Wine and Proton only run the DP4a (4-element 8-bit integer dot-product instruction) fallback of Intel XeSS (Xe Super Sampling), because the XMX (Xe Matrix Extensions, the GPU's hardware matrix engines) path requires two components that do not exist on Linux: Intel's D3D12 (Direct3D 12) driver extension library (`igdext64.dll`, which exports the `_INTC_D3D12_*` entry points) and a C-for-Metal (CM, Intel's vector/matrix compute kernel language) compiler and runtime in the Vulkan driver.
+
+This project provides both without modifying Proton, Wine, or vkd3d-proton (Proton's D3D12-to-Vulkan translation layer). It also provides bridges that bring D3D11 games, Vulkan games, FSR (FidelityFX Super Resolution) 3.1+ games, and any DX12 game (via optical flow) onto the same XMX pipeline.
+
+For user-facing setup and guides, see [../install.md](../install.md), [../drivers.md](../drivers.md), [../games.md](../games.md), [../frame-generation.md](../frame-generation.md), and [../launch-options.md](../launch-options.md). For benchmark measurements, see [../performance.md](../performance.md). For building from source and developer debugging switches, see [building.md](building.md) and [debugging.md](debugging.md).
+
+---
+
+## 1. End-to-End Overview
+
+Every path in the package converges on the same mechanism: XeSS submits CM kernels in SPIR-V (Standard Portable Intermediate Representation for Vulkan) format with build options, a Windows-side DLL writes them to `C:\igdext_kernels\<hash>.spv` and `<hash>.opt` and hands back a tiny **placeholder** compute shader carrying that 64-bit hash, and the Linux Vulkan side (either the patched Mesa ANV driver or the `VK_LAYER_XESS_xmx` Vulkan layer) compiles the kernel with Intel's `ocloc` / IGC (Intel Graphics Compiler) and runs the native GPU binary in place of the placeholder.
+
+| Game API / Route | Windows-Side Entry Point | How Kernels & Descriptors Reach Vulkan | Linux-Side Execution |
+|---|---|---|---|
+| **D3D12 XeSS SR & XeSS-FG** (native) | `igdext64.dll` (`_INTC_D3D12_*`) | DXBC (DirectX Bytecode) placeholder PSO (pipeline state object) translated by vkd3d-proton; descriptors in vkd3d-proton's `MUTABLE` descriptor heap, heap offsets in push constants | Patched ANV (`patches/0001`, plus `0003` on Xe-HPG/Xe2) on Xe-HPG/Xe2/Xe3, or unpatched ANV + `VK_LAYER_XESS_xmx` (`layer/`) on Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`) |
+| **D3D11 XeSS SR** (`XESS=latest`) | `dx11bridge/libxess_dx11.dll` | Creates a side-by-side D3D12 device (vkd3d-proton), shares textures and a fence with DXVK (D3D11-to-Vulkan), and calls `libxess.dll` (D3D12) | Same as D3D12 |
+| **Vulkan XeSS SR** (`XESS=latest`) | `vkwrap/vulkan-1.dll` | Intercepts Intel private `sType`s `0x303268d0` / `0x303268d1`, substitutes a 51-word SPIR-V placeholder module, and forwards `vkCmdPushXeSSDescriptorsINTEL` as `vkCmdPushDescriptorSetKHR` with `layout = VK_NULL_HANDLE` and `set = 0x58455353` | `VK_LAYER_XESS_xmx` on Xe3 (`0xB080`–`0xB08F`, `0xFD80`–`0xFD8F`; works on both unpatched and patched ANV) |
+| **FSR 3.1+ Upscaling & FG** (`FSR=xess`, `FSR_FG=xess`) | `ffxfg/amd_fidelityfx_upscaler_dx12.dll`, `ffxfg/amd_fidelityfx_framegeneration_dx12.dll` | Translates AMD FidelityFX API calls to `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` on the game's D3D12 device | Same as D3D12 |
+| **FSR Upscaling without FSR FG** (`FSR=xess FSR_FG=inject`) | `ffxfg/dxgi.dll` + `ffx_xefg_bridge.dll` | Hooks DXGI factory vtable slots 10 and 15 to wrap the D3D12 swap chain in XeSS-FG; `ffx_xess.cpp` forwards depth, motion vectors, and jitter via `XefgBridgeFrame` | Same as D3D12 |
+| **Any DX12 Game via Optical Flow** (`OFLOW_FG=1`, experimental) | `ffxfg/dxgi.dll` + `ffx_xefg_bridge.dll` | Hooks the swap chain via `dxgi.dll`; before each present, runs FidelityFX Optical Flow (SDK 1.1.4) + `oflow_expand.hlsl` on the backbuffer to synthesize motion vectors and constant depth for XeSS-FG | Same as D3D12 |
+
+---
+
+## 2. The D3D12 Extension Shim (`igdext64.dll`)
+
+XeSS (`libxess.dll`) and XeSS Frame Generation (`libxess_fg.dll`) load `igdext64.dll` from the Wine prefix's `driverstore/filerepository/igd_faux.inf_1` directory and call `GetSupportedVersions`, `CreateDeviceExtensionContext`, `CheckFeatureSupport`, and `CreateComputePipelineState`.
+
+XeSS could also be pointed at a single shim folder through `INTC_ALT_DRIVER_EXTENSIONS_PATH` without copying `igdext64.dll` into each prefix, but GE-Proton sets `INTC_ALT_DRIVER_EXTENSIONS_PATH` to `C:\Windows\System32` for every game, so per-prefix copies remain necessary. `install.sh` and `enable.sh` still set `INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'` for Protons that expose no Intel driver store in the registry at all (such as Valve's Proton 11.0), where XeSS would otherwise never find the folder on its own.
+
+The shim is built on Intel's open-source [dxvk-igdext](https://github.com/GameTechDev/dxvk-igdext), with D3D12 and XeSS/XeFG/XeLL support added in `shim/src/D3D12ExtensionContext.cpp` and `shim/src/dll/`. It claims support up to HW feature level 5 and API version 20 (`c_MaxD3D12ExtVersion`).
+
+### GPU Detection (`shim/src/dll/GpuInfo.cpp`)
+
+`XmxDetectGpu()` enumerates `HKLM\System\CurrentControlSet\Enum\PCI` in the Wine registry for keys matching `VEN_8086&DEV_<hex>` and matches the PCI device ID against known Intel GPU ranges:
+
+| Family | Architecture Name | PCI ID Range | GMD ID (`arch.rel`) | `GTGeneration` | `productFamily` (`IGFX_*`) | EUs / Cores | `xmx` | `simd16` |
+|---|---|---|---|---|---|---|---|---|
+| Panther Lake | `Xe3-LPG` | `0xB080`–`0xB0FF` | `30.0` | `30` | `1300` (`IGFX_PTL`) | 96 / 12 | `true` | `true` |
+| Wildcat Lake | `Xe3-LPG` | `0xFD80`–`0xFD8F` | `30.0` | `30` | `1300` (PTL assumed) | 96 / 12 | `true` | `true` |
+| Lunar Lake | `Xe2-LPG` | `0x6420`–`0x64FF` | `20.4` | `20` | `1275` (`IGFX_LUNARLAKE`) | 64 / 8 | `true` | `true` |
+| Battlemage | `Xe2-HPG` | `0xE200`–`0xE2FF` | `20.1` | `20` | `1274` (`IGFX_BMG`) | 160 / 20 | `true` | `true` |
+| Alchemist | `Xe-HPG` | `0x5690`–`0x56FF` | `12.55` | `12` | `1270` (`IGFX_DG2`) | 512 / 32 | `true` | `false` |
+| Arrow Lake-H | `Xe-LPG+` | `0x7D51`, `0x7DD1` | `12.74` | `12` | `1273` (`IGFX_ARROWLAKE`) | 128 / 8 | `true` | `false` |
+| Meteor / Arrow Lake | `Xe-LPG` | `0x7D40`–`0x7DFF` | `12.70` | `12` | `1272` (`IGFX_METEORLAKE`) | 128 / 8 | `false` | `false` |
+
+*(Note on Xe3 ranges: `GpuInfo.cpp` matches `0xB080`–`0xB0FF` and `0xFD80`–`0xFD8F` as `Xe3-LPG`, whereas `install.sh` and `VK_LAYER_XESS_xmx`'s `self_test` check `(device_id & 0xfff0) == 0xb080 || 0xfd80`, i.e., `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`. A Panther Lake ID in `0xB090`–`0xB0FF` is detected by the shim but defaults to `patched` driver mode and is not served by the layer.)*
+
+In `D3D12ExtensionContext::InitExtensions`, the shim populates `INTCDeviceInfo1` with those values (`GPUMaxFreq = 2500`, `GPUMinFreq = 300`, `PackageTDP = 25`, `MaxFillRate = 32`, `pDeviceDriverDesc = L"Intel(R) Graphics (xess-xmx-linux)"`, `pDeviceDriverVersion = L"32.0.101.9999"`, `DeviceDriverBuildNumber = 9999`), and copies the base `INTCDeviceInfo` fields back when called through the older `_INTC_D3D12_CreateDeviceExtensionContext` or `Context1` entry points.
+
+If the registry contains an Intel PCI ID (`deviceId != 0`) that is not in the table and `IGDEXT_GMD` is not set, `XmxFallbackActive` declines the extension context so XeSS falls back to DP4a rather than requesting kernels for the wrong architecture. If no Intel PCI entry is found in the registry at all (`deviceId == 0`), the shim keeps the default Panther Lake (`Xe3-LPG`) entry. Environment overrides (`IGDEXT_GMD=<arch>,<rel>`, `IGDEXT_GTGEN=<n>`, `IGDEXT_GTNAME=<name>`, `IGDEXT_EUS=<eus>,<cores>`, `IGDEXT_FAMILY=<id>`, used with `IGDEXT_XELL_PROBE`) override individual fields.
+
+### Kernel Hashing, Placeholders, and DXBC Checksums
+
+When `_INTC_D3D12_CreateComputePipelineState` receives a shader with `ShaderInputType == CM_SPIRV`:
+1. **FNV-1a 64-bit hash:** `Fnv1a64` hashes the raw SPIR-V bytes followed by the ASCII `CompileOptions` string (`14695981039346656037ull` basis, `1099511628211ull` prime).
+2. **Atomic file write:** `DynKernelFiles` writes `C:\igdext_kernels\<16-hex-hash>.spv` and `<hash>.opt` via temporary `<path>.<pid>.tmp` files renamed with `MoveFileExA`, and caches written hashes in memory (`g_dynWritten`) so each kernel is written once per process.
+3. **DXBC Placeholder (`shim/src/dll/placeholders.inc`):** Instead of the CM SPIR-V, the shim passes the game's `ID3D12Device::CreateComputePipelineState` a trivial 476-byte DXBC compute shader compiled by `fxc` (`tools/gen_placeholders.py`):
+   ```hlsl
+   RWByteAddressBuffer u0 : register(u0);
+   [numthreads(1,1,23)] void main() { u0.Store3(0, uint3(0x584D5843, LO, HI)); }
+   ```
+   The placeholder has `numthreads(1, 1, 23)` (a prime no game is known to use) whose single `store_raw` writes the magic value `0x584D5843` and the kernel's 64-bit hash as two dwords (`lo` at byte offset `kPlaceholderKernelHashAt = 304`, `hi` at `308`). `MakePlaceholder` copies the template `kPlaceholderKernel`, writes the hash into the copy, and recomputes the 16-byte DXBC container checksum at bytes `4..19`.
+4. **DXBC MD5 Checksum (`shim/src/dll/DxbcChecksum.h`):** DXBC uses RFC 1321 MD5 over bytes `20..size` with a non-standard end-of-message layout: if the remaining byte count `rem < 56`, the last 64-byte block has `bits = (size - 20) * 8` in dword 0, the remaining bytes followed by `0x80` starting at byte 4, and `(bits >> 2) | 1` in dword 15 (bytes `60..63`). If `rem >= 56`, the remaining bytes and `0x80` fill one block, and a second zero-padded block carries `bits` at byte 0 and `(bits >> 2) | 1` at byte 60. Neither vkd3d-proton's own DXBC parser (up to 2.14) nor dxbc-spirv (used in 3.x) verifies the checksum; the shim still writes a correct one, because vkd3d-proton keys its internal caches by a hash of the whole blob. vkd3d-proton passes the three stored values on as 32-bit constants (one vector store in 3.x, one store per dword in 2.x). `tools/check_placeholders.py` verifies that the templates (shape, magic, checksum, where the hash goes) and the shim's self-test values match the driver.
+5. If `CreateComputePipelineState` fails with the UAV placeholder (for example, if the root signature has no `u0`), the shim falls back to `kDummyCS` (`dummy_cs_bytes.inc`, a no-op shader). Non-CM shaders (`ShaderInputType == NONE` or `HLSL`) pass straight through to the native D3D12 device.
+
+*(Legacy id placeholders: shims before the hash format numbered kernels sequentially, encoding the ID in `numthreads(x, y, z)` on the planes `z = 7, 11, 13` with `x * y * z <= 1024`, writing `dyn_<id>.spv` / `.opt`, and recording `<id> <hash>` in `C:\igdext_kernels\map.txt`. Both the patched ANV driver and `VK_LAYER_XESS_xmx` still understand those placeholders.)*
+
+### Self-Test (`anv_canary`) and Failed Compiles (`compile_failed.txt`)
+
+Before the shim accepts the first D3D12 extension context in a process, `XmxFallbackActive` (`shim/src/dll/D3D12Api.cpp`) runs under a mutex and checks:
+1. `IGDEXT_FORCE_FALLBACK=1` (`XESS=dp4a`): declines immediately.
+2. Unknown Intel PCI device ID without `IGDEXT_GMD`: declines immediately.
+3. **Failed-compile marker (`C:\igdext_kernels\compile_failed.txt`):** If a kernel compile fails, the driver or layer lists the kernel in `C:\igdext_kernels\compile_failed.txt`. While that marker exists (unless `IGDEXT_IGNORE_FAILED=1` is set), the shim declines the extension context so XeSS uses its generic paths for that game instead of producing noise:
+   * `CompileFailedStillValid` compares the modification time of `compile_failed.txt` against the loaded `libxess.dll` and `libxess_fg.dll`. If either DLL is newer than the marker (a game update brought new kernels), the shim deletes `compile_failed.txt` and proceeds.
+   * If neither `libxess.dll` nor `libxess_fg.dll` is loaded yet when the game opens an early extension context (Wuthering Waves does this), the shim declines that early context (`decided = -1`) and re-evaluates when XeSS loads later.
+   * At the next launch, when the Vulkan device is created, the patched driver (`anv_cm_retry_failed`) compiles the listed kernels once more and removes `compile_failed.txt` if they all succeed. After a second failure (`# attempts 2`), automatic retries stop until something has changed: a graphics component is newer than the marker (the compiler in `igc/`, the helper `cm-compile.sh`, the patched driver, or the system's Mesa), the game's `libxess.dll` / `libxess_fg.dll` is newer than the marker, the marker is deleted by hand, or `install.sh` is run manually (with the compiler bundle present).
+4. **Canary self-test (`SelfTestOk`, skipped if `IGDEXT_SKIP_SELFTEST=1`):** The shim creates one extra placeholder pipeline on the game's device from the second template (`kPlaceholderCanary`): workgroup `(1, 1, 19)` (`ANV_CM_CANARY_WG_Z = 19`), whose single `store_raw` writes the magic value `0x584D5843` and two test values (`kCanaryLo = 0x00414E43`, `kCanaryHi = 0x7FA15952`) where a kernel placeholder carries its hash. Viewed as IEEE-754 floats, `0x00414E43` is a denormal and `0x7FA15952` is a signaling NaN, so any translation step that flushes denormals or canonicalizes NaNs shows up here too. The patched driver (or `VK_LAYER_XESS_xmx`) recognizes `(1, 1, 19)`, checks that both test values arrived intact, and writes `C:\igdext_kernels\anv_canary`. (A driver from an older package does not know `(1, 1, 19)`, so with a newer shim it fails the test and falls back to DP4a instead of producing noise; the old test shape `(1, 1, 17)` is still answered for older shims.) Only if `anv_canary` is newer than the game process (with 2 seconds of slack for file time granularity) does the shim accept the context; otherwise it declines the context (`E_NOTIMPL`), and XeSS behaves as on a system without the Intel extension (DP4a super resolution and generic frame generation, which is limited to 2x; answering `LSCSupported = 0` instead would switch XeSS frame generation off altogether).
+
+---
+
+## 3. Which Kernel Variant XeSS Picks (`OPTIONS1` & `OPTIONS2`)
+
+In `_INTC_D3D12_CheckFeatureSupport`:
+* `INTC_D3D12_FEATURE_D3D12_OPTIONS1`: returns `XMXEnabled = xmx`, `DLBoostEnabled = xmx`, `EmulatedTyped64bitAtomics = 0` (overridable via `IGDEXT_OPTIONS1=<xmx>,<dlboost>,<emul64>`).
+* `INTC_D3D12_FEATURE_D3D12_OPTIONS2`: returns `SIMD16Required = simd16`, `LSCSupported = 1`, `LegacyTranslationRequired = 0`. When either `IGDEXT_OPTIONS2=<simd16>,<lsc>,<legacy>` or `IGDEXT_OPTIONS2_FG=...` is set, `CalledFromXeFG()` checks whether `libxess_fg.dll` is on the call stack: non-FG calls use `IGDEXT_OPTIONS2` (or the GPU default if unset), while calls from `libxess_fg.dll` use only `IGDEXT_OPTIONS2_FG` (or the GPU default if `IGDEXT_OPTIONS2_FG` is unset).
+
+XeSS and XeSS-FG select their CM kernel set from the `OPTIONS2` answer:
+* **`SIMD16Required = 0` (Xe-HPG / Alchemist, Arrow Lake-H):** XeSS hands out the Xe-HPG kernel set (SIMD8, images read and written with legacy `gather4.typed` / `scatter4.typed` messages). This is what the shim answers on Xe-HPG, the GPU the set is made for. Xe2 and Xe3 hardware and IGC cannot run those legacy typed messages; on them, a hand-rewritten version of this set produced a stippled ghost behind moving objects, and XeSS frame generation with this answer requests kernels that do not compile at all.
+* **`SIMD16Required = 1` (Xe2 / Lunar Lake / Battlemage, Xe3 / Panther Lake / Wildcat Lake):** XeSS hands out a different kernel set (57 of Wuthering Waves' 90 kernels differ) using `lsc.load.quad.typed` and `lsc.store.quad.typed` (Load/Store Cache messages), which compiles for Xe2 and Xe3 unchanged. This is what the shim answers on Xe2 and Xe3.
+* **`LSCSupported = 0`:** XeSS requests no CM kernels at all and uses its HLSL DP4a path.
+
+Frame generation uses the same mechanism. `libxess_fg.dll` opens four API-10 extension contexts (and one API-11 context that creates nothing) and builds its own CM network: in Wuthering Waves, 60 of the 90 kernels belong to XeFG, half of them use `dpas` (Dot Product Accumulate Systolic, the XMX instruction), and at 4x twelve of them run once per generated frame. OptiScaler-driven XeFG in Forza Horizon 6 requests a further 24 kernels, also on XMX. `IGDEXT_TRACE=1` logs the calling module of every context, query, and pipeline, which tells SR and XeFG kernels apart.
+
+---
+
+## 4. Runtime Kernel Compilation and Binary Formats
+
+Neither the git repository nor the release archive contains Intel XeSS kernels. Kernels are compiled on the user's machine from the SPIR-V blobs that the game's own `libxess.dll` / `libxess_fg.dll` hand to the shim, and cached as `~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk` (or `.cml` for the layer; under `$XDG_CACHE_HOME/xess-xmx/kernels` when `XDG_CACHE_HOME` is set).
+
+### Compiler Helper (`tools/cm-compile.sh`)
+
+Both the patched ANV driver and `VK_LAYER_XESS_xmx` invoke `tools/cm-compile.sh <spv> <opt> <out>` via `posix_spawn` (avoiding `fork()` of a multi-gigabyte game process):
+* **Toolchain:** Uses `ocloc` from Intel compute-runtime `25.18.33578.6` (`igc/neo/bin/ocloc*`) and Intel Graphics Compiler `v2.10.10` (`igc/igc/local/lib`, fetched by `tools/get-igc.sh`). Newer IGC releases fail on some XeSS kernels.
+* **Target (`-device`):** Uses `CM_DEVICE` if set; otherwise checks `CM_PCI_ID` (passed by the driver/layer, or read from `/sys/class/drm/renderD*/device`). Panther Lake (`0xb080`–`0xb0ff`) and Wildcat Lake (`0xfd80`–`0xfd8f`) map to `ptl`; with no Intel GPU found, the target is also `ptl`; all other PCI IDs are passed directly as the hex PCI ID (`0x...`) so `ocloc` selects the exact target.
+* **Options:** Extracts `-doubleGRF*` and `-ze-*` flags from `<hash>.opt` (such as `-doubleGRF` and `-ze-exp-register-file-size`) and runs:
+  ```sh
+  ocloc compile -spirv_input -file "$SPV" -device "$DEV" -out_dir "$W" -output k -options "-vc-codegen $fl"
+  ```
+  When called by `VK_LAYER_XESS_xmx` (`CM_NO_LOAD_PAYLOAD=1`), it adds `-internal_options "-llvm-options -finalizer-opts=-noLoadPayload"` (passed as an internal option because the embedded `-vc-payload` options of some kernels replace whatever `-options` says) and records `-noLoadPayload` in `$CM_OUT_DIR/info`.
+* **Packing:** When `CM_OUT_DIR` is set (current drivers and layer), `cm-compile.sh` exits right after `ocloc` finishes, starting no other program; the C packer in the driver or layer packs the resulting `k_*.bin` ELF zebin. Before the driver packed the zebin in C itself, spawning Python per kernel took 0.2–0.3 s; Wuthering Waves' 90 kernels took 65–70 s in total at the first launch, about 31 s of it in `ocloc` itself. For a driver from an older package that does not pass `CM_OUT_DIR`, `cm-compile.sh` still packs with `tools/cmk_pack.py`.
+
+### Background Prefetching and Timeouts (`anv_cm.c`)
+
+On a cache miss inside `vkCreateComputePipelines`, the patched ANV driver (`anv_cm.c`) logs `ANV CM: compiling kernel <hash> (<name>.spv)` to `stderr`, compiles the needed kernel on the calling thread (`anv_cm_compile_needed`), and calls `anv_cm_prefetch`:
+* `anv_cm_prefetch` scans `C:\igdext_kernels` for every `<16-hex>.spv` that has a matching `.opt` file and no cached `.cmk`, queues them in `anv_cm_jobs` (up to `1024` entries), pins `libvulkan_intel.so` in memory with `RTLD_NODELETE`, and spawns detached background worker threads with all signals blocked.
+* **Worker count (`ANV_CM_COMPILE_JOBS`):** Defaults to `sysconf(_SC_NPROCESSORS_ONLN) - 1`, clamped to `[0, 8]` (max 32 if set explicitly; `0` disables background prefetching). If a pipeline thread needs a kernel that a worker is currently compiling, it waits on `anv_cm_jobs_cnd`; if the job is still queued, the pipeline thread takes it over. (In `VK_LAYER_XESS_xmx`, kernels are compiled one after another on demand inside `vkCreateComputePipelines` and logged to `~/.cache/xess-xmx/compile.log`.)
+* **Timeouts (`ANV_CM_COMPILE_TIMEOUT`):** Each `posix_spawn` in `anv_cm.c` places the helper in its own process group (`POSIX_SPAWN_SETPGROUP`). `anv_cm_wait` polls every 5 ms and kills the entire process group (`kill(-pid, SIGKILL)`) if it exceeds `ANV_CM_COMPILE_TIMEOUT` seconds (default `120`, `0` = no limit).
+
+### Cache Filename and Toolchain Generation (`anv_cm_toolchain_gen` and `session-check.sh`)
+
+Each cached kernel is stored as `~/.cache/xess-xmx/kernels/<hash>_<pci id>_<toolchain>.cmk` (patched driver) or `<hash>_<pci id>_<toolchain>.cml` (Vulkan layer). The `<toolchain>` part (`anv_cm_toolchain_gen` in the driver, `xmx_toolchain_gen` in the layer) is a 32-bit FNV-1a hash over:
+1. The compiler filenames of `ocloc*` in `igc/neo/bin` and `libigc.so.*` in `igc/igc/local/lib`,
+2. The byte contents and lengths of the compile scripts (`tools/cmk_pack.py` and `tools/cm-compile.sh` in the driver; `tools/cm-compile.sh` in the layer),
+3. The packer version string (`"cmk2-c1"` in the driver, `"cml1-l1"` in the layer),
+4. The value of `CM_DEVICE` (if set).
+
+Because `<toolchain>` is part of the filename, a compiler update, a changed compile script, or a new `.cmk` / `.cml` format automatically leads to recompiles under new filenames. At login, `tools/session-check.sh` computes the patched driver's current toolchain generation(s), compares them with `~/.cache/xess-xmx/kernel-gens`, and removes the patched driver's `*_*_<old_gen>.cmk` files from older toolchains (the layer's `*.cml` files are not removed; new ones get new names).
+
+### The `CMK2` and `CML1` Binary Formats
+
+`anv_cm_pack` (`anv_cm.c`), `xmx_pack` (`layer/src/cmk.c`), and `tools/cmk_pack.py` parse the ELF zebin produced by `ocloc`—specifically the first `.text.<kernel>` section (excluding `.text.Intel_*`) and the `.ze_info` YAML metadata section—and write the same 472-byte header (the layer then stores it as `CML1`, adding `gc_off` and `flags`). Kernels that request `per_thread_memory_buffers` (scratch or private memory) are rejected at pack time so the game falls back to DP4a safely; none of the ~150 kernels across tested games use scratch memory.
+
+| Byte Offset | Type | Field | Description |
+|---|---|---|---|
+| `0` | `char[4]` | `magic` | `"CMK2"` (patched driver, 472-byte header) or `"CML1"` (Vulkan layer, 480-byte header) |
+| `4` | `uint32_t` | `code_size` | Size of the native ISA machine code in bytes |
+| `8` | `uint32_t` | `grf_count` | General Register File registers per thread from `.ze_info` (`128` or `256`) |
+| `12` | `uint32_t` | `slm_size` | Shared Local Memory size in bytes |
+| `16` | `uint32_t` | `barriers` | Low 31 bits: `barrier_count`; bit 31 (`0x80000000`): kernel has `addrspace: sampler` |
+| `20` | `uint32_t[3]` | `lws[3]` | CM workgroup size (`LWS_SIZE_X/Y/Z` from `.opt`, default `1, 1, 1`) |
+| `32` | `uint32_t` | `cross_size` | Cross-thread payload size in bytes (rounded up to a multiple of 32, max 128) |
+| `36` | `uint32_t` | `per_thread_size` | Per-thread payload stride in bytes (rounded up to `grf_bytes`: 64 on Xe2/Xe3, 32 on Xe-HPG/Xe-LPG) |
+| `40` | `uint8_t[128]` | `cross_data` | Pre-filled cross-thread payload: `local_size` and `enqueued_local_size` = `lws`, `group_count` = `1, 1, 1` (only `average_sum` uses it), `work_dimensions` = `1..3` |
+| `168` | `uint32_t` | `heap_set` | `0xffffffff` (auto-detect the vkd3d-proton `MUTABLE` descriptor heap set) |
+| `172` | `uint32_t` | `heap_binding` | `0` (auto-detected with `heap_set`) |
+| `176` | `uint32_t` | `table_pc_base` | `0` (computed at pipeline creation from the push-constant range size) |
+| `180` | `uint32_t` | `nsurf` | Number of bound surfaces in `binding_table_indices` (max 24) |
+| `184` | `uint32_t[24]` | `bti[24]` | Hardware Binding Table Index (`bti_value`, `0..239`) for surface `k`, sorted by `arg_index` |
+| `280` | `uint32_t[24]` | `table_idx[24]` | Descriptor table index for surface `k` (`0 .. nsurf - 1`) |
+| `376` | `uint32_t[24]` | `elem[24]` | Descriptor element offset within that table (`0`) |
+| `472` (`CML1` only) | `uint32_t` | `gc_off` | Byte offset of `group_count` inside `cross_data`, or `0xffffffff` (`XMX_NO_GC`) |
+| `476` (`CML1` only) | `uint32_t` | `flags` | `XMX_CML_NO_LOAD_PAYLOAD` (`1`): compiled with `-noLoadPayload` |
+| `472` / `480` | `uint8_t[]` | `code` | Native Intel GPU ISA instructions |
+
+---
+
+## 5. Patched Mesa ANV Driver (`patches/`)
+
+There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0`. Both share identical `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` files (enforced by CI in `.github/workflows/build.yml`); version differences in upstream Mesa structs are abstracted behind `anv_cm_bind_state` and `ANV_CM_*` macros in `anv_private.h`.
+
+### Patch `0001`: Kernel Injection, Payload, and Binding Tables
+
+1. **Intercepting compilation (`anv_shader_compile.c`):**
+   * In Mesa 26.1.2 (`anv_shader_compile_cs`) and Mesa 26.3 (`anv_shader_compile`, right before the `intel_use_jay` / `brw_compile` branch), ANV calls `anv_cm_kernel_replace(device, mem_ctx, shader_data, nir)`. Any non-placeholder shader, even with the same workgroup size, is compiled normally by Jay or brw.
+   * `anv_cm_is_placeholder` scans the NIR instructions: if the shader has at most 256 instructions and loads the 32-bit constant `0x584D5843`, it is a shim placeholder.
+   * `anv_cm_placeholder_hash` extracts the 32-bit constants (splitting 64-bit constants into low and high dwords) and tests pairs `(lo, hi)`—first the two constants immediately after `0x584D5843`, then any pair after it, then any pair—until it finds a `<hash>.spv` in `C:\igdext_kernels` or a `.cmk` in the cache. This handles both vector stores (vkd3d-proton 3.x / dxbc-spirv) and scalar per-dword stores with offsets in between (vkd3d-proton 2.x).
+2. **Replacing `brw_cs_prog_data`:**
+   * `anv_cm_header_ok` validates every `.cmk` field against hardware limits (`code_size <= 16 MiB`, `grf_count <= 256`, `slm_size <= max_slm_size`, `lws[0] <= 32`, total threads `<= 1024`, `cross_size <= 128`, `per_thread_size <= 512`, total indirect payload `<= 0x1ffff`, `nsurf <= 24`, `bti <= 239`).
+   * Because CM kernels use one hardware thread per work item (SIMD1 semantics), ANV sets `cs->local_size[0] = h.lws[0] * 32`, `cs->local_size[1] = h.lws[1]`, `cs->local_size[2] = h.lws[2]`, `cs->prog_mask = 1 << 2` (SIMD32), and `shader_data->stats[0].dispatch_width = 32`, so the walker launches `lws.x * lws.y * lws.z` hardware threads per workgroup.
+   * Both injected kernels and failed placeholders set `cm_no_cache = true` (copied to `shader->vk.no_cache` in `anv_shader_create`, which `vk_pipeline.c` checks before adding a shader to a cache), so placeholders are never stored in a pipeline cache and a changed kernel or a compile that failed once is picked up on the next launch.
+3. **NEO-Style Walker Indirect Payload (`genX_cm.c`, `genX_shader.c`):**
+   * Standard ANV compute shaders pass push constants via inline parameters or gather buffers, whereas IGC's `-vc-codegen` CM kernels begin with a prologue that loads a NEO/Level-Zero indirect payload from `IndirectDataStartAddress` (relative to the general state pool at base address 0): `[cross-thread data][per-thread packed local IDs * threads]`.
+   * In `genX(cm_setup_walker)`, ANV allocates `align(cross + per * threads, 64)` bytes from `device->general_state_pool`, copies `cm_cross_thread_data`, and fills the 16-bit local IDs `(t % lx, (t / lx) % ly, t / (lx * ly))` at stride `per` (one GRF: 64 bytes on Xe2/Xe3, 32 bytes on Xe-HPG) for each thread `t`.
+   * *Mesa 26.3 note:* Upstream 26.3 stopped initializing `device->general_state_pool` on the direct-descriptor path; `patches/mesa-26.3/0001` restores `anv_state_pool_init(&device->general_state_pool, ...)` in `anv_state_pools_init_direct_descriptors` and pins it in `i915/anv_batch_chain.c`.
+4. **Per-Dispatch Binding Table from vkd3d-proton's Descriptor Heap (`genX_cm.c`):**
+   * XeSS D3D12 root signatures use one 1-descriptor table per resource. With `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`, vkd3d-proton puts all resource descriptors into a single `VK_DESCRIPTOR_TYPE_MUTABLE_EXT` array (`array_size >= 1000`) and passes each root descriptor table's heap index as a 32-bit push constant at the end of the push-constant block (`push_size - 4 * nsurf`). If the heap cannot be found in the pipeline layout, the driver logs `no vkd3d-style descriptor heap` and leaves the kernel as a no-op placeholder.
+   * In `genX_cmd_compute.c`, `cmd_buffer_flush_compute_state` forces `VK_SHADER_STAGE_COMPUTE_BIT` in `descriptors_dirty` whenever a CM kernel with `cm_nsurf > 0` is bound, because push-constant changes alone do not normally rebuild the binding table.
+   * In `genX(cm_emit_binding_table)`, ANV allocates a binding table of `cm_max_bti + 1` entries and, for each surface `k`, reads `idx = pc[cm_table_pc_off[k] / 4] + cm_elem[k]` and writes the surface state offset `hs->desc_offset + cm_heap_desc_off + idx * cm_heap_stride + state_offset` into `cm_bt[cm_bti[k]]`. Out-of-range indices or unbound heap sets fall back to `anv_null_surface_state_for_binding_table`.
+   * If `cm_has_sampler` is set, ANV copies the 16-byte `SAMPLER_STATE` of the pipeline layout's immutable static sampler (or packs XeSS's default `MIN_MAG_MIP_LINEAR` + `TCM_CLAMP` sampler) into dynamic state and assigns `cmd_buffer->state.samplers[MESA_SHADER_COMPUTE]`.
+
+### Patch `0002`: Debug Tools
+
+Generated from the `/* XMX-DEBUG-BEGIN */` .. `/* XMX-DEBUG-END */` blocks in the source tree via `tools/split_patch.py`. Adds `ANV_CM_PC`, `ANV_CM_VIEW`, `ANV_CM_GCAP` (GPU-side `mi_memcpy` of buffers `<= 4096` bytes into a 4 MiB host-coherent BO, written 40 dispatches later), `ANV_CM_CAPTURE` (CPU-side BO mapping via `anv_cm_bos[16384]`), `ANV_CM_ONLY`, `ANV_CM_SKIP`, `ANV_CM_SYNC`, `ANV_CM_MAXGROUPS`, `ANV_CM_PREEMPT`, `ANV_CM_CAP_DIR`, and `<blake3>.cmk` replacement from `ANV_CM_KERNEL_DIR`. See [debugging.md](debugging.md) for usage.
+
+### Patch `0003`: Large GRF Mode on Xe-HPG and Xe2
+
+The register count (128 or 256, from the kernel's `-doubleGRF` / `-ze-exp-register-file-size` compile options) goes into the interface descriptor (`RegistersPerThread`) on Xe3. Xe-HPG (`GFX_VERx10 == 125`, Alchemist) and Xe2 (`GFX_VER == 20`, Battlemage / Lunar Lake) have a single engine-wide switch instead, `STATE_COMPUTE_MODE.LargeGRFMode`, which nothing else turns on: without it, the first 256-register kernel (every kernel's prologue touches `r255`) runs in 128-GRF mode, never finishes, and the engine is reset (seen on an Arc B580 in Cyberpunk 2077 and Wuthering Waves, [#16](https://github.com/HHHHanasak1/xess-xmx-linux/issues/16), and on an Arc A310 in Satisfactory, [#28](https://github.com/HHHHanasak1/xess-xmx-linux/issues/28)).
+
+`genX(cmd_buffer_set_cm_large_grf)` (`genX_cm.c`) tracks the current state in `cmd_buffer->state.compute.cm_large_grf` and emits a transition only when the boolean changes:
+1. Emits a `PIPE_CONTROL` with `ANV_PIPE_END_OF_PIPE_SYNC_BIT | ANV_PIPE_HDC_PIPELINE_FLUSH_BIT | ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT` (required because `LargeGRFMode` applies to every thread in flight on the engine).
+2. Emits `STATE_COMPUTE_MODE` with `LargeGRFMode = enable` and `LargeGRFModeMask = true`.
+
+Because consecutive CM dispatches share the `true` state, a chain of dozens of XeSS kernels pays for one transition instead of two per dispatch (which raised the Cyberpunk 2077 1440p benchmark on an Arc B580 from 110.0 fps to 134.3 fps, vs 126.0 fps on DP4a, [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19)). Ordinary shaders are correct in Large GRF Mode (they only lose occupancy), so `patches/0003` switches it on before a >128-GRF CM kernel and off before other compute work—including Mesa's own BLORP compute copies and fills (`blorp_exec_on_compute` in `genX_blorp_exec.c`; leaving it on across a BLORP walker hung the next CM kernel on an Arc A310 in 4 out of 4 runs, [#28](https://github.com/HHHHanasak1/xess-xmx-linux/issues/28) / [#31](https://github.com/HHHHanasak1/xess-xmx-linux/issues/31) / [#32](https://github.com/HHHHanasak1/xess-xmx-linux/issues/32)), trace rays (`cmd_buffer_trace_rays` in `genX_cmd_compute.c`, [#39](https://github.com/HHHHanasak1/xess-xmx-linux/issues/39)), the driver's internal simple shaders (`genX_simple_shader.c`), and generated commands (`genX(CmdExecuteGeneratedCommandsEXT)` in `genX_cmd_dgc.c`, Mesa 26.3)—as well as at the end of each command buffer (`end_command_buffer`) and before executing secondaries (`genX(CmdExecuteCommands)`).
+
+Patch `0003` also drops direct CM dispatches with a zero group count in any dimension (`genX(cm_prepare_walker)`, seen in Cyberpunk 2077 with a `0x720x1` dispatch), which the Vulkan specification makes a no-op.
+
+### Patch `0005`: Sampler Descriptor Tables
+
+XeSS uses static samplers in its root signature, which vkd3d-proton turns into immutable samplers on the pipeline layout. A kernel whose sampler is a descriptor table instead (such as the FSR 4 on XMX plugin, [../games.md](../games.md)) has that sampler table as the last root parameter, after the surfaces. When `cm_has_sampler` is true, `cm_sampler_from_layout` is false, and `push_size >= 4 * (h.nsurf + 1)`, patch `0005` locates vkd3d-proton's sampler heap (`VK_DESCRIPTOR_TYPE_SAMPLER` with `array_size >= 1000` in a direct/legacy set layout), shifts `table_pc_base` one dword earlier (`push_size - 4 * (h.nsurf + 1)`), sets `cm_sampler_pc_off = push_size - 4`, and at dispatch time copies the 16-byte `SAMPLER_STATE` from `shs->desc_sampler_mem.map` at index `pc[cm_sampler_pc_off / 4]`.
+
+### Patch `0006` (Mesa 26.3 only): Jay Cooperative Matrix Deref Lowering
+
+In Mesa 26.3, `brw_nir_lower_cmat` (cooperative matrix lowering) leaves dead `nir_var_function_temp` vector stores behind in a compute shader of Cyberpunk 2077. While the old `brw` compiler backend handles leftover variable derefs, Jay (the default compiler on Xe2 and Xe3 in 26.3) hits `UNREACHABLE("All derefs should've been lowered")` in `jay_emit_instr`, which in a release build (`__builtin_unreachable`) jumps into unrelated code (`jay_emit_fb_write` when built with GCC 15) and crashes while the game compiles the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables` (`nir_var_function_temp`), and `nir_opt_dce` right after `brw_nir_lower_cmat` in `anv_shader_lower_nir`.
+
+---
+
+## 6. The Unpatched-Driver Vulkan Layer (`VK_LAYER_XESS_xmx`)
+
+On GPUs where `(device_id & 0xfff0) == 0xb080` or `0xfd80` (`0xB080`–`0xB08F` Panther Lake and `0xFD80`–`0xFD8F` Wildcat Lake), `install.sh` runs the whole session on the package's unpatched Mesa 26.3.0 driver (`lib/mesa-stock-26.3.0/`) paired with `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`). Per game, `xmx-stock.sh %command%` runs the distribution's own unpatched `libvulkan_intel.so` with the same layer. What `patches/0001` does inside the driver, this layer does from outside. Because Xe-HPG and Xe2 require `STATE_COMPUTE_MODE.LargeGRFMode` (which only the driver can emit into the batch buffer), the layer's `self_test` accepts only `(device_id & 0xfff0) == 0xb080` or `0xfd80` (`0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`).
+
+### How the Layer Works
+
+1. **Hiding `VK_EXT_shader_module_identifier` and enabling `VK_KHR_pipeline_binary` (`layer/src/layer.c`):**
+   * The layer strips `VK_EXT_shader_module_identifier` from `vkEnumerateDeviceExtensionProperties` and zeroes `shaderModuleIdentifier` in `vkGetPhysicalDeviceFeatures2` so vkd3d-proton always hands full SPIR-V code to `vkCreateShaderModule` / `vkCreateComputePipelines`.
+   * In `vkCreateDevice`, the layer enables `VK_KHR_pipeline_binary` and `VK_KHR_maintenance5` if the physical device supports them.
+2. **SPIR-V Placeholder Recognition (`layer/src/placeholder.c`):**
+   * `xmx_spv_scan` parses SPIR-V modules up to 64 KiB (`XMX_PH_MAX_SPV_BYTES`) up to the first `OpFunction`, recording `LocalSize` / `LocalSizeId` / `WorkgroupSize` and 32-bit or 64-bit `OpConstant` / `OpSpecConstant` values. `xmx_classify` matches `(1, 1, 23)` kernel placeholders, `(1, 1, 19)` and `(1, 1, 17)` canary self-tests, and legacy `(x, y, 7|11|13)` id placeholders via `map.txt`.
+3. **Compiling with `-noLoadPayload` and the Register Prologue (`layer/src/compile.c`, `prologue.c`):**
+   * Unpatched ANV does not allocate a NEO indirect payload in the general state pool; instead, it starts each compute thread with `r0` (hardware thread ID in `r0.2[7:0]`) and, when inline data is enabled, `gl_NumWorkGroups` in `r1.0..2`.
+   * The layer compiles kernels with `tools/cm-compile.sh` and `CM_NO_LOAD_PAYLOAD=1` (`-finalizer-opts=-noLoadPayload`), cached as `~/.cache/xess-xmx/kernels/*.cml` (`CML1`), so the kernel expects its payload in registers instead of loading it: cross-thread data in `r2` (and `r3` if `cross_size > 64`) and 16-bit local IDs in `r1.0..2:uw`.
+   * `xmx_prologue` puts a short machine-code prologue in front of the kernel that builds the payload in registers (`layer/src/prologue_table.inc`, generated offline by `layer/tools/gen_prologue_table.py` from `layer/tools/prologue_asm.py` using `libiga64`, 16 bytes per instruction, `r4` as scratch—so the layer needs no assembler at runtime):
+     * Zeroes `r2` (and `r3` if `cross_size > 64`), then writes each non-zero 32-bit word of `cross_data` as an immediate `mov`.
+     * If `gc_off != XMX_NO_GC` (the kernel uses `group_count`), copies `r1.0..2:ud` (where ANV places inline `num_workgroups`) into `r2`/`r3` at `gc_off`.
+     * Extracts the thread ID `r4.0 = r0.2 & 0xff`, zeroes `r1`, computes `lx_id = tid & (lx - 1)`, `ly_id = (tid >> log2(lx)) & (ly - 1)`, `lz_id = tid >> log2(lx * ly)` (requires power-of-two `lx` and `ly`), and moves them into `r1.0..2:uw`.
+4. **Template Shader and `VK_KHR_pipeline_binary` Wrapping (`layer/src/template.comp`, `anvbin.c`, `layouts.h`):**
+   * The replacement pipeline layout is vkd3d-proton's layout plus one descriptor set of the layer's at `set_index = pl->nsets` (32 `MUTABLE` surface bindings `0..31` plus a `SAMPLER` binding at `32`).
+   * For each `(set_layout, set_index)`, `template_get` patches `DescriptorSet` in `xmx_template_spv` (`layer/src/template.comp`, which touches bindings `0..32`), compiles a template pipeline with `VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR`, and exports ANV's serialized compute binary via `vkGetPipelineBinaryDataKHR`.
+   * `anvbin_parse` parses the serialized form using the table for the running Mesa version in `layer/src/layouts.h` (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`, measured with `layer/tests/layout_probe.py` on binaries exported from `layer/tests/variants`). It also detects this project's patched drivers via `pd_size_patched` (`656` bytes on 26.1.2, `664` bytes on 26.3.0 vs `152` and `160` unpatched): on a patched driver, the layer only serves XeSS's Vulkan path (`pl->nsets == 0`), because the patched driver injects a D3D12 game's kernels (`pl->nsets != 0`) itself.
+   * `anvbin_kernel` wraps `prologue + kernel_code` into the template's serialized form: it patches `brw_cs_prog_data` (`program_size`, `grf_used`, `total_shared`, `local_size = {lx * 32, ly, lz}`, `prog_mask = 1 << 2`, `uses_barrier`, `uses_sampler`, `generate_local_id = 0`, and `inl_num_wg` inline dword IDs `{149, 150, 151}` on 26.1 or `{66, 67, 68}` on 26.3/27.0 when `group_count` is used) and remaps the binding table so hardware `bti[k]` points to `(set_index, binding k)`. (If ANV omitted surface entries because the engine name is `vkd3d`, `anvbin_kernel` synthesizes the 16-byte binding entries at `k * 64` bytes in the set.)
+   * `create_from_binary` hashes the rewritten binary with BLAKE3 for `VkPipelineBinaryKeyKHR` and creates the real `VkPipeline` via `vkCreatePipelineBinariesKHR` + `vkCreateComputePipelines`.
+   * The layer answers the shim's self-test (`anv_canary` and `layer_canary`) only after its own `self_test` on the device has passed (confirming a known Mesa version, PCI ID in `0xB080`–`0xB08F` or `0xFD80`–`0xFD8F`, template round-trip, and pipeline creation from binary). With an unknown driver version or another GPU, the shim declines and XeSS uses DP4a.
+5. **Per-Dispatch Descriptor Set Copy (`prepare_dispatch`):**
+   * The layer tracks bound compute pipelines, descriptor sets, and push constants (the first 256 bytes) per `VkCommandBuffer`.
+   * At each `vkCmdDispatch` / `vkCmdDispatchBase` / `vkCmdDispatchIndirect` of a replaced pipeline, `prepare_dispatch` allocates a descriptor set from a per-command-buffer pool list (64 sets per pool, reset when the command buffer or command pool resets), copies the kernel's surfaces from vkd3d's descriptor heap `(heap_set, heap_binding, pc[table_off[i] / 4] + elem[i])` into `(layer_set, binding i)` via `VkCopyDescriptorSet` (and writes or copies the sampler into `binding 32`), and binds the layer's set at `set_index`.
+
+---
+
+## 7. Frame Generation Overrides (`XESS_FG`) and XeLL Latency Reduction
+
+### The Number of Generated Frames (`XESS_FG` and `ControlLib.dll`)
+
+On Windows, Intel Graphics Software can override how many frames XeSS frame generation generates. When a game creates its frame generation context, `libxess_fg.dll` loads Intel's Control Library (`ControlLib.dll` from `system32`), asks it for the 3D feature "frame generation" (`CTL_3D_FEATURE_FRAME_GENERATION = 17`) globally and for the game's executable, and uses the answer as its maximum number of interpolated frames instead of the game's choice.
+
+1. **2x to 4x (`controllib/ControlLib.c`):** Wine has no `ControlLib.dll`; `install.sh` (for prefixes that already have the `igd_faux.inf_1` driver store folder, unless a non-package `ControlLib.dll` is already present) and `enable.sh` copy `ControlLib.dll` (built from `controllib/ControlLib.c`) into `C:\windows\system32\ControlLib.dll`. It answers device enumeration (`ctlInit`, `ctlEnumerateDevices`, `ctlGetDeviceProperties` via DXGI, matching Intel vendor `0x8086` or descriptions starting with `L"Intel"`) and the feature query (`ctlGetSet3DFeature`) from `XESS_FG`, returning `EnableType = n - 1` (`1` for 2x, `2` for 3x, `3` for 4x), the values of Intel's public enum.
+2. **Above 4x (`shim/src/dll/XellHook.cpp`, experimental 5x to 8x):** Above 4x, `libxess_fg.dll` ignores `ControlLib.dll`'s override (`ControlLib.c` clamps `n > 4` to `3`). The shim raises the number itself by observation and through the public API only (`XefgRaise` / `XefgRaiseOnce`):
+   * After the game's context creation (with the override at 4x, i.e., `3` interpolated frames), the shim collects every 4-byte-aligned 32-bit value `3` in `libxess_fg.dll`'s writable PE sections (`IMAGE_SCN_MEM_WRITE`, up to 4096 candidates).
+   * It sets `XESS_FG_PROBE=2` in the process environment, creates and destroys a temporary probe context via `xefgSwapChainD3D12CreateContext` / `xefgSwapChainDestroy` (so `ControlLib.dll` reports `2`, i.e., 3x), and keeps the one candidate address whose value followed the probe from `3` to `2`.
+   * It writes the wanted number (`min(n, 8) - 1`, i.e., `4..7`) there and checks via `xefgSwapChainGetProperties` on the game's context that `maxSupportedInterpolations` now reports it; otherwise the old value `3` is restored and the game keeps 4x. This runs before the game sizes or initializes frame generation (at context creation, or at the first call after it when `libxess_fg.dll` loaded the shim itself during that creation).
+   * For a game that sets the number while it runs (such as Wuthering Waves from its 2x/3x/4x menu), `Hook_XefgSetNum` intercepts `xefgSwapChainSetNumInterpolatedFrames` and substitutes `XESS_FG`'s number whenever the game passes a non-zero count.
+
+### XeLL (Latency Reduction) and `AutoPaceWait` (`shim/src/dll/XellDriver.cpp`, `XellHook.cpp`)
+
+Games with XeSS frame generation also use Intel XeLL (`libxell.dll`). Under Wine it runs in its built-in context (cross-vendor mode, log line `[XeLL] Using built-in context`): the library paces the frames itself using the timing it can measure from the application side.
+
+Its driver mode—which takes CPU and GPU timestamps of each frame's render submission from the driver through four entry points of `igdext64.dll` (`_INTC_D3D12_GetLatencyReductionStatus`, `_INTC_D3D12_LatencyReductionExt`, `_INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers`, `_INTC_D3D12_RenderSubmitStart`) in an undocumented buffer layout—does not start under Proton: `libxell.dll` checks `GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")` before anything else and keeps its built-in context whenever that export exists. What `libxell.dll` requires behind that check, and the shim's experimental probe for the interface (`IGDEXT_XELL_PROBE`, `tools/xell-probe.sh`), are documented in [debugging.md](debugging.md) and `shim/src/dll/XellDriver.cpp`.
+
+The shim hooks `libxell.dll` (and `libxess_fg.dll`, using `LdrRegisterDllNotification` and patching their 5-byte `jmp rel32` export thunks via `PatchThunk` in `shim/src/dll/XellHook.cpp`) for two things:
+
+1. **Wuthering Waves 30 fps frame-cap fix and `IGDEXT_XELL_CAP=<us>` (`Hook_SetSleepMode`):** Wuthering Waves hands `xellSetSleepMode` a 33.3 ms (`33333` us) frame cap right after enabling frame generation, locking the game to 30 fps until the pause menu is opened and closed. A non-zero cap arriving within 1.5 s (`1500` ms) of `xellSetFgEnabled(1)` is replaced by the previous interval (`g_savedInterval`). This applies to Wuthering Waves only by default (`IGDEXT_XELL_FIXCAP=1` enables it for other games; `IGDEXT_XELL_KEEPCAP=1` disables it). Also inside `Hook_SetSleepMode`, if `IGDEXT_XELL_CAP=<us>` (`0..1000000`) is set, any `minimumIntervalUs` smaller than `<us>` is raised to `<us>` when the game calls `xellSetSleepMode` (a game that never calls `xellSetSleepMode` gets no cap from it).
+2. **Low-latency queue pacing (`AutoPaceWait`):** XeLL's built-in context sleeps only for a manual frame cap; its own estimate of CPU time includes time spent waiting in the GPU queue, so a queued game looks CPU-bound to XeLL and never waits. While frame generation runs (the shim tracks the most recent call to `xefgSwapChainSetEnabled` or `xellSetFgEnabled`), `AutoPaceWait` waits right after `xellSleep` until one frame's CPU time before the GPU gets free:
+   ```text
+   target_start = newest_finished_present_end + (frames_in_flight * frame_time) - min(sim_start -> render_submit) - margin
+   ```
+   * The timestamps (`simS`, `rsS`, `prE`) and the minimum `sim_start -> render_submit` CPU time (`cpuMin`, ignoring values `< 0.5` ms) come from the last 64 frames in `xellGetFramesReports`.
+   * The uncapped frame time (`uncappedMs`) is learned before any wait (three intervals 30 frames apart agreeing within 3%) and is only raised when `cpuMin` exceeds its baseline (`cpuBase`, which drops to any new minimum at once and rises by 0.2% of the gap per frame) by more than `4` ms for 30 consecutive frames—which indicates a real GPU queue has formed in a heavier scene—so the wait cannot drift the frame rate down. In a lighter scene (`gMs < uncappedMs`), the wait uses the lower frame time at once, and `uncappedMs` follows it down by at most 0.1% per frame.
+   * The wait is bounded to two frame times (`2 * g`), sleeps via `NtDelayExecution` in 100 ns units up to a decaying wake-up slack, and yields with `SwitchToThread()` for the final remainder (0.2 to 2 ms). `IGDEXT_XELL_CAP=off` turns it off ([../launch-options.md](../launch-options.md)).
+
+---
+
+## 8. The D3D11 Bridge (`dx11bridge/libxess_dx11.dll`)
+
+Intel's `libxess_dx11.dll` contains no upscaler: it forwards every call to the XeSS implementation inside the Intel Windows D3D11 driver, which does not exist under Proton, so a D3D11 game never gets XeSS. With `XESS=latest`, `tools/proton-hook.py` replaces the game's `libxess_dx11.dll` with `dx11bridge/libxess_dx11.dll` (`dx11bridge/xess_dx11.cpp`, stamped with FileVersion `2.0.2.68` in `version.rc` so DXVK's DXGI does not hide the Intel GPU) and places the XeSS SDK's `libxess.dll` next to it if missing.
+
+`dx11bridge/libxess_dx11.dll` implements the public `xess_d3d11.h` and `xess.h` APIs on top of the D3D12 XeSS in `libxess.dll`:
+1. **Companion D3D12 device (`Setup`):** When `xessD3D11CreateContext` is called, the bridge queries `ID3D11Device5`, `ID3D11DeviceContext4`, and the underlying `IDXGIAdapter` from the game's D3D11 device (DXVK), creates a D3D12 device (vkd3d-proton) on the same GPU adapter, a direct command queue, a 3-slot command allocator/list ring (`RING = 3`), and a D3D12 `xess_context_handle_t` via `xessD3D12CreateContext`. It also creates a shared timeline fence (`ID3D11Device5::CreateFence` with `D3D11_FENCE_FLAG_SHARED`) opened on D3D12 via `OpenSharedHandle`.
+2. **Shared textures and depth conversion (`SharedFor`, `CopyIn`, `depth_copy.hlsl`):** For each input slot (`color`, `velocity`, `depth`, `exposure`, `mask`) and `output`, the bridge creates a D3D11 texture with `D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE` (converting typeless and sRGB formats to typed non-sRGB via `CopyFormat`) and opens its NT handle on D3D12. Because depth formats (`D24_UNORM_S8_UINT`, `D32_FLOAT_S8X24_UINT`, `D32_FLOAT`, `D16_UNORM`, or typeless equivalents with `D3D11_BIND_DEPTH_STENCIL`) cannot be shared across D3D11 and D3D12, a depth input is copied into a shared `DXGI_FORMAT_R32_FLOAT` UAV texture by dispatching a small CS 5.0 compute shader (`dx11bridge/depth_copy.hlsl`, `8x8x1` threads) on the game's D3D11 immediate context, saving and restoring the game's bound compute shader, SRV slot 0, UAV slot 0, and constant buffer slot 0.
+3. **Per-frame execution (`Execute`):**
+   * **D3D11:** Copies the game's input regions into the shared textures (running `depth_copy.hlsl` for depth), signals the shared fence (`v_in`), and flushes the D3D11 context.
+   * **D3D12:** Waits on the shared fence for `v_in`, transitions the shared inputs from `COMMON` to `NON_PIXEL_SHADER_RESOURCE` and the output to `UNORDERED_ACCESS`, records `xessD3D12Execute` (which runs on XMX through the shim and driver/layer just like a D3D12 game), transitions the resources back to `COMMON`, executes the command list, and signals `v_out`.
+   * **D3D11:** Waits on the shared fence for `v_out` and copies the result from the shared output texture into the game's D3D11 output texture.
+
+---
+
+## 9. The Vulkan Wrapper (`vkwrap/vulkan-1.dll`)
+
+XeSS's Vulkan backend (`xess_vk.h`) runs its XMX kernels only when the Intel Windows driver provides three interfaces outside the Khronos Vulkan registry:
+* A physical-device properties structure (`sType = 0x303268d1`) chained into `vkGetPhysicalDeviceProperties2` reporting that the path is supported (`{ supported, xmx, f2, simd16, f4 }`),
+* A shader-module creation structure (`sType = 0x303268d0`) chained into `vkCreateShaderModule` carrying the CM kernel's build options (`{ sType, pNext, options, internal }`),
+* A device function `vkCmdPushXeSSDescriptorsINTEL(commandBuffer, count, pDescriptorWrites)` that pushes the kernels' descriptors before each dispatch.
+
+Wine's `winevulkan` passes on only what the Vulkan registry defines and drops unknown `pNext` structures, so under stock Proton XeSS logs `Unable to initialize Intel Extensions layer. Using suboptimal implementation.` and runs DP4a. (XeSS also skips the Intel path whenever `VkLayer_khronos_validation.dll` is loaded.)
+
+When `XESS=latest` is used on a game that has `libxess.dll` and whose executable imports `vulkan-1.dll` (or when `XESS_VK=1` is set), `tools/proton-hook.py` links `vkwrap/vulkan-1.dll` next to the game executable, sets `WINEDLLOVERRIDES="vulkan-1=n,b"`, and enables `VK_LAYER_XESS_xmx`. `vkwrap/vulkan-1.dll` (`vkwrap/vkwrap.c` + `stubs.asm` generated by `vkwrap/gen.py` from the 262 exports in `vkwrap/exports.txt`) forwards 259 standard Vulkan exports via assembly jump stubs to Wine's `C:\windows\system32\vulkan-1.dll` and implements `vkGetInstanceProcAddr`, `vkGetDeviceProcAddr`, and `vkCreateDevice` in C to intercept:
+1. **Device creation and layer self-test (`w_cdev`, `layer_test`):** Enables `VK_KHR_push_descriptor` on the device, deletes any old `C:\igdext_kernels\layer_canary`, and creates a compute pipeline from a 51-word SPIR-V self-test placeholder (`LocalSize 1 1 19`, constants `0x584D5843`, `0x00414E43`, `0x7FA15952`) with an empty pipeline layout (`nsets = 0`). When `VK_LAYER_XESS_xmx` sees that placeholder on a supported Xe3 device (`0xB080`–`0xB08F` or `0xFD80`–`0xFD8F`), it writes both `anv_canary` and `layer_canary`. `vkwrap` checks for `layer_canary` specifically, because the patched ANV driver also writes `anv_canary` for D3D12 games but does not implement the Vulkan descriptor push.
+2. **Properties query (`w_gpdp2`, `w_gpdp2khr`):** Unlinks `sType = 0x303268d1` from `VkPhysicalDeviceProperties2::pNext` before calling Wine, then relinks it and fills its five `uint32_t` fields: `supported = (vendorID == 0x8086 && layer_ok == 1)`, `xmx = 1`, `f2 = 1` (needed by XeSS model selection), `simd16 = !dg2` (`0` for `0x56xx`, `1` for Xe2/Xe3), `f4 = 0`. Without `layer_canary`, `supported` is `0` and XeSS stays on DP4a.
+3. **CM shader modules (`w_csm`):** Unlinks `sType = 0x303268d0` from `VkShaderModuleCreateInfo::pNext`, hashes the SPIR-V and build options with 64-bit FNV-1a, writes `C:\igdext_kernels\<hash>.spv` and `<hash>.opt` (sharing the same files and compiled `.cml` cache as D3D12 games), and calls Wine's `vkCreateShaderModule` with a 51-word SPIR-V placeholder (`LocalSize 1 1 23`, constants `0x584D5843`, `hash_lo`, `hash_hi`).
+4. **Descriptor push (`vkCmdPushXeSSDescriptorsINTEL`):** Returned from `vkGetInstanceProcAddr` and `vkGetDeviceProcAddr`. It calls `vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, VK_NULL_HANDLE, 0x58455353, count, writes)`. In `VK_LAYER_XESS_xmx` (`layer/src/layer.c`), `x_CmdPushDescriptorSetKHR` catches calls with `layout == VK_NULL_HANDLE` and `set == 0x58455353` (`XMX_VK_PUSH_SET`), stores the pushed samplers, images, and buffers on the command buffer without passing the call to the driver, and at `vkCmdDispatch` (`k->vkpush`, identified by `pl->nsets == 0`) writes surface `k` from the `k`-th pushed resource into the layer's descriptor set.
+
+---
+
+## 10. FSR on XeSS Internals (`ffxfg/`)
+
+### Upscaling (`ffxfg/ffx_xess.cpp`, `amd_fidelityfx_upscaler_dx12.dll`)
+
+The game's FFX upscale context (`FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE`) becomes an XeSS SR context on the same D3D12 device:
+* **Reported versions:** Reports itself as both FSR `4.0.2` (`0xF5A5CA1E01000002`) and FSR `3.1.5` (`0xF5A5CA1E00C01005`), so games that offer an FSR option only for one of them (such as Cyberpunk 2077's "FSR 4" option) find it.
+* **Setup queries:** Answers the game's queries for upscale ratio (`NativeAA = 1.0`, `Quality = 1.5`, `Balanced = 1.7`, `Performance = 2.0`, `UltraPerformance = 3.0`), render resolution, jitter phase count (`int(8.0 * (displayW / renderW)^2)`), and Halton base-2 / base-3 jitter offsets with FSR 3.1's exact numbers, so the game renders just as it would for FSR.
+* **Initialization and flags (`PickQuality`, `SetUp`):** XeSS is initialized at the first upscale dispatch (and re-initialized if the output resolution or flags change) with the lowest XeSS quality setting whose optimal input resolution reaches the game's `maxRenderSize` (mapping FSR Quality 1.5x to XeSS Ultra Quality 1.5x); XeSS accepts any dynamic render size inside that setting's range. FFX flags map onto XeSS's: `INVERTED_DEPTH`, `HIGH_RES_MV` (display-resolution motion vectors), `JITTERED_MV`, `ENABLE_AUTOEXPOSURE` or `EXPOSURE_SCALE_TEXTURE`, and `LDR_INPUT_COLOR` when `FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE` is not set.
+* **Dispatch (`Upscale`):** The motion vector scale (`motionVectorScale.x`, `motionVectorScale.y`) goes to `xessSetVelocityScale` unchanged (both APIs multiply by it to get pixels). Resource barriers transition the inputs to `NON_PIXEL_SHADER_RESOURCE` and the output to `UNORDERED_ACCESS` before `xessD3D12Execute` and restore their original states afterwards. `FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK` is a no-op because XeSS does not read an FFX reactive mask.
+
+### Frame Generation (`ffxfg/ffx_xefg.cpp`, `amd_fidelityfx_framegeneration_dx12.dll`)
+
+The game creates two kinds of FidelityFX contexts, and the DLL maps them onto XeSS-FG (`libxess_fg.dll`) and XeLL (`libxell.dll`):
+* **Frame generation swap chain (`WRAP_DX12`, `NEW_DX12`, or `FOR_HWND_DX12`):** Becomes an XeSS-FG proxy swap chain (`xefgSwapChainD3D12InitFromSwapChain` or `InitFromSwapChainDesc`) paired with an XeLL context (`xefgSwapChainSetLatencyReduction`; XeSS-FG requires one). The game receives `FgSwapChain`, a thin `IDXGISwapChain4` wrapper around the proxy that sends the XeLL present markers (`XellStartFrame` / `XellMarker`, tracked in an 8-slot per-frame-ID ring `st->xellFrames[8]` so `xellSleep` and the six markers `SIMULATION_START .. PRESENT_END` always go out in strict order even across threads) and sets the present ID (`xefgSwapChainSetPresentId`).
+* **Frame generation context (`FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION`):** Each frame's `PREPARE` or `PREPARE_V2` dispatch (`TagPrepare`) tags depth (`XEFG_SWAPCHAIN_RES_DEPTH`) and motion vectors (`XEFG_SWAPCHAIN_RES_MOTION_VECTOR`) with `XEFG_SWAPCHAIN_RV_ONLY_NOW` (so XeSS-FG copies them on the game's command list; `FFX_XEFG_VALIDITY=0` uses `RV_UNTIL_NEXT_PRESENT` without a copy as a measuring aid) and tags `xefgSwapChainTagFrameConstants` with jitter, velocity scale, `frameTimeDelta`, and left-handed view and perspective projection matrices (`BuildView`, `BuildProjection`) built from the camera position, right/up/forward vectors, FOV, and near/far planes. The `HUDLessColor` resource from `ffxConfigure` becomes XeSS-FG's UI composition input (`XEFG_SWAPCHAIN_RES_HUDLESS_COLOR` + `XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED`, disabled by `FFX_XEFG_HUDLESS=0`). The game's own `FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION` interpolation dispatch is a no-op: XeSS-FG interpolates inside the proxy swap chain's `Present`.
+
+XeSS-FG is initialized when the swap chain is created, before the game's frame generation context declares its depth and motion-vector flags. The DLL loads the flags the game gave on its previous run from `%LOCALAPPDATA%\ffx_xefg\<exe>.flags` (`LoadFlags` / `SaveFlags`); on the first run of a game it assumes inverted depth (`FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED`), and logs `wrong until the game starts again` in `ffx_xefg.log` if the game's flags differ.
+
+If a game requires `FSR_VENDOR=amd` (`dxgi.customVendorId = 1002`), `IntelVendorForXess` hooks `IDXGIAdapter::GetDesc*` (vtable slots `8, 10, 11, 18`) and returns `VendorId = 0x8086` whenever the return address lies inside `libxess_fg.dll` or `libxell.dll` and the adapter description starts with `L"Intel"`.
+
+Three swap-chain behaviors that games otherwise trip over are handled inside `FgSwapChain`:
+* **Frame latency waitable object:** Games wait on `GetFrameLatencyWaitableObject()` before starting each frame. Returning the XeSS-FG proxy's own waitable object deadlocked CONTROL Resonant within seconds, so `FgSwapChain` returns a duplicated handle to its own semaphore (`st->latencySem`), released as soon as `Present` / `Present1` returns. With `FFX_XEFG_PACE=1` (off by default; CONTROL Resonant at 6x showed no gain), `FrameDone` signals a D3D12 fence on the game's command queue after each present, and a dedicated high-priority thread (`PaceThread`) releases the semaphore when the GPU reaches that fence value, or after a 200 ms watchdog timeout regardless.
+* **Swap chain lifetime:** FFX's swap chain context holds a reference to the swap chain until `ffxDestroyContext`, and some games rely on that (Wuthering Waves releases its own reference and keeps presenting). `ScState` holds `st->contextRef` on `FgSwapChain` until `ffxDestroyContext`.
+* **Exclusive fullscreen:** XeSS-FG does not interpolate in exclusive fullscreen. When `g_noExclusive` is on (default; `FFX_XEFG_EXCLUSIVE=1` disables it), `SetFullscreenState(TRUE)` records `fakeFullscreen = TRUE` and returns `S_OK` while keeping the swap chain windowed (under gamescope it looks identical); after a mode change or `ResizeBuffers*`, `Recheck()` toggles `xefgSwapChainSetEnabled(0)` so interpolation is re-enabled on the next present.
+
+### `FSR_FG=inject` (`ffxfg/dxgi_xefg.cpp`, `xefg_bridge.h`)
+
+For a game with FSR 3.1+ upscaling and no FSR frame generation, `dxgi_xefg.cpp` (`dxgi.dll` in the game folder) forwards all DXGI exports to the prefix's `system32\dxgi.dll` and patches vtable slots `10` (`IDXGIFactory::CreateSwapChain`) and `15` (`IDXGIFactory2::CreateSwapChainForHwnd`) on every DXGI factory. When the device passed to swap chain creation supports `ID3D12CommandQueue`, `Bridge()` loads `ffx_xefg_bridge.dll` (`amd_fidelityfx_framegeneration_dx12.dll` under a name the FidelityFX loader ignores) and calls `XefgBridgeCreateSwapChain` (guarding against recursion with `g_creating` while XeSS-FG creates the underlying swap chain); any non-D3D12 swap chain, or one where XeSS-FG fails, stays plain.
+
+On each upscale dispatch, `ffx_xess.cpp` calls `XefgBridgeFrame` with the frame's depth, motion vectors, jitter, frame time, and camera planes (`cameraNear`, `cameraFar`, `cameraFovY`, with an identity view matrix). Because a game may record a frame's upscale before presenting the previous frame, `XefgBridgeFrame` assigns its own monotonic frame IDs (`++st->nextId`) and queues them in `st->pending`; `BeforePresent` pops them in order, and any present without a queued upscale (menus, loading screens) is not interpolated.
+
+---
+
+## 11. Optical Flow Frame Generation Internals (`OFLOW_FG=1`)
+
+When `OFLOW_FG=1` (`FFX_XEFG_OFLOW=1`) is set, `dxgi.dll` and `ffx_xefg_bridge.dll` wrap the game's D3D12 swap chain in the same XeSS-FG proxy swap chain as `FSR_FG=inject`, initialized with `XEFG_SWAPCHAIN_INIT_FLAG_HIGH_RES_MV` (display-size motion vectors in pixels, non-inverted depth, no HUD-less or UI texture).
+
+### Motion Vector Estimation and Expansion (`ffxfg/ffx_oflow.cpp`)
+
+On every present (`BeforePresent` in `ffxfg/ffx_xefg.cpp`), before the proxy swap chain presents the current backbuffer:
+1. **Optional downsampling (`ffxfg/oflow_down.hlsl`):** When `FFX_XEFG_OFLOW_DIV=n` (`2..4`, default `1`), a CS 6.0 compute shader box-filters the current backbuffer into a `1/n`-size `R8G8B8A8_UNORM` texture (`o->lowres`), keeping the values in the swap chain's transfer function (sRGB or PQ).
+2. **FidelityFX Optical Flow (`ffxOpticalflowContextDispatch`):** Linked statically from FidelityFX SDK 1.1.4 (`ffxfg/build-ffxsdk.bat`), estimates how each 8x8 block of the image moved since the previous present, writing block motion vectors (`R16G16_SINT`, `o->vec`) and scene-change detection (`R32_UINT`, `o->scd`).
+3. **Per-pixel expansion and constant depth (`ffxfg/oflow_expand.hlsl`):** A CS 6.0 compute shader (`8x8x1`) bilinearly interpolates the 8x8 block vectors (between block centers) into a display-size `R16G16_FLOAT` motion vector texture (`o->mv`, scaled by `div`) and, on the first run only (`writeDepth`), fills a display-size `R32_FLOAT` depth texture (`o->depth`) with `FFX_XEFG_OFLOW_DEPTH` (default `1.0`). Both textures stay in `NON_PIXEL_SHADER_RESOURCE | PIXEL_SHADER_RESOURCE` (`kOflowOutState`).
+4. **Tagging (`OflowTag`):** `BeforePresent` generates a frame ID (`++st->nextId`), measures the elapsed QPC frame time `ms`, and tags `o->depth` and `o->mv` (`XEFG_SWAPCHAIN_RV_UNTIL_NEXT_PRESENT`) along with an identity view and projection matrix, zero jitter, `motionVectorScale = 1.0`, and `resetHistory = (first || ms > 250.0f)`.
+
+### GPU-Clock-Normalized Automatic Frame Cap (`FFX_XEFG_CAP=auto`)
+
+Because generated frames sit between two rendered ones, swings in the rendered frame rate show directly. By default with `OFLOW_FG=1` (`FFX_XEFG_CAP=auto`), `CapAdjust` (`ffxfg/ffx_xefg.cpp`) paces rendered frames through XeLL's frame cap (`xellSetSleepMode` with `minimumIntervalUs = cap / mult`, since XeLL counts every displayed frame):
+1. **GPU frame time measurement (`HookEcl`, `OflowFrameStart`):** `HookQueue` patches vtable slot `10` (`ExecuteCommandLists`) of the game's `ID3D12CommandQueue`. On the game's first command list submission after a present (`g_wantFrameStart`), `OflowFrameStart` submits a start `TIMESTAMP` query on the queue; the next `OflowRun` submits the end `TIMESTAMP` query right after `oflow_expand.hlsl` and resolves the pair into a readback buffer (8 frames in flight, never blocking inside `ExecuteCommandLists`).
+2. **GPU clock scaling (`GpuFreqMhz`):** When a frame cap lets the GPU idle, the kernel driver's governor lowers the GPU clock and the same workload takes more milliseconds; without clock scaling, the auto-cap would chase its own tail downward. Every 4th present, `GpuFreqMhz` reads the actual GPU frequency in MHz from the Linux `xe` driver's sysfs via Wine's `Z:` drive (`Z:\sys\class\drm\card<0..3>\device\tile0\gt0\freq0\act_freq`) and tracks the reference busy clock `capFreqRef` (decaying by `0.998` per 30-frame window, ~6% per minute). Each 30-frame window's 90th-percentile GPU time `p90` (after filtering outliers `> 3x` the median) is scaled by `fNow / capFreqRef` (`p90n`).
+3. **Learned overhead and hysteresis:** To `p90n`, `CapAdjust` adds `capPad`—what a frame needs beyond the measured GPU time for XeSS-FG interpolation and presentation, starting at `FFX_XEFG_CAP_PAD` (default `1.5` ms) and learned from windows where the GPU could not keep up (`sleepMed < 0.3` ms and `p90n > 0.7 * frameMed`)—plus 3% (`needMs * 1030.0f` us). The interval is bounded between one display refresh per displayed frame (`1e6 / DisplayHz() * mult + 1`) and `50000` us. It steps up immediately when `want > cap * 1.04f`, and steps down by at most 2% after 2 calm windows in a row (`want < cap * 0.96f`), never dropping below a slowly decaying floor (`capFloor`, `0.999` per window) set whenever the GPU falls behind.
+4. **Outside limiters:** When the game reaches an outside limit (gamescope's frame limit or the display's refresh rate), it waits inside `Present` while XeLL hardly sleeps and the GPU has spare headroom (`sleepMed < 0.3` ms, `presentMed > 0.3 * frameMed`, `needMs < 0.7 * frameMed`). Fighting that outside limit caused XeSS-FG to drop generated frames, so `CapAdjust` sets `minimumIntervalUs = 0` (`capOff = true`) and lets that limit pace the game until the game stops waiting in `Present` (`presentMed <= 0.15 * frameMed` or `needMs >= 0.8 * frameMed`).

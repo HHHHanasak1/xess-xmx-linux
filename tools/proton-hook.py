@@ -10,7 +10,7 @@
 #                           IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1)
 #   FSR=xess %command%      a game's FSR 3.1+ runs on XeSS: its amd_fidelityfx_upscaler_dx12.dll and
 #                           amd_fidelityfx_framegeneration_dx12.dll become the package's (ffxfg/, XeSS SR and XeSS-FG,
-#                           docs/fsr-frame-generation.md), with the SDK's libxess.dll, libxess_fg.dll and libxell.dll
+#                           docs/frame-generation.md), with the SDK's libxess.dll, libxess_fg.dll and libxell.dll
 #                           next to them. FSR 3.1.0-3.1.3 has everything in one amd_fidelityfx_dx12.dll: AMD's loader
 #                           takes its place, with the providers next to it (tools/get-ffx.sh, <package>/ffx)
 #   FSR_FG=xess %command%   only the frame generation (the game's own FSR upscaler stays)
@@ -18,7 +18,7 @@
 #                           the game gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/)
 #   OFLOW_FG=1 %command%    experimental, any DX12 game: the same dxgi.dll next to the game's executable, XeSS-FG fed
 #                           with motion vectors from optical flow on the final image (FFX_XEFG_OFLOW=1,
-#                           docs/optical-flow-frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame
+#                           docs/frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame
 # Debug: FSR_VENDOR=amd (DXVK reports the GPU as AMD's, for a game that offers FSR only on AMD GPUs; XeSS still gets
 # Intel's vendor id from the package's DLLs).
 # (XESS_FG=<n>, the frame generation override, needs no hook: ControlLib.dll and the shim read it in the game)
