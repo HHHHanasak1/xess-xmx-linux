@@ -9,7 +9,7 @@
 - **XMX** (Xe Matrix Extensions, the GPU's hardware matrix engines): the native path this project enables.
 - **FG 3x**: XeSS frame generation at 3x (`XESS_FG=3`). XeSS's generic path offers at most 2x, so DP4a is compared without frame generation only.
 - **26.1.2 / 26.3**: this project's patched Mesa ANV (Intel's open-source Vulkan driver) builds from release `20261104` (Mesa `26.1.2` / `26.3.0-rc3`).
-- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels (first as `xmx-stock.sh`, experimental, from release `20261107`; the package's unpatched driver + layer is now the session default on Xe3 `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`, see [drivers.md](drivers.md)).
+- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels. It was first available as `xmx-stock.sh` (experimental) from release `20261107`. The package's unpatched driver + layer is now the session default on Xe3 ([drivers.md](drivers.md)). Xe3 here means `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`.
 - All runs use the libraries from Intel's XeSS SDK 3.0.2 (`XESS=latest`).
 
 ---

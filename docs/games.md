@@ -13,7 +13,7 @@ For every other case, find what your game ships in the list below. All launch op
 * **No XeSS Frame Generation and no FSR frame generation, but FSR 3.1+ upscaling:** `FSR=xess FSR_FG=inject %command%` adds XeSS frame generation fed by the FSR upscaler ([frame-generation.md](frame-generation.md#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)). *Example: Forza Horizon 6, whose own frame generation is NVIDIA DLSS-G only.*
 * **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds experimental frame generation from optical flow on the final image; there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1-experimental)). *Examples: Resident Evil 4 (2023), Viewfinder.*
 * **D3D11 with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-d3d11-game)).
-* **Vulkan with XeSS (Xe3 `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F` only):** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)).
+* **Vulkan with XeSS (Xe3 only):** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)). Xe3 here means `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`.
 
 If the game still runs XeSS on DP4a or sees no Intel GPU, see [troubleshooting.md](troubleshooting.md).
 
@@ -103,14 +103,14 @@ To run XeSS on XMX in a Vulkan game (on **Xe3** GPUs `0xB080`–`0xB08F` and `0x
    ```text
    XESS=latest %command%
    ```
-   If the game loads `vulkan-1.dll` dynamically at runtime (via `LoadLibrary` instead of listing `vulkan-1.dll` in its `.exe` import table) and stays on DP4a with `XESS=latest` alone, add `XESS_VK=1`:
+   Some games load `vulkan-1.dll` dynamically at runtime. They call `LoadLibrary` instead of listing `vulkan-1.dll` in their `.exe` import table. If such a game stays on DP4a with `XESS=latest` alone, add `XESS_VK=1`:
    ```text
    XESS=latest XESS_VK=1 %command%
    ```
    (To prevent `XESS=latest` from placing `vulkan-1.dll` in a non-Vulkan game where it gets in the way, set `XESS_VK=0`.)
 2. Enable **XeSS** in the game's graphics settings.
 
-When `XESS=latest` detects a game that has `libxess.dll` and imports `vulkan-1.dll` (or when `XESS_VK=1` is set), the hook places the package's `vkwrap/vulkan-1.dll` next to the game executable while it runs and enables `VK_LAYER_XESS_xmx` (`layer/`). `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`, intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer.
+When `XESS=latest` detects a game that has `libxess.dll` and imports `vulkan-1.dll`, or when `XESS_VK=1` is set, the hook does two things while the game runs. It places the package's `vkwrap/vulkan-1.dll` next to the game executable, and it enables `VK_LAYER_XESS_xmx` (`layer/`). This `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`. It intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer.
 
 Notes and requirements for Vulkan games:
 * **Xe3 GPUs `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F` only:** `VK_LAYER_XESS_xmx` serves only these. On Xe-HPG, Xe2 and other Xe3 IDs, the layer does not answer `vulkan-1.dll`'s self-test (`layer_canary`), so `vulkan-1.dll` reports the Intel path as unavailable and XeSS stays on DP4a.

@@ -25,8 +25,8 @@ Many games (such as Cyberpunk 2077) only offer 2x frame generation in their menu
 XESS=latest XESS_FG=4 %command%
 ```
 
-* **2x to 4x (`XESS_FG=2`, `XESS_FG=3`, `XESS_FG=4`):** Matches the range of the frame generation override in Intel Graphics Software on Windows. `install.sh` and `enable.sh` place `ControlLib.dll` (`C:\windows\system32\ControlLib.dll`) into each prefix to answer `libxess_fg.dll`'s override query (`ControlLib.dll` accepts `XESS_FG` up to `16` and reports anything above `4` as 4x).
-* **5x to 8x (`XESS_FG=5` .. `XESS_FG=8`, experimental):** `libxess_fg.dll` ignores `ControlLib.dll` overrides above 4x, so the shim (`igdext64.dll`) raises the maximum number of interpolated frames inside `libxess_fg.dll` at runtime (capped at `8`; if verification through the public API fails, the game stays at 4x). Intel does not support more than 4x. All four multipliers (`5` to `8`) work and were tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390, but every step above 4x lowers the base rendered frame rate and adds input latency. **7x and 8x are not recommended** because of the latency.
+* **2x to 4x (`XESS_FG=2`, `XESS_FG=3`, `XESS_FG=4`):** Matches the range of the frame generation override in Intel Graphics Software on Windows. To answer the override query of `libxess_fg.dll`, `install.sh` and `enable.sh` place `ControlLib.dll` into each prefix. The file goes to `C:\windows\system32\ControlLib.dll`. The DLL accepts `XESS_FG` up to `16` and reports anything above `4` as 4x.
+* **5x to 8x (`XESS_FG=5` .. `XESS_FG=8`, experimental):** `libxess_fg.dll` ignores `ControlLib.dll` overrides above 4x. So the shim (`igdext64.dll`) raises the maximum number of interpolated frames inside `libxess_fg.dll` at runtime, capped at `8`. If verification through the public API fails, the game stays at 4x. Intel does not support more than 4x. All four multipliers (`5` to `8`) work and were tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390, but every step above 4x lowers the base rendered frame rate and adds input latency. **7x and 8x are not recommended** because of the latency.
 * **In-game toggles:** You still switch frame generation on and off in the game's menu. In a game with its own multi-frame menu (such as Wuthering Waves, which offers 2x/3x/4x), `XESS_FG` takes precedence over the menu's number while still letting you turn frame generation off in the menu.
 * **Fallback limit:** If the XMX path falls back to generic shaders (because the self-test failed or a kernel failed to compile), generic XeSS frame generation is limited to 2x. A game set to 3x or 4x will run at 2x until the XMX path works again.
 
@@ -59,10 +59,10 @@ To remove the queue, the shim (`igdext64.dll`) hooks XeLL and paces each frame s
 |---|---|---|
 | `IGDEXT_XELL_CAP=off %command%` (or `0`) | Turns low-latency pacing off | Comparing latency/frame rate, or if low-latency pacing costs frame rate or causes uneven pacing in a game |
 | `IGDEXT_XELL_CAP=auto:<ms> %command%` | Keeps low-latency pacing on, starting each frame `<ms>` milliseconds earlier (or later if negative) | Giving the game more frame-rate headroom at the cost of a little more latency (for example, `IGDEXT_XELL_CAP=auto:2 %command%`) |
-| `IGDEXT_XELL_CAP=<us> %command%` | Turns low-latency pacing off and, when the game calls `xellSetSleepMode`, raises any smaller interval to `<us>` microseconds per displayed frame (`1` to `1000000`; `0` = off) through XeLL's frame cap (any other value turns both off; a game that never calls `xellSetSleepMode` gets no cap from it) | Locking a steady fixed frame rate through XeLL |
+| `IGDEXT_XELL_CAP=<us> %command%` | Turns low-latency pacing off. When the game calls `xellSetSleepMode`, raises any smaller interval to `<us>` microseconds per displayed frame through XeLL's frame cap. Valid values: `1` to `1000000`; `0` = off. Any other value turns both off. A game that never calls `xellSetSleepMode` gets no cap from it | Locking a steady fixed frame rate through XeLL |
 | `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves 30 fps frame-cap fix in any game | Another game drops to 30 fps when enabling frame generation until a menu is opened and closed |
 | `IGDEXT_XELL_KEEPCAP=1 %command%` | Turns the Wuthering Waves 30 fps frame-cap fix off | Ruling out the cap fix when debugging |
-| `IGDEXT_XELL_LOG=1 %command%` | Writes `C:\igdext_xell.log` inside the game's prefix | Checking low-latency pacing state: logs `low latency: on`, `fixed cap` or `off` at start, `auto: frame generation on/off (...)`, `auto: frame time ...` once learned, `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames |
+| `IGDEXT_XELL_LOG=1 %command%` | Writes `C:\igdext_xell.log` inside the game's prefix | Checking low-latency pacing state. At start, it logs `low latency: on`, `fixed cap` or `off`. It logs `auto: frame generation on/off (...)` and, once learned, `auto: frame time ...`. It logs `auto: queue ...` when a heavier scene raises it, and `auto: waited in N of 100 frames` every 100 frames |
 
 **Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
 
@@ -103,10 +103,10 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
    FSR=xess XESS_FG=4 %command%
    ```
 
-   * `FSR=xess` links the package's upscaler and frame generation DLLs into the game folder while the game runs (`tools/proton-hook.py`, the same way as `XESS=latest`: originals are kept as `<name>.xmx-orig` and restored when the game exits). Next to them go the XeSS SDK's `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` (`xess/`, fetched by `install.sh` / `tools/get-xess.sh`); if the game has a newer copy of its own, that copy stays.
+   * `FSR=xess` links the package's upscaler and frame generation DLLs into the game folder while the game runs (`tools/proton-hook.py`, the same way as `XESS=latest`: originals are kept as `<name>.xmx-orig` and restored when the game exits). Next to them go the XeSS SDK's `libxess.dll`, `libxess_fg.dll`, and `libxell.dll`. They come from `xess/`, fetched by `install.sh` / `tools/get-xess.sh`. If the game has a newer copy of its own, that copy stays.
    * `FSR_FG=xess` replaces only the frame generation DLL and keeps the game's FSR upscaling.
    * `XESS_FG=<n>` sets the number of frames ([Setting the Multiplier](#setting-the-multiplier-xess_fg)); without it, XeSS-FG runs at 2x. The game's own frame generation menu (often 2x only) no longer decides the number.
-   * For a game with FSR 3.1.0 to 3.1.3 (upscaling and frame generation in one `amd_fidelityfx_dx12.dll`), AMD's loader from FSR SDK 2.4.0 (`ffx/amd_fidelityfx_loader_dx12.dll`, fetched by `install.sh` / `tools/get-ffx.sh`; license in `ffx/license.md`) takes that file's place, with the package's DLLs next to it (or AMD's upscaler + the package's frame generation when using `FSR_FG=xess`).
+   * A game with FSR 3.1.0 to 3.1.3 has upscaling and frame generation in one `amd_fidelityfx_dx12.dll`. For such a game, AMD's loader from FSR SDK 2.4.0 takes that file's place, with the package's DLLs next to it. When using `FSR_FG=xess`, AMD's upscaler + the package's frame generation go next to it instead. The loader is `ffx/amd_fidelityfx_loader_dx12.dll`, fetched by `install.sh` / `tools/get-ffx.sh`; its license is in `ffx/license.md`.
 
 2. In the game, choose **FSR** upscaling and turn on **FSR frame generation**. The menu still says FSR.
 
@@ -125,7 +125,7 @@ tools/fsr-fg.sh off <app id | game folder>      # restore the game's own files
 tools/fsr-fg.sh status <app id | game folder>   # show what each DLL in the game folder is
 ```
 
-Unlike the `FSR=xess` hook, `tools/fsr-fg.sh all` looks for `amd_fidelityfx_framegeneration_dx12.dll` (or the single `amd_fidelityfx_dx12.dll`) and swaps `amd_fidelityfx_upscaler_dx12.dll` next to it; a game folder that has only `amd_fidelityfx_upscaler_dx12.dll` and no frame generation DLL is refused (`no FSR 3.1+ frame generation`). A game update or Steam's file verification restores the game's own DLLs; run `all` or `on` again afterwards. `uninstall.sh` switches every game back automatically.
+Unlike the `FSR=xess` hook, `tools/fsr-fg.sh all` looks for a frame generation DLL: `amd_fidelityfx_framegeneration_dx12.dll` or the single `amd_fidelityfx_dx12.dll`. It swaps `amd_fidelityfx_upscaler_dx12.dll` next to that DLL. A game folder that has only `amd_fidelityfx_upscaler_dx12.dll` and no frame generation DLL is refused (`no FSR 3.1+ frame generation`). A game update or Steam's file verification restores the game's own DLLs; run `all` or `on` again afterwards. `uninstall.sh` switches every game back automatically.
 
 ### A Game That Offers FSR Only on AMD GPUs (`FSR_VENDOR=amd`)
 
@@ -158,7 +158,7 @@ Forza Horizon 6 has FSR upscaling and XeSS super resolution, but its frame gener
 
 2. In the game, choose **FSR** upscaling. Leave the game's own frame generation menu off; `XESS_FG=<n>` sets the multiplier (default 2x).
 
-While the game runs, `tools/proton-hook.py` places `dxgi.dll` and `ffx_xefg_bridge.dll` (the frame generation DLL under a name the FidelityFX loader ignores) next to the upscaler DLL. `FSR_FG=inject` requires the Proton hook (`tools/fsr-fg.sh` does not support it) and requires `FSR=xess`.
+While the game runs, `tools/proton-hook.py` places `dxgi.dll` and `ffx_xefg_bridge.dll` (the frame generation DLL under a name the FidelityFX loader ignores) next to the upscaler DLL. Using `FSR_FG=inject` requires the Proton hook (`tools/fsr-fg.sh` does not support it) and requires `FSR=xess`.
 
 Requirements for `FSR_FG=inject`:
 * The folder containing the upscaler DLL must also contain the game's `.exe`. If it does not, the hook logs a message to stderr and the game runs without frame generation.
@@ -253,17 +253,17 @@ The FSR and optical-flow DLLs write logs for the last run into the game's folder
 * `ffx_xefg.log` (next to `amd_fidelityfx_framegeneration_dx12.dll` / `ffx_xefg_bridge.dll`, disabled with `FFX_XEFG_LOG=0`): logs the upscalers the game's FidelityFX loader offers on this GPU, swap chain parameters, the maximum interpolations XeSS-FG reports and the number set, the first 10 presents (`presented 4` = 4x, with sync interval and flags), the first 5 prepares and every 600th prepare, XeSS-FG warnings, `oflow: GPU time` lines, and `cap auto:` interval changes.
 * `dxgi_xefg.log` (next to `dxgi.dll`, with `FSR_FG=inject` or `OFLOW_FG=1`): logs the system `dxgi.dll` path and what became of each swap chain.
 
-For native XeSS-FG, XeLL, and `ControlLib.dll` logs (`C:\igdext_xefg.log`, `C:\igdext_xell.log`, `C:\igcl_stub.log` in the prefix, enabled with `XESS_LOG=1` or individually via `IGDEXT_XEFG_LOG=1`, `IGDEXT_XELL_LOG=1`, `XESS_FG_LOG=1`), see [troubleshooting.md](troubleshooting.md) and [dev/debugging.md](dev/debugging.md).
+For native XeSS-FG, XeLL, and `ControlLib.dll` logs, see [troubleshooting.md](troubleshooting.md) and [dev/debugging.md](dev/debugging.md). These logs are `C:\igdext_xefg.log`, `C:\igdext_xell.log`, and `C:\igcl_stub.log` in the prefix. They are enabled with `XESS_LOG=1`, or individually via `IGDEXT_XEFG_LOG=1`, `IGDEXT_XELL_LOG=1`, and `XESS_FG_LOG=1`.
 
 ### Variables for `ffxfg/` (`FSR=xess`, `FSR_FG`, `OFLOW_FG`)
 
-You can pass these variables in the game's Steam launch options or put `KEY=VALUE` lines into `ffx_xess.env` / `ffx_xefg.env` next to the DLLs (environment variables win over `.env` files; `XESS_FG` itself belongs in the launch options because `igdext64.dll` reads it before the DLLs load):
+You can pass these variables in the game's Steam launch options, or put `KEY=VALUE` lines into `ffx_xess.env` / `ffx_xefg.env` next to the DLLs. Environment variables win over `.env` files, and `XESS_FG` itself belongs in the launch options because `igdext64.dll` reads it before the DLLs load:
 
 | Variable | Effect |
 |---|---|
 | `FFX_XESS_LOG=<path>\|0` | Upscaler log file path (default `ffx_xess.log` next to the DLL); `0` turns it off |
 | `FFX_XESS_XESSLOG=0..3` | XeSS's own messages forwarded to `ffx_xess.log`: `0` debug, `1` info, `2` warnings (default), `3` errors |
-| `FFX_XESS_QUALITY=100..106` | Force the XeSS quality setting (`100` Ultra Performance, `101` Performance, `102` Balanced, `103` Quality, `104` Ultra Quality, `105` Ultra Quality Plus, `106` Native AA) |
+| `FFX_XESS_QUALITY=100..106` | Force the XeSS quality setting. The values are `100` Ultra Performance, `101` Performance, and `102` Balanced. They continue with `103` Quality, `104` Ultra Quality, `105` Ultra Quality Plus, and `106` Native AA |
 | `FFX_XESS_AUTOEXPOSURE=0` | Debug: disable XeSS auto exposure |
 | `FFX_XEFG_MULT=<n>` | Frames shown per rendered frame (default `XESS_FG`, else `2`), capped at XeSS-FG's maximum |
 | `FFX_XEFG_LOG=<path>\|0` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off |
@@ -284,4 +284,4 @@ You can pass these variables in the game's Steam launch options or put `KEY=VALU
 | `FFX_XEFG_REFRESH=<Hz>` | Override the display refresh rate for `FFX_XEFG_CAP=auto` when Windows/Wine reports a wrong one (default from `EnumDisplaySettingsA`, or `144` Hz) |
 | `FFX_XEFG_TIMES=1` | Log frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow GPU time every 300 runs |
 
-*(Debug switches that alter or dump individual inputs—`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`—are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md).)*
+*(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`.)*
