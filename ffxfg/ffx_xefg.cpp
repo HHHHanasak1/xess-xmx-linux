@@ -30,6 +30,21 @@
 //                          first guess of what a frame needs beyond that (default 1.5, then learned), FFX_XEFG_REFRESH=Hz
 //                          the display's refresh rate when Windows reports a wrong one
 //   FFX_XEFG_TIMES=1       frame time, time in Present and XeLL's sleep (percentiles) in the log every 300 frames
+//   IGDEXT_XELL_CAP        the low latency, as for a game's own XeSS-FG (read by the XMX shim too): unset or auto[:ms]
+//                          = the game stays in Present until its next frame should start, so that the frame reaches
+//                          its Present when XeSS-FG can take it instead of waiting there ("Low latency" below);
+//                          off = no such wait; <us> = XeLL's fixed cap holds the frame back there instead
+//   IGDEXT_XELL_POLLS=0|1  1 (the default with the low latency, with FFX_XEFG_OFLOW too): what a game asks of the
+//                          swap chain every frame (GetFrameStatistics, CheckColorSpaceSupport) is answered as of
+//                          its last Present and never waits for XeSS-FG's presentation thread; 0: asked from the
+//                          swap chain each time (the XMX shim reads it too, for a game's own XeSS-FG)
+//   FFX_XEFG_AB=s          measuring aid: the low latency's wait is off and on in turns of s seconds (off first);
+//                          with FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait),
+//                          the answers as of the last Present, the wait too. FFX_XEFG_HOLD=ms: a fixed wait in the
+//                          place of the one the low latency works out
+//   IGDEXT_XELL_CHECK=0    the low latency's wait is not checked (by default it stays only where the frame time with
+//                          it is within 1 % of the frame time without it and the latency is lower; the XMX shim
+//                          reads it too)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
 #define WIN32_LEAN_AND_MEAN
@@ -60,6 +75,7 @@
 #include "inc/xess/xell/xell.h"
 #include "inc/xess/xell/xell_d3d12.h"
 #include "ffx_oflow.h"
+#include "../common/lowlat_check.h"
 
 #pragma comment(lib, "dxgi.lib")
 
@@ -95,6 +111,22 @@ static int EnvInt(const char* name, int def)
         return def;
     return atoi(buf);
 }
+
+static uint64_t Qpc()
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (uint64_t)t.QuadPart;
+}
+static float QpcMs(uint64_t a, uint64_t b) { return (float)((double)(b - a) * 1000.0 / (double)g_qpf.QuadPart); }
+
+// TR(...): only in a debug build (FFX_XEFG_TRACE)
+#ifdef FFXFG_DEBUG
+#include "ffx_trace.h"
+#define TR(...) __VA_ARGS__
+#else
+#define TR(...)
+#endif
 
 // ---------------------------------------------------------------------------------------------------------------
 // XeSS-FG / XeLL entry points, loaded at run time
@@ -140,6 +172,20 @@ static int g_oflow = 0;          // FFX_XEFG_OFLOW=1 (see the top)
 static float g_oflowDepth = 1.0f;
 static bool g_times = false;     // FFX_XEFG_TIMES=1
 static bool g_capAuto = false;   // FFX_XEFG_CAP=auto (the default with FFX_XEFG_OFLOW)
+// The low latency ("Low latency" below), from IGDEXT_XELL_CAP as the XMX shim reads it: 1 = auto (the default): the
+// game is kept in Present until its next frame should start; 2 = <us>: no wait of ours, XeLL's frame cap (the shim
+// sets it) sleeps there; 0 = off / anything else
+static int g_lat = 1;
+static double g_latMarginMs = 0;   // IGDEXT_XELL_CAP=auto:<ms>: each frame starts <ms> earlier (later if negative)
+// FFX_XEFG_CAP is set (auto, the default with FFX_XEFG_OFLOW, or <us>): its XeLL interval holds the frames back, no
+// wait of ours on top (CapAdjust reads XeLL's sleep to tell whether its interval holds frames back; a wait in front
+// of that sleep would hide it)
+static bool g_ffxCap = false;
+static bool g_pollCache = false;    // IGDEXT_XELL_POLLS (see the top)
+static int g_abSec = 0;             // FFX_XEFG_AB (see the top)
+static bool g_abOld = false;        // FFX_XEFG_AB_OLD
+static float g_holdMs = 0;          // FFX_XEFG_HOLD
+static bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
@@ -153,6 +199,9 @@ static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init
 //   FFX_XEFG_RENDERTIME=<ms>: XeSS-FG's frame render time instead of the game's frame time
 //   FFX_XEFG_RENDERSCALE=<f>: the game's frame time times this (0.001: seconds)
 //   FFX_XEFG_ORDER=1: the order of the game's calls with their frame ids, for the first 300 after interpolation starts
+//   FFX_XEFG_TRACE_SUBS=1 (with FFX_XEFG_TRACE): when the GPU finished each submission to a D3D12 queue, too
+//   FFX_XEFG_TRACE=1: the time line of every frame as events in ffx_xefg_trace.txt (ffx_trace.h; tools/fsr-trace.py
+//                     reads it); FFX_XEFG_TRACE_STACKS=<n>: where the present thread waits after a Present, n samples
 static float g_jitter = 1.0f;
 static int g_dumpEvery = 0;
 static float g_renderTime = -1;
@@ -326,6 +375,35 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         g_capAuto = !_stricmp(env, "auto");
     else
         g_capAuto = g_oflow != 0;
+    g_ffxCap = g_capAuto || EnvInt("FFX_XEFG_CAP", 0) > 0;
+    {
+        // IGDEXT_XELL_CAP, parsed as XellHook.cpp in the shim does: off/0 = off, auto[:ms] = auto, a plain number up to
+        // 1000000 = XeLL's fixed cap (set by the shim), anything else = off
+        DWORD n = GetEnvironmentVariableA("IGDEXT_XELL_CAP", env, 32);
+        if (n > 0 && n < 32) {
+            char* end = nullptr;
+            unsigned long us = env[0] >= '0' && env[0] <= '9' ? strtoul(env, &end, 10) : 0;
+            if (!strncmp(env, "auto", 4) && (env[4] == 0 || env[4] == ':')) {
+                g_lat = 1;
+                if (env[4] == ':')
+                    g_latMarginMs = atof(env + 5);
+            } else if (!_stricmp(env, "off") || !strcmp(env, "0")) {
+                g_lat = 0;
+            } else {
+                g_lat = end && *end == 0 && us > 0 && us <= 1000000 ? 2 : 0;
+            }
+        }   // longer than 31 characters: ignored, as the shim does (auto)
+    }
+    // With the optical flow too, where the frame cap paces the frames (Resident Evil 4 at 3x, 2026-11-11: with the swap
+    // chain's own answers the game ran with an idle GPU part of the time, 30.3 ms a frame with a 95th percentile of
+    // 42 ms; with these answers 27.7 ms and 32 ms, under the same cap. At 2x there is no difference.)
+    g_pollCache = EnvInt("IGDEXT_XELL_POLLS", g_lat != 0) != 0;
+    g_abSec = EnvInt("FFX_XEFG_AB", 0);
+    g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0;
+    if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH))
+        g_holdMs = (float)atof(env);
+    g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
+    TR(tr::g_subs = EnvInt("FFX_XEFG_TRACE_SUBS", 0) != 0; if (EnvInt("FFX_XEFG_TRACE", 0)) tr::Start(dir));
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
         g_oflowDepth = (float)atof(env);
     if (g_oflow) {
@@ -337,6 +415,14 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     snprintf(g_dir, MAX_PATH, "%s", dir);
     Log("=== ffx_xefg start pid %lu, multiplier %dx, sleep %d, own wait %d (paced by the GPU %d), exclusive fullscreen %s",
         GetCurrentProcessId(), g_mult, g_sleep, g_ownWait, g_pace, g_noExclusive ? "blocked" : "allowed");
+    Log("low latency (IGDEXT_XELL_CAP): %s; the game's questions to the swap chain answered %s",
+        g_lat == 1 && !g_ffxCap ? "auto, the game's frames are held back in Present"
+        : g_lat == 1            ? "FFX_XEFG_CAP's XeLL interval"
+        : g_lat == 2            ? "XeLL's fixed cap"
+                                : "off",
+        g_pollCache ? "as of the last Present (no wait)" : "by the swap chain");
+    if (g_lat == 1 && !g_ffxCap && g_latMarginMs != 0)
+        Log("  each frame starts %.1f ms earlier", g_latMarginMs);
     if (!g_hudless || g_mvNdc || !g_sleep || !g_ownWait || !g_validityNow)
         Log("inputs: HUD-less %d, NDC mv %d, validity only now %d", g_hudless, g_mvNdc, g_validityNow);
 #ifdef FFXFG_DEBUG
@@ -554,6 +640,63 @@ struct ScState {
     uint64_t watchdogs = 0;                // releases by the 200 ms watchdog (thread only)
     BOOL fakeFullscreen = FALSE;   // what the game asked for while exclusive fullscreen is blocked
 
+    // The low latency (LatHold), on the present thread
+    struct LatCtl {
+        double hold = 0;             // ms the game is kept in Present after the proxy's Present returned
+        double prevEarly = 0;        // how much later the frame before could have started (ms)
+        int unheld = 0;              // frames in a row that could not have started later
+        uint64_t lastEnd = 0;        // the last return of the proxy's Present (QPC)
+        double frameMs = 0;          // the interval of those returns, smoothed
+        double lateMs = 1.0;         // late wake-ups of the wait (WaitUntil)
+        bool on = false;
+        uint64_t abStart = 0;        // FFX_XEFG_AB: 0 = as before, 1 = answers as of the last Present, 2 = our wait too
+        int abTurn = -1, abSaid = -1;
+        // the GPU's side (LatGpu): how long before the GPU gets free a frame's first work reaches it (ms, smoothed;
+        // negative: the GPU idles first), the GPU's time for a frame (ms, smoothed), the frames they are from
+        double aheadMs = 0, gpuMs = 0;
+        int gpuN = 0;
+        uint64_t prevFirst = 0, prevStart = 0;   // of the frame before: its first submission, its start
+        // The check of the wait (common/lowlat_check.h): whether the frame may wait now, the wait as it was when the
+        // check took it away (it comes back as it was), and the wait that was in the frame just measured
+        lowlat::Check chk;
+        bool chkAllowed = true;
+        double holdKept = 0, lastHeld = 0;
+        // the log, every 300 presents
+        int logN = 0, logWaited = 0, logLatN = 0, logGpuN = 0;
+        double logWait = 0, logLat = 0, logBlock = 0, logFrame = 0, logGpuLat = 0;
+    } lat;
+    // The GPU's side of the low latency: a fence on the game's queue, signalled after each proxy Present (the frame's
+    // interpolation is the last thing on that queue), and a thread that notes when the GPU reaches it (LatGpuThread)
+    struct LatGpu {
+        ID3D12Fence* fence = nullptr;
+        HANDLE event = nullptr, thread = nullptr;
+        std::atomic<bool> stop{false};
+        std::atomic<uint64_t> signalled{0};
+        std::atomic<uint64_t> doneAt[16];   // when the GPU reached value v (QPC), at [v % 16]; 0 = not yet
+    } latGpu;
+    // when the game's frame began: the last return of Present to the game, or of a call of the game into the swap
+    // chain that waited there
+    std::atomic<uint64_t> frameStart{0};
+    // What the game asks of the swap chain every frame, answered as of its last Present call (IGDEXT_XELL_POLLS, see
+    // "Low latency"): the frame statistics, and the support of the color spaces it asked about
+    struct ColorSpaceAnswer {
+        DXGI_COLOR_SPACE_TYPE cs;
+        HRESULT hr;
+        UINT support;
+        bool asked;       // since the last Present: asked again there
+        uint32_t idle;    // Presents in a row without a question
+    };
+    std::mutex pollLock;
+    bool pollValid = false;
+    DXGI_FRAME_STATISTICS stats = {};
+    HRESULT statsHr = E_FAIL;
+    ColorSpaceAnswer colorSpaces[8] = {};
+    int nColorSpaces = 0;
+    std::atomic<int> waitedSaid{0};   // log lines about calls of the game that waited in the swap chain
+#ifdef FFXFG_DEBUG
+    tr::GpuMark *gpu1 = nullptr, *gpu2 = nullptr, *gpu3 = nullptr;   // FFX_XEFG_TRACE
+#endif
+
     // FSR_FG=inject (xefg_bridge.h): the game knows nothing of frame generation, so the ids are ours. A frame's upscale
     // can be recorded before the previous frame is presented; presents take the upscaled frames in order.
     bool bridge = false;
@@ -579,6 +722,39 @@ static uint32_t g_lastFgFlags;   // creation flags of the last FG context, used 
 static bool g_haveFgFlags;
 
 static bool PaceStop(ScState* st);
+static bool LatGpuStop(ScState* st);
+#ifdef FFXFG_DEBUG
+// FFX_XEFG_TRACE: the mark signalled in front of the game's first submission of a frame, and that frame's present number
+static std::atomic<tr::GpuMark*> g_tracePre{nullptr};
+static std::atomic<uint64_t> g_traceNext{0};
+#endif
+// the low latency's swap chain: its game queue, and the game's first submission on it since Present returned (QPC,
+// 0 = none yet; HookEcl)
+static std::atomic<ID3D12CommandQueue*> g_latQueue{nullptr};
+static std::atomic<uint64_t> g_latFirstSubmit{0};
+
+// The XMX shim's own low latency (AutoPaceWait in shim/src/dll/XellHook.cpp) leaves an XeLL context to its caller when
+// told so; a shim without the call never waits for our contexts anyway (it finds no frame in flight at our xellSleep)
+typedef void (*PFN_IgdextXellExternalPacing)(void* xellContext, int on);
+static void ShimExternalPacing(void* xell, int on)
+{
+    HMODULE shim = xell ? GetModuleHandleA("igdext64.dll") : nullptr;
+    auto fn = shim ? (PFN_IgdextXellExternalPacing)GetProcAddress(shim, "IgdextXellExternalPacing") : nullptr;
+    if (fn)
+        fn(xell, on);
+}
+
+// The XMX shim answers a game's questions to XeSS-FG's swap chain for a game with its own XeSS-FG (ProxyHook in
+// shim/src/dll/XellHook.cpp). This DLL wraps that swap chain and answers its game itself (FgSwapChain), so it tells
+// the shim to pass this swap chain's calls on unchanged; a shim without the call does not touch them anyway.
+typedef void (*PFN_IgdextXefgProxyOwned)(void* swapChain, int on);
+static void ShimProxyOwned(void* proxy, int on)
+{
+    HMODULE shim = proxy ? GetModuleHandleA("igdext64.dll") : nullptr;
+    auto fn = shim ? (PFN_IgdextXefgProxyOwned)GetProcAddress(shim, "IgdextXefgProxyOwned") : nullptr;
+    if (fn)
+        fn(proxy, on);
+}
 
 static void TearDown(ScState* st)
 {
@@ -595,6 +771,20 @@ static void TearDown(ScState* st)
         Log("!! the pacing thread did not stop: the state stays allocated");
         return;
     }
+    if (!LatGpuStop(st)) {
+        Log("!! the low latency's GPU thread did not stop: the state stays allocated");
+        return;
+    }
+#ifdef FFXFG_DEBUG
+    if (g_tracePre.load() == st->gpu3)
+        g_tracePre = nullptr;
+    tr::GpuMarkDestroy(st->gpu1);
+    tr::GpuMarkDestroy(st->gpu2);
+    tr::GpuMarkDestroy(st->gpu3);
+    st->gpu1 = st->gpu2 = st->gpu3 = nullptr;
+#endif
+    ShimExternalPacing(st->xell, 0);
+    ShimProxyOwned(st->proxy, 0);
     if (st->proxy) {
         ULONG r = st->proxy->Release();
         Log("  proxy released, refs left %lu", r);
@@ -738,7 +928,9 @@ static void XellStartFrame(ScState* st, uint32_t id)
         }
         f->sleeping = true;
     }
+    TR(const uint64_t ts0 = Qpc());
     p_xellSleep(st->xell, id);
+    TR(tr::Put(tr::XSLEEP, id, (uint64_t)(QpcMs(ts0, Qpc()) * 1000.0f)));
     std::lock_guard<std::mutex> lk(st->lock);
     auto* f = XellFrameFor(st, id);   // the same slot: a sleeping slot is not taken over
     if (!f)
@@ -779,13 +971,20 @@ static void OflowTag(ScState* st, uint32_t id, bool reset, float frameTimeMs)
 
 // --- Present ---
 
+// ExecuteCommandLists of the D3D12 queues (vtable slot 10, shared by vkd3d's queues) is patched once, for two things.
 // FFX_XEFG_CAP=auto with the optical flow: the GPU time of a frame runs from the game's first submission after a present
-// (a time stamp put in front of it here) to our optical flow right before the next present. The game queue's
-// ExecuteCommandLists (vtable slot 10, shared by vkd3d's queues) is patched once; our own submissions pass through.
+// (a time stamp put in front of it here) to our optical flow right before the next present; our own submissions pass
+// through. The low latency: when XeSS-FG submitted first and last inside its Present (t_eclSpan, set by the present
+// thread around that call): the time between the two is what the frame waited there (LatHold); and when the game
+// submitted the first work of a frame (g_latFirstSubmit).
 typedef void(STDMETHODCALLTYPE* PFN_ExecuteCommandLists)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 static PFN_ExecuteCommandLists g_origEcl;
 static std::atomic<bool> g_wantFrameStart{false};
 static thread_local bool t_ownSubmit = false;
+static thread_local uint64_t* t_eclSpan = nullptr;   // [0] first, [1] last submission (QPC), [2] their number
+#ifdef FFXFG_DEBUG
+static std::atomic<ID3D12CommandQueue*> g_traceQueue{nullptr};   // FFX_XEFG_TRACE: the game's queue
+#endif
 
 // The state is used under g_timedLock and takes no reference: a reference of the hook could be the last one, and its
 // release would run the whole TearDown (XeSS-FG and XeLL destroyed, fence waits) inside the game's submission.
@@ -795,6 +994,35 @@ static thread_local bool t_ownSubmit = false;
 // g_timedLock with the state's lock held: no deadlock, as the hook only tries that lock.)
 static void STDMETHODCALLTYPE HookEcl(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* lists)
 {
+    if (uint64_t* span = t_eclSpan) {
+        const uint64_t now = Qpc();
+        if (!span[0])
+            span[0] = now;
+        span[1] = now;
+        span[2]++;
+    } else if (!t_ownSubmit && !g_latFirstSubmit.load(std::memory_order_relaxed) &&
+               q == g_latQueue.load(std::memory_order_relaxed)) {
+        uint64_t none = 0;   // the game's first work of its next frame reaches the GPU's queue
+        if (g_latFirstSubmit.compare_exchange_strong(none, Qpc())) {
+            TR(tr::GpuMarkSignal(g_tracePre.load(), q, g_traceNext.load()));
+        }
+    }
+#ifdef FFXFG_DEBUG
+    struct TraceEcl {
+        uint64_t t0;
+        ID3D12CommandQueue* q;
+        UINT n;
+        uint64_t sub = 0;   // FFX_XEFG_TRACE_SUBS: the value signalled behind this submission, and its queue's index
+        int subQ = 0;
+        ~TraceEcl()
+        {
+            if (t0)
+                tr::Put(tr::ECL, n,
+                        (q == g_traceQueue.load() ? 1u : 0u) | (t_ownSubmit ? 2u : 0u) | ((uint64_t)subQ << 4) | (sub << 8),
+                        (uint16_t)std::min(QpcMs(t0, Qpc()) * 1000.0f, 65535.0f), t0);
+        }
+    } traceEcl{tr::g_on ? Qpc() : 0, q, n};
+#endif
     if (!t_ownSubmit && q == g_timedQueue.load() && g_wantFrameStart.exchange(false)) {
         std::lock_guard<std::mutex> tl(g_timedLock);
         ScState* st = g_timedSc.load();
@@ -808,32 +1036,33 @@ static void STDMETHODCALLTYPE HookEcl(ID3D12CommandQueue* q, UINT n, ID3D12Comma
         }
     }
     g_origEcl(q, n, lists);
+    TR(traceEcl.sub = tr::SubSignal(q, &traceEcl.subQ));
 }
 
-static void HookQueue(ScState* st)
+static bool HookEclVt(ID3D12CommandQueue* queue)
 {
     if (!g_origEcl) {
-        void** vt = *(void***)st->queue;
+        void** vt = *(void***)queue;
         DWORD old;
         if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
-            return;
+            return false;
         g_origEcl = (PFN_ExecuteCommandLists)vt[10];
         vt[10] = (void*)HookEcl;
         VirtualProtect(&vt[10], sizeof(void*), old, &old);
-        Log("cap auto: game queue %p timed (ExecuteCommandLists hooked)", (void*)st->queue);
+        Log("ExecuteCommandLists of the D3D12 queues hooked (through queue %p)", (void*)queue);
     }
+    return true;
+}
+
+// FFX_XEFG_CAP=auto: the game's queue is timed
+static void HookQueue(ScState* st)
+{
+    if (!HookEclVt(st->queue))
+        return;
     std::lock_guard<std::mutex> lk(g_timedLock);
     g_timedSc = st;
     g_timedQueue = st->queue;
 }
-
-static uint64_t Qpc()
-{
-    LARGE_INTEGER t;
-    QueryPerformanceCounter(&t);
-    return (uint64_t)t.QuadPart;
-}
-static float QpcMs(uint64_t a, uint64_t b) { return (float)((double)(b - a) * 1000.0 / (double)g_qpf.QuadPart); }
 
 static void TimesReport(ScState* st)
 {
@@ -1091,8 +1320,14 @@ static void CapAdjust(ScState* st)
             st->oflow ? "GPU" : "CPU", p90, fNow, st->capFreqRef, p90n, st->capPad, frameMed, sleepMed, cap, 1e6 / cap, (int)r);
 }
 
+static float LatHold(ScState* st, uint64_t tEnd, float blockMs, uint64_t first, bool ok);
+static void FrameDone(ScState* st, HRESULT hr);
+
 // `id` is what BeforePresent returned: a prepare for the next frame may have changed st->frameId during the present.
-static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags)
+// `tEnd`: when the proxy's Present returned; `blockMs`: how long the frame was held up in front of it, `first`: when
+// its first work was submitted (LatHold).
+static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT flags, uint64_t tEnd, float blockMs,
+                         uint64_t first)
 {
     uint32_t next;
     uint64_t presents;
@@ -1128,6 +1363,11 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
     }
     if (g_capAuto && g_timedQueue.load() == st->queue)
         g_wantFrameStart = true;   // the game's next submission starts the next frame on the GPU (HookEcl)
+    // The low latency: the game stays here until its next frame should start. Then the frame latency waitable object
+    // is released (a game that waits on it starts there) and the frame starts for XeLL: its sleep (XeLL's own
+    // interval, if one is set) and SIMULATION_START.
+    const float held = LatHold(st, tEnd, blockMs, first, SUCCEEDED(hr));
+    FrameDone(st, hr);
     uint64_t t0 = Qpc();
     XellStartFrame(st, next);
     if (g_capAuto) {
@@ -1142,12 +1382,12 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
             int n = OflowTakeGpuFrames(st->oflow, g, 64);
             st->capWork.insert(st->capWork.end(), g, g + n);
         } else if (st->capLastEnd) {
-            st->capWork.push_back(QpcMs(st->capLastEnd, t1) - sl);   // no GPU timer: the frame without the sleep
+            st->capWork.push_back(QpcMs(st->capLastEnd, t1) - sl - held);   // no GPU timer: the frame without the sleep
         }
         if (st->capLastEnd) {
             st->capFrame.push_back(QpcMs(st->capLastEnd, t1));
             st->capSleep.push_back(sl);
-            st->capPresent.push_back(QpcMs(st->tStart, t0));   // in Present: an outside limiter (gamescope) waits here
+            st->capPresent.push_back(QpcMs(st->tStart, tEnd));   // in Present: an outside limiter (gamescope) waits here
         }
         st->capLastEnd = t1;
         if (st->capWork.size() >= 30 && st->capFrame.size() >= 30)
@@ -1159,14 +1399,17 @@ static void AfterPresent(ScState* st, uint32_t id, HRESULT hr, UINT sync, UINT f
         uint64_t t1 = Qpc();
         std::lock_guard<std::mutex> lk(st->lock);
         if (st->tLastEnd) {
-            st->tFrame.push_back(QpcMs(st->tLastEnd, t1));
-            st->tPresent.push_back(QpcMs(st->tStart, t0));
+            st->tFrame.push_back(QpcMs(st->tLastEnd, tEnd));   // from present to present: what reaches the display
+            st->tPresent.push_back(QpcMs(st->tStart, tEnd));
             st->tSleep.push_back(QpcMs(t0, t1));
         }
-        st->tLastEnd = t1;
+        st->tLastEnd = tEnd;
         if (st->tFrame.size() >= 300)
             TimesReport(st);
     }
+    if (g_latQueue.load() == st->queue)
+        g_latFirstSubmit = 0;
+    st->frameStart = Qpc();   // the game's next frame starts when this returns
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1295,6 +1538,342 @@ static bool PaceStop(ScState* st)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Low latency (IGDEXT_XELL_CAP, auto by default)
+//
+// What a frame waits for on this route, from the time lines of CONTROL Resonant, Resident Evil Requiem and Forza
+// Horizon 6 (FFX_XEFG_TRACE in a debug build, XeSS-FG 1.3.1 at 3x under vkd3d-proton and DXVK's DXGI, 2026-11-11):
+//  - XeSS-FG's proxy Present puts the interpolation on the game's queue, waits until its presentation thread is
+//    through with the frame before, presents the first of the frame's images itself and returns; the presentation
+//    thread presents the others. Those Presents of the real swap chain block (two may be under way): the last one of
+//    a frame returns when the GPU has finished the frame's first image. A game that reaches Present before that
+//    waits in it, with its frame, and the input it read for it, already made: the queue the low latency is after.
+//  - DXVK's swap chain holds its locks for the whole of a Present, and all three games ask the swap chain something
+//    right after their Present that takes one of them: IDXGISwapChain::GetFrameStatistics (CONTROL Resonant, Forza
+//    Horizon 6), IDXGISwapChain3::CheckColorSpaceSupport (Resident Evil Requiem). If the presentation thread is
+//    inside its last Present by then, the game's next frame starts only when the GPU has finished this one: no
+//    queue, but the GPU idles while the game works (48 instead of 31.5 ms a frame in Resident Evil Requiem, 45
+//    instead of 25 in Forza Horizon 6). Otherwise it starts at once and waits in its next Present (10 to 14 ms).
+//    Which of the two is decided by some 100 us, and the games change between them every few seconds.
+// So two things are done:
+//  1. Those questions no longer wait for the presentation thread (IGDEXT_XELL_POLLS): the game gets the answers as of
+//     its last Present call. They are taken right before the proxy's Present, where waiting for that thread costs
+//     nothing: the proxy would wait for it anyway. The game's frame then starts when its Present returns, and
+//     nowhere else. (Any other call of the game that waits in the swap chain is named in the log, FgSwapChain::Waited.)
+//  2. The game is kept in Present, after the proxy's Present has returned, until its next frame should start: so
+//     that the frame reaches its Present a little before XeSS-FG can take it (LatHold). How long a frame was held up
+//     in front of its present is measured in that Present: the wait for those answers plus the time between
+//     XeSS-FG's first and last submission inside its Present (HookEcl; without a wait they are about 0.2 ms apart).
+//     The wait before the next frame grows while frames are held up by more than kLatTargetMs
+//     (IGDEXT_XELL_CAP=auto:<ms> adds to that) and shrinks while they are not, so the frame time stays what the GPU
+//     or the display allows, and a game that is never held up (its CPU is the limit) is not kept at all. The frame
+//     latency waitable object, XeLL's sleep and its SIMULATION_START marker follow the wait: the XMX shim's log
+//     (IGDEXT_XELL_LOG) shows the time from there to the end of the frame's present, as for a game with its own
+//     XeSS-FG.
+//     That alone is right while the GPU is what the frames wait for and the game submits a frame's work as it goes
+//     (CONTROL Resonant). Two cases need the GPU's side as well (LatGpu: a fence on the game's queue after each proxy
+//     Present tells when the GPU finished a frame, HookEcl when the game submitted the first work of the next one).
+//     A game that submits a frame's work at its Present only (Resident Evil Requiem) left the GPU idle for about
+//     1 ms a frame when it reached Present 2.5 ms before XeSS-FG could take it: XeSS-FG can take a frame a little
+//     after the GPU is through with the one before (1.7 % of the frame rate). And when the display is what frames
+//     wait for (a menu at the display's frame rate, Forza Horizon 6 at 120 frames shown per second), XeSS-FG's
+//     Present still makes a frame wait, for its turn, but the GPU must have finished the frame by then, so the
+//     frame must not start later (CONTROL Resonant's menu lost 1 to 4 % of its frame rate that way). So a frame
+//     counts as early only as far as its first work also reached the GPU's queue more than kLatAheadMs before the
+//     GPU got free: where the GPU idles before the work arrives, the game is not kept at all.
+//  3. The wait is checked (IGDEXT_XELL_CHECK, common/lowlat_check.h: the same check as the XMX shim's for a game's
+//     own XeSS-FG). The two times of 2. do not show everything a frame can wait for: a game's own render work may
+//     wait for its compute queue in the middle of a frame (Resident Evil Requiem, about 4 ms), XeSS-FG's later
+//     images for the display, and a frame that waits in front of Present can still be the one the GPU waits for
+//     next. So the wait has to show that it costs no frame rate and lowers the latency: now and then it is left out
+//     for 100 frames, between two windows with it, and it stays only if the frame time with it is within 1 % and the
+//     latency (frame start -> end of its present) lower by at least half the wait. A wait that costs in two checks
+//     in a row is shortened and checked again; one that does not help is off for a while.
+//     (Measured 2026-11-11 against the release build, separate runs: in the three games the wait costs 0 to 0.2 ms
+//     a frame. What a wait that is too long costs, IGDEXT_XELL_CAP=auto:-20 in Resident Evil Requiem: 1.1 to 1.8 ms.)
+// IGDEXT_XELL_CAP=off: no wait of ours and the swap chain's own answers, all as before. IGDEXT_XELL_CAP=<us>
+// or FFX_XEFG_CAP: XeLL's interval holds the frame back in its sleep, at the same place, instead of a wait of ours.
+
+// A frame should reach Present this long before XeSS-FG can take it, and its first work the GPU's queue kLatAheadMs
+// before the GPU gets free. The time a game needs from its start to its Present varies by 1 to 1.5 ms (standard
+// deviation) in the three games, and a frame that comes late leaves the GPU idle for that long.
+static const double kLatTargetMs = 2.5;
+static const double kLatAheadMs = 1.5;
+static const float kLatSpanMs = 0.25f;     // XeSS-FG's first to last submission inside its Present, without a wait
+static const float kLatPresentMs = 2.0f;   // the proxy's Present without a wait, when its submissions are not seen
+
+typedef LONG(NTAPI* PFN_NtDelayExecution)(BOOLEAN alertable, PLARGE_INTEGER interval);   // ntdll, 100 ns, negative = relative
+
+// Waits until `due` (QPC): NtDelayExecution in 100 ns units, stopping short by the late wake-up seen recently (a maximum
+// that decays), the rest yielded away
+static void WaitUntil(uint64_t due, double& lateMs)
+{
+    static PFN_NtDelayExecution delay =
+        (PFN_NtDelayExecution)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtDelayExecution");
+    for (;;) {
+        const uint64_t now = Qpc();
+        if (now >= due)
+            return;
+        const double left = QpcMs(now, due);
+        const double slack = std::min(2.0, std::max(0.2, lateMs + 0.2));
+        if (left > slack) {
+            const double ask = left - slack;
+            if (delay) {
+                LARGE_INTEGER rel;
+                rel.QuadPart = -(LONGLONG)(ask * 10000.0);
+                delay(FALSE, &rel);
+            } else {
+                Sleep((DWORD)ask);
+            }
+            lateMs = std::max((double)QpcMs(now, Qpc()) - ask, lateMs * 0.98);
+        } else {
+            SwitchToThread();
+        }
+    }
+}
+
+// Notes when the GPU reaches each value signalled on the fence. It touches the fence, the event and the atomics only,
+// never st->lock: TearDown stops it before anything is freed.
+static DWORD WINAPI LatGpuThread(void* p)
+{
+    ScState::LatGpu& g = ((ScState*)p)->latGpu;
+    TR(tr::t_own = true);
+    uint64_t done = 0;
+    while (!g.stop.load()) {
+        const uint64_t last = g.signalled.load();
+        if (done >= last) {
+            WaitForSingleObject(g.event, 200);   // a new signal or stop
+            continue;
+        }
+        if (g.fence->GetCompletedValue() <= done) {
+            g.fence->SetEventOnCompletion(done + 1, g.event);
+            WaitForSingleObject(g.event, 200);
+            if (g.stop.load())
+                break;
+        }
+        const uint64_t reached = g.fence->GetCompletedValue();
+        if (reached == UINT64_MAX)   // the device is gone
+            break;
+        const uint64_t now = Qpc();
+        for (uint64_t v = done + 1; v <= reached && v <= last; v++)
+            g.doneAt[v % 16].store(now);
+        done = std::max(done, std::min(reached, last));
+    }
+    return 0;
+}
+
+static void LatGpuStart(ScState* st)
+{
+    ScState::LatGpu& g = st->latGpu;
+    if (g.thread || FAILED(st->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
+        return;
+    for (auto& d : g.doneAt)
+        d.store(0);
+    g.event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    g.thread = g.event ? CreateThread(nullptr, 0, LatGpuThread, st, 0, nullptr) : nullptr;
+    if (!g.thread) {
+        Log("low latency: no thread for the GPU's side (%lu): the frames' wait in Present alone decides", GetLastError());
+        if (g.event)
+            CloseHandle(g.event);
+        g.event = nullptr;
+        g.fence->Release();
+        g.fence = nullptr;
+    }
+}
+
+// false if the thread did not stop (then nothing of st may be freed); from TearDown only
+static bool LatGpuStop(ScState* st)
+{
+    ScState::LatGpu& g = st->latGpu;
+    if (g_latQueue.load() == st->queue)
+        g_latQueue = nullptr;
+    if (!g.thread)
+        return true;
+    g.stop.store(true);
+    SetEvent(g.event);
+    if (WaitForSingleObject(g.thread, 2000) != WAIT_OBJECT_0)
+        return false;
+    CloseHandle(g.thread);
+    g.thread = nullptr;
+    // a completion the thread asked for may still be pending on the event: let the last value land before closing it
+    const uint64_t last = g.signalled.load();
+    if (g.fence->GetCompletedValue() < last) {
+        g.fence->SetEventOnCompletion(last, g.event);
+        WaitForSingleObject(g.event, 500);
+    }
+    g.fence->Release();
+    g.fence = nullptr;
+    CloseHandle(g.event);
+    g.event = nullptr;
+    return true;
+}
+
+// right after the proxy's Present returned: the GPU has reached this point when it is through with the frame
+static void LatGpuSignal(ScState* st)
+{
+    ScState::LatGpu& g = st->latGpu;
+    if (!g.thread)
+        return;
+    const uint64_t v = g.signalled.load() + 1;
+    g.doneAt[v % 16].store(0);
+    TR(const bool own = tr::t_own; tr::t_own = true);
+    if (SUCCEEDED(st->queue->Signal(g.fence, v))) {
+        g.signalled.store(v);
+        SetEvent(g.event);
+    }
+    TR(tr::t_own = own);
+}
+
+// On the present thread, after the proxy's Present returned at `tEnd` (`ok`: it succeeded): keeps the game there
+// until its next frame should start, and returns that wait in ms. `blockMs`: how long this frame was held up in
+// front of its present; `first`: when the game submitted its first work (0 = not seen: its Present call counts).
+static float LatHold(ScState* st, uint64_t tEnd, float blockMs, uint64_t first, bool ok)
+{
+    ScState::LatCtl& c = st->lat;
+    const float dt = c.lastEnd ? QpcMs(c.lastEnd, tEnd) : 0;
+    c.lastEnd = tEnd;
+    const bool steady = dt > 0 && dt < 250;   // not the first frame, a loading screen or a pause
+    bool on = g_lat == 1 && !g_ffxCap && ok && st->xefgEnabled;
+    if (on && g_abSec > 0) {
+        if (!c.abStart)
+            c.abStart = tEnd;
+        const uint64_t turn = (uint64_t)(QpcMs(c.abStart, tEnd) / 1000.0f) / (uint64_t)g_abSec;
+        c.abTurn = g_abOld ? (int)(turn % 3) : 1 + (int)(turn % 2);
+        on = c.abTurn == 2;
+    }
+    const int state = on ? 2 : g_pollCache && c.abTurn != 0 ? 1 : 0;
+    if (on != c.on || state != c.abSaid) {
+        c.on = on;
+        c.abSaid = state;
+        SYSTEMTIME now;   // the time of day: the XMX shim's log (IGDEXT_XELL_LOG) has it
+        GetLocalTime(&now);
+        Log("low latency: %s (frame generation %s) at %02d:%02d:%02d.%03d",
+            state == 2 ? "frames are held back in Present" : state == 1 ? "no wait" : "no wait, the swap chain answers the game",
+            st->xefgEnabled ? "on" : "off", now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+        TR(tr::Put(tr::NOTE, 1, state));
+    }
+    // the figure for the log: the frame's start (when the game got back from Present, or from a call into the swap
+    // chain that waited) -> the end of its present
+    const uint64_t start = st->frameStart.load();
+    if (steady && start && tEnd > start && st->xefgEnabled) {
+        c.logLat += QpcMs(start, tEnd);
+        c.logBlock += blockMs;
+        c.logFrame += dt;
+        c.logLatN++;
+    }
+    // The GPU's side: this frame's value was signalled just now; the frame before is through on the GPU by now, or
+    // the GPU is still busy with it (then our work was there long before it gets free).
+    ScState::LatGpu& gp = st->latGpu;
+    double ahead = 1e9;   // this frame's first work reached the GPU's queue this long before the GPU got free (ms)
+    if (gp.thread && steady && st->xefgEnabled) {
+        const uint64_t v = gp.signalled.load();
+        const uint64_t donePrev = v >= 2 ? gp.doneAt[(v - 1) % 16].load() : 0;
+        const uint64_t donePrev2 = v >= 3 ? gp.doneAt[(v - 2) % 16].load() : 0;
+        if (!first)
+            first = st->tStart;   // the Present call
+        ahead = !donePrev ? 30.0 : donePrev >= first ? QpcMs(first, donePrev) : -(double)QpcMs(donePrev, first);
+        ahead = std::max(-30.0, std::min(ahead, 30.0));
+        c.aheadMs = c.gpuN ? c.aheadMs + 0.15 * (ahead - c.aheadMs) : ahead;
+        if (donePrev && c.prevFirst) {
+            // the frame before: the GPU's time for it, from its first work or from when the GPU got free for it
+            const uint64_t from = std::max(c.prevFirst, donePrev2);
+            const float gpu = donePrev > from ? QpcMs(from, donePrev) : 0;
+            if (gpu > 0 && gpu < 200)
+                c.gpuMs = c.gpuMs > 0 ? c.gpuMs + 0.1 * (gpu - c.gpuMs) : gpu;
+            if (c.prevStart && donePrev > c.prevStart && QpcMs(c.prevStart, donePrev) < 500) {
+                c.logGpuLat += QpcMs(c.prevStart, donePrev);   // the figure: its start -> the GPU has finished it
+                c.logGpuN++;
+            }
+        }
+        if (++c.gpuN < 8)
+            ahead = -1e9;   // nothing known yet: no wait
+        c.prevFirst = first;
+        c.prevStart = start;
+    } else {
+        c.gpuN = 0;
+        c.prevFirst = c.prevStart = 0;
+    }
+    float held = 0;
+    if (!on || !steady) {
+        c.hold = 0;
+        c.prevEarly = 0;
+        c.unheld = 0;
+        c.frameMs = steady ? dt : 0;
+        // the check: all over when frame generation went off; after a pause or a hitch only one under way
+        c.chk.Reset(!on);
+        c.chkAllowed = true;
+        c.holdKept = 0;
+    } else {
+        c.frameMs = c.frameMs > 0 ? c.frameMs + (dt - c.frameMs) * 0.1 : dt;
+        // How much later this frame could have started: by what it was held up in front of its present over
+        // kLatTargetMs, and no more than its first work was at the GPU's queue earlier than kLatAheadMs before the
+        // GPU got free (where the GPU is watched). A wait that the check found to cost is shorter by chk.shortMs.
+        const double early = std::min(blockMs - std::max(0.3, kLatTargetMs + g_latMarginMs + c.chk.shortMs),
+                                      ahead - (kLatAheadMs + g_latMarginMs + c.chk.shortMs));
+        // The check: what the two times above say is not all a frame can wait for (see "Low latency"), so the wait
+        // has to show that it costs no frame time and lowers the latency. FFX_XEFG_AB and FFX_XEFG_HOLD measure
+        // without it.
+        bool wait = true;
+        if (g_latCheck && !g_abSec && g_holdMs <= 0) {
+            const double lat = start && tEnd > start ? QpcMs(start, tEnd) : 0;
+            wait = c.chk.Frame((double)tEnd / (double)g_qpf.QuadPart, dt, c.lastHeld, lat, !gp.thread || c.gpuN >= 8, Log);
+            if (wait != c.chkAllowed) {
+                c.chkAllowed = wait;
+                if (!wait) {
+                    c.holdKept = c.hold;   // left out for some frames: it comes back as it was
+                } else {
+                    c.hold = c.holdKept;
+                    c.prevEarly = 0;       // the frames without it say nothing about it
+                    c.unheld = 0;
+                }
+            }
+        }
+        if (!wait) {
+            c.hold = 0;
+            c.prevEarly = 0;
+            c.unheld = 0;
+        } else if (early > 0) {
+            // the next frame starts later, by a part of what both this frame and the one before were early by (one
+            // frame alone may be a hitch), 2 ms a frame at most
+            const double both = std::min(early, c.prevEarly);
+            if (both > 0)
+                c.hold += std::min(0.25 * both, 2.0);
+            c.unheld = 0;
+        } else {
+            // late, or just in time: earlier, the faster the longer it lasts
+            c.unheld++;
+            c.hold -= std::min(0.15 * -early * (1.0 + 0.5 * (c.unheld - 1)), 2.0);
+        }
+        c.prevEarly = early;
+        if (g_holdMs > 0)   // FFX_XEFG_HOLD
+            c.hold = g_holdMs;
+        c.hold = std::max(0.0, std::min(c.hold, std::min(0.8 * c.frameMs, 100.0)));
+        if (c.hold >= 0.05) {
+            WaitUntil(tEnd + (uint64_t)(c.hold * (double)g_qpf.QuadPart / 1000.0), c.lateMs);
+            held = QpcMs(tEnd, Qpc());
+            c.logWaited++;
+            c.logWait += held;
+        }
+    }
+    c.lastHeld = held;
+    if (++c.logN >= 300) {
+        if (c.logLatN && (g_lat == 1 || g_times)) {
+            char gpu[160] = "";
+            if (c.logGpuN)
+                snprintf(gpu, sizeof gpu, ", -> GPU done %.1f ms; GPU: %.1f ms a frame, the frame's first work %.1f ms %s",
+                         c.logGpuLat / c.logGpuN, c.gpuMs, std::abs(c.aheadMs),
+                         c.aheadMs >= 0 ? "before it gets free" : "after it got free");
+            Log("low latency: waited in %d of %d frames, %.1f ms each; frames held up in front of Present %.1f ms, frame "
+                "%.2f ms; start -> present end %.1f ms%s (%d frames)",
+                c.logWaited, c.logN, c.logWaited ? c.logWait / c.logWaited : 0.0, c.logBlock / c.logLatN,
+                c.logFrame / c.logLatN, c.logLat / c.logLatN, gpu, c.logLatN);
+        }
+        c.logN = c.logWaited = c.logLatN = c.logGpuN = 0;
+        c.logWait = c.logLat = c.logBlock = c.logFrame = c.logGpuLat = 0;
+    }
+    return held;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // FgSwapChain: forwards everything to the XeSS-FG proxy, adds the XeLL markers and the present id.
 
 struct FgSwapChain final : IDXGISwapChain4 {
@@ -1353,13 +1932,132 @@ struct FgSwapChain final : IDXGISwapChain4 {
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present(sync, flags);
+        return DoPresent(sync, flags, nullptr, false);
+    }
+    // the game's Present and Present1
+    HRESULT DoPresent(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp, bool one)
+    {
+#ifdef FFXFG_DEBUG
+        const uint64_t n = st->presents + 1;
+        tr::g_seq++;
+        tr::g_presRet = 0;
+        tr::g_stackTid = GetCurrentThreadId();
+        tr::Put(tr::GP_CALL, st->frameId, n);
+        if (tr::g_on && (n & 255) == 1)
+            tr::HookInputs();
+        if (n == 1 || n == 3 || n == 600)
+            tr::CheckRealVt("at a present");
+#endif
+        // The answers to what the game asks of the swap chain until its next Present (see "Low latency"). While
+        // XeSS-FG's presentation thread is inside a Present of the real swap chain this waits for it, as the proxy's
+        // Present below would: a frame held up in front of its present, as far as the low latency is concerned.
+        const uint64_t first = g_latQueue.load() == st->queue ? g_latFirstSubmit.load() : 0;
+        float blockMs = 0;
+        if (g_pollCache && st->xefgEnabled && st->lat.abTurn != 0)
+            blockMs = PollAnswers();
+        else
+            PollForget();
         uint32_t id = BeforePresent(st);
-        HRESULT hr = sc->Present(sync, flags);
-        FrameDone(st, hr);
-        AfterPresent(st, id, hr, sync, flags);
+        TR(tr::GpuMarkSignal(st->gpu1, st->queue, n); tr::Put(tr::PX_CALL, id, n));
+        uint64_t span[3] = {};
+        t_eclSpan = g_origEcl ? span : nullptr;
+        HRESULT hr = one ? sc->Present1(sync, flags, pp) : sc->Present(sync, flags);
+        t_eclSpan = nullptr;
+        const uint64_t tEnd = Qpc();
+        TR(tr::Put(tr::PX_RET, (uint64_t)hr, n, 0, tEnd); tr::GpuMarkSignal(st->gpu2, st->queue, n));
+        LatGpuSignal(st);
+        // what the frame waited inside XeSS-FG's Present: between its first and last submission, or, when they did
+        // not show, the whole call less what it takes without a wait
+        if (span[2] >= 2)
+            blockMs += std::max(0.0f, QpcMs(span[0], span[1]) - kLatSpanMs);
+        else
+            blockMs += std::max(0.0f, QpcMs(st->tStart, tEnd) - kLatPresentMs);
+        AfterPresent(st, id, hr, sync, flags, tEnd, blockMs, first);
+#ifdef FFXFG_DEBUG
+        tr::g_seq++;
+        tr::Put(tr::GP_RET, (uint64_t)(QpcMs(tEnd, Qpc()) * 1000.0f), n, (uint16_t)std::min(blockMs * 100.0f, 65535.0f));
+        if (st->xefgEnabled)   // the stack sampler looks at frames with interpolation only
+            tr::g_presRet = Qpc();
+        g_traceNext = n + 1;
+#endif
         return hr;
     }
-    HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override { return sc->GetBuffer(i, riid, p); }
+    // Takes the answers from the swap chain: the frame statistics and the color spaces asked about since the last
+    // time. Returns how long that took (ms): it waits while a Present of the real swap chain is under way.
+    float PollAnswers()
+    {
+        const uint64_t t0 = Qpc();
+        DXGI_FRAME_STATISTICS fs = {};
+        const HRESULT fhr = sc->GetFrameStatistics(&fs);
+        ScState::ColorSpaceAnswer cs[8];
+        int n;
+        {
+            std::lock_guard<std::mutex> lk(st->pollLock);
+            n = st->nColorSpaces;
+            memcpy(cs, st->colorSpaces, sizeof(cs));
+        }
+        for (int i = 0; i < n; i++)
+            if (cs[i].asked)
+                cs[i].hr = sc->CheckColorSpaceSupport(cs[i].cs, &cs[i].support);
+        const float ms = QpcMs(t0, Qpc());
+        std::lock_guard<std::mutex> lk(st->pollLock);
+        st->stats = fs;
+        st->statsHr = fhr;
+        // the game may have asked about another color space meanwhile, on another thread: by value, not by place
+        int keep = 0;
+        for (int k = 0; k < st->nColorSpaces; k++) {
+            ScState::ColorSpaceAnswer a = st->colorSpaces[k];
+            for (int i = 0; i < n; i++)
+                if (cs[i].cs == a.cs) {
+                    if (cs[i].asked) {
+                        a.hr = cs[i].hr;
+                        a.support = cs[i].support;
+                        a.asked = false;
+                        a.idle = 0;
+                    } else {
+                        a.idle++;
+                    }
+                }
+            if (a.idle < 600)   // one not asked about any more is forgotten
+                st->colorSpaces[keep++] = a;
+        }
+        st->nColorSpaces = keep;
+        st->pollValid = true;
+        return ms;
+    }
+    // the swap chain itself answers from here on (interpolation off, a resize, a mode or color space change)
+    void PollForget()
+    {
+        std::lock_guard<std::mutex> lk(st->pollLock);
+        st->pollValid = false;
+        st->nColorSpaces = 0;
+    }
+    // A call of the game into the swap chain has returned (started at `t0`). If it waited there while XeSS-FG
+    // interpolates, for the presentation thread inside a Present of the real swap chain, the game's frame starts
+    // where it returns rather than where its Present returned, and the log names the call: the low latency then
+    // finds nothing to wait for (the frame is not held up in front of its next present), as before all this.
+    void Waited(const char* what, int id, uint64_t t0)
+    {
+        const uint64_t t1 = Qpc();
+        const float ms = QpcMs(t0, t1);
+        TR(tr::Put(tr::SCCALL, id, 0, (uint16_t)std::min(ms * 1000.0f, 65535.0f), t0));
+        if (ms < 2.0f || !st->xefgEnabled)
+            return;
+        st->frameStart = t1;
+        if (st->waitedSaid.fetch_add(1) < 8)
+            Log("the game's %s waited %.1f ms in the swap chain (for XeSS-FG's presentation thread): its frame starts "
+                "there, not where Present returned",
+                what, ms);
+    }
+// a call of the game passed on to the proxy, with Waited
+#define SC_FORWARD(what, id, call)  \
+    {                               \
+        const uint64_t t0 = Qpc();  \
+        auto r = call;              \
+        Waited(what, id, t0);       \
+        return r;                   \
+    }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT i, REFIID riid, void** p) override SC_FORWARD("GetBuffer", 1, sc->GetBuffer(i, riid, p))
     HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL f, IDXGIOutput* o) override
     {
         HRESULT hr;
@@ -1370,28 +2068,36 @@ struct FgSwapChain final : IDXGISwapChain4 {
             hr = sc->SetFullscreenState(f, o);
         }
         Log("SetFullscreenState(%d) -> 0x%08lx%s", f, (unsigned long)hr, g_noExclusive ? " (blocked)" : "");
+        PollForget();
         Recheck();
         return hr;
     }
     HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL* f, IDXGIOutput** o) override
     {
+        const uint64_t t0 = Qpc();
+        HRESULT hr;
         if (g_noExclusive) {
-            HRESULT hr = sc->GetFullscreenState(nullptr, o);
+            hr = sc->GetFullscreenState(nullptr, o);
             if (f)
                 *f = st->fakeFullscreen;
-            return hr;
+        } else {
+            hr = sc->GetFullscreenState(f, o);
         }
-        return sc->GetFullscreenState(f, o);
+        Waited("GetFullscreenState", 8, t0);
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* d) override
     {
+        const uint64_t t0 = Qpc();
         HRESULT hr = sc->GetDesc(d);
         if (SUCCEEDED(hr) && d && g_noExclusive)
             d->Windowed = !st->fakeFullscreen;
+        Waited("GetDesc", 4, t0);
         return hr;
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl) override
     {
+        PollForget();
         HRESULT hr = sc->ResizeBuffers(n, w, h, f, fl);
         Log("ResizeBuffers %u %ux%u fmt %d flags 0x%x -> 0x%08lx", n, w, h, (int)f, fl, (unsigned long)hr);
         if (SUCCEEDED(hr))
@@ -1426,25 +2132,38 @@ struct FgSwapChain final : IDXGISwapChain4 {
             st->xefgEnabled = false;  // the next present with frame data enables it again
         }
     }
-    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* m) override { return sc->ResizeTarget(m); }
-    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** o) override { return sc->GetContainingOutput(o); }
-    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override { return sc->GetFrameStatistics(s); }
-    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* c) override { return sc->GetLastPresentCount(c); }
+    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC* m) override
+    {
+        PollForget();
+        return sc->ResizeTarget(m);
+    }
+    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput** o) override SC_FORWARD("GetContainingOutput", 7, sc->GetContainingOutput(o))
+    // As of the last Present call while XeSS-FG interpolates (IGDEXT_XELL_POLLS, see "Low latency"): the swap chain's
+    // own answer waits for XeSS-FG's presentation thread whenever that is inside a Present.
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override
+    {
+        if (s) {
+            std::lock_guard<std::mutex> lk(st->pollLock);
+            if (st->pollValid) {
+                TR(tr::Put(tr::SCCALL, 5, 1));
+                *s = st->stats;
+                return st->statsHr;
+            }
+        }
+        SC_FORWARD("GetFrameStatistics", 5, sc->GetFrameStatistics(s))
+    }
+    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* c) override SC_FORWARD("GetLastPresentCount", 11, sc->GetLastPresentCount(c))
 
     // IDXGISwapChain1
-    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* d) override { return sc->GetDesc1(d); }
-    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* d) override { return sc->GetFullscreenDesc(d); }
-    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* h) override { return sc->GetHwnd(h); }
+    HRESULT STDMETHODCALLTYPE GetDesc1(DXGI_SWAP_CHAIN_DESC1* d) override SC_FORWARD("GetDesc1", 9, sc->GetDesc1(d))
+    HRESULT STDMETHODCALLTYPE GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* d) override SC_FORWARD("GetFullscreenDesc", 10, sc->GetFullscreenDesc(d))
+    HRESULT STDMETHODCALLTYPE GetHwnd(HWND* h) override SC_FORWARD("GetHwnd", 12, sc->GetHwnd(h))
     HRESULT STDMETHODCALLTYPE GetCoreWindow(REFIID riid, void** p) override { return sc->GetCoreWindow(riid, p); }
     HRESULT STDMETHODCALLTYPE Present1(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp) override
     {
         if (flags & DXGI_PRESENT_TEST)
             return sc->Present1(sync, flags, pp);
-        uint32_t id = BeforePresent(st);
-        HRESULT hr = sc->Present1(sync, flags, pp);
-        FrameDone(st, hr);
-        AfterPresent(st, id, hr, sync, flags);
-        return hr;
+        return DoPresent(sync, flags, pp, true);
     }
     BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() override { return sc->IsTemporaryMonoSupported(); }
     HRESULT STDMETHODCALLTYPE GetRestrictToOutput(IDXGIOutput** o) override { return sc->GetRestrictToOutput(o); }
@@ -1493,18 +2212,52 @@ struct FgSwapChain final : IDXGISwapChain4 {
             h = sc->GetFrameLatencyWaitableObject();
         }
         Log("GetFrameLatencyWaitableObject -> %p (own %d)", (void*)h, g_ownWait);
+        TR(tr::Put(tr::WAITOBJ));
         return h;
     }
     HRESULT STDMETHODCALLTYPE SetMatrixTransform(const DXGI_MATRIX_3X2_F* m) override { return sc->SetMatrixTransform(m); }
     HRESULT STDMETHODCALLTYPE GetMatrixTransform(DXGI_MATRIX_3X2_F* m) override { return sc->GetMatrixTransform(m); }
 
     // IDXGISwapChain3
-    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override { return sc->GetCurrentBackBufferIndex(); }
-    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE c, UINT* s) override { return sc->CheckColorSpaceSupport(c, s); }
-    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override { return sc->SetColorSpace1(c); }
+    UINT STDMETHODCALLTYPE GetCurrentBackBufferIndex() override SC_FORWARD("GetCurrentBackBufferIndex", 2, sc->GetCurrentBackBufferIndex())
+    // As of the last Present call while XeSS-FG interpolates, like GetFrameStatistics: a color space the game asks
+    // about for the first time goes to the swap chain, and is asked again at each Present from then on.
+    HRESULT STDMETHODCALLTYPE CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE c, UINT* s) override
+    {
+        if (!s)
+            return sc->CheckColorSpaceSupport(c, s);
+        {
+            std::lock_guard<std::mutex> lk(st->pollLock);
+            for (int i = 0; st->pollValid && i < st->nColorSpaces; i++)
+                if (st->colorSpaces[i].cs == c) {
+                    TR(tr::Put(tr::SCCALL, 6, 1));
+                    st->colorSpaces[i].asked = true;
+                    *s = st->colorSpaces[i].support;
+                    return st->colorSpaces[i].hr;
+                }
+        }
+        const uint64_t t0 = Qpc();
+        const HRESULT hr = sc->CheckColorSpaceSupport(c, s);
+        Waited("CheckColorSpaceSupport", 6, t0);
+        std::lock_guard<std::mutex> lk(st->pollLock);
+        if (st->pollValid && st->nColorSpaces < 8) {
+            bool have = false;
+            for (int i = 0; i < st->nColorSpaces; i++)
+                have |= st->colorSpaces[i].cs == c;
+            if (!have)
+                st->colorSpaces[st->nColorSpaces++] = {c, hr, *s, true, 0};
+        }
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override
+    {
+        PollForget();
+        return sc->SetColorSpace1(c);
+    }
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
                                              IUnknown* const* queues) override
     {
+        PollForget();
         HRESULT hr = sc->ResizeBuffers1(n, w, h, f, fl, mask, queues);
         Log("ResizeBuffers1 %u %ux%u fmt %d -> 0x%08lx", n, w, h, (int)f, (unsigned long)hr);
         if (SUCCEEDED(hr))
@@ -1515,6 +2268,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
 
     // IDXGISwapChain4
     HRESULT STDMETHODCALLTYPE SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d) override { return sc->SetHDRMetaData(t, n, d); }
+#undef SC_FORWARD
 };
 
 // the current swap chain with a reference, so that a context destroyed on another thread stays valid while in use
@@ -1756,6 +2510,35 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
     ip.initFlags = XefgInitFlags();
     ip.maxInterpolatedFrames = XEFG_SWAPCHAIN_USE_MAX_SUPPORTED_INTERPOLATED_FRAMES;
     ip.uiMode = XEFG_SWAPCHAIN_UI_MODE_AUTO;
+    if ((g_lat == 1 && !g_ffxCap) || g_times) {
+        // the low latency measures in XeSS-FG's Present and on the game's queue (HookEcl, LatGpu), and waits for this
+        // XeLL context itself
+        if (HookEclVt(queue)) {
+            g_latFirstSubmit = 0;
+            g_latQueue = queue;
+            LatGpuStart(st);
+        }
+        if (g_lat == 1 && !g_ffxCap)
+            ShimExternalPacing(st->xell, 1);
+    }
+#ifdef FFXFG_DEBUG
+    if (tr::g_on) {
+        // the real swap chain's Present, the queues' ExecuteCommandLists and Signal, the GPU marks, the input calls
+        tr::HookFactory();
+        HookEclVt(queue);
+        tr::HookQueueVt(queue);
+        g_traceQueue = queue;
+        st->gpu1 = tr::GpuMarkCreate(st->device, tr::GPU1);
+        st->gpu3 = tr::GpuMarkCreate(st->device, tr::GPU3);
+        g_tracePre = st->gpu3;
+        st->gpu2 = tr::GpuMarkCreate(st->device, tr::GPU2);
+        tr::HookInputs();
+    }
+    struct Capturing {   // the swap chain XeSS-FG makes now is the real one
+        Capturing() { tr::g_capturing++; }
+        ~Capturing() { tr::g_capturing--; }
+    } capturing;
+#endif
 
     if (kind == ScKind::Wrap) {
         // XeSS-FG takes the game's reference and recreates the native swap chain, as FFX's wrap does.
@@ -1772,11 +2555,13 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
         f2->Release();
     }
     Log("xefgSwapChainD3D12InitFromSwapChain(Desc) -> %d", (int)r);
+    TR(tr::CheckRealVt("after XeSS-FG's setup"));
     if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         return fail("xefgSwapChainD3D12InitFromSwapChain(Desc)", r);
     r = p_xefgSwapChainD3D12GetSwapChainPtr(st->xefg, IID_PPV_ARGS(&st->proxy));
     if (r != XEFG_SWAPCHAIN_RESULT_SUCCESS || !st->proxy)
         return fail("xefgSwapChainD3D12GetSwapChainPtr", r);
+    ShimProxyOwned(st->proxy, 1);
 
     xefg_swapchain_properties_t props = {};
     if (p_xefgSwapChainGetProperties(st->xefg, &props) == XEFG_SWAPCHAIN_RESULT_SUCCESS)
@@ -1799,6 +2584,7 @@ static ffxReturnCode_t CreateSwapChainContext(ffxContext* context, ScKind kind, 
     if (g_oflow && !(st->oflow = OflowCreate(st->device, st->width, st->height, g_oflowDepth)))
         Log("oflow: not available, the game's motion vectors are used");
     st->wrapper = new FgSwapChain(st);
+    TR(tr::g_ownVt = *(void***)static_cast<IDXGISwapChain4*>(st->wrapper));
     // FFX's context keeps a reference to the swap chain until ffxDestroyContext; Wuthering Waves (FSR 3.1.1) drops
     // its own reference before that and still presents
     st->wrapper->AddRef();
@@ -1924,6 +2710,7 @@ static void TagPrepare(FgCtx* fg, uint64_t frameID, void* cmdList, FfxApiDimensi
             st->pending.pop_front();
     }
     Order("prepare", id);
+    TR(tr::Put(tr::PREP, id));
 
     // SIMULATION_START went out with the sleep after the last present when the id was the expected one, else now
     XellMarker(st, id, XELL_SIMULATION_END);
@@ -2057,6 +2844,7 @@ static ffxReturnCode_t FgConfigure(FgCtx* fg, const ffxApiHeader* desc)
                     (void*)d->presentCallback, (void*)d->frameGenerationCallback);
             st->gameEnabled = d->frameGenerationEnabled;
             Order("configure", d->frameID);
+            TR(tr::Put(tr::CONF, d->frameID, d->frameGenerationEnabled));
             // only while frame generation is on: RE Requiem configures with frame 0 every frame before that, and
             // XeSS-FG rejects a second tag for the same frame
             if (d->HUDLessColor.resource && d->frameGenerationEnabled && g_hudless) {

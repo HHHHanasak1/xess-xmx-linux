@@ -16,6 +16,7 @@ patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-tim
 layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's session default; xmx-stock.sh:
                               the system's own, per game) and XeSS's Vulkan path on Xe3, with every driver of the package
 shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
+common/lowlat_check.h         the check of the low latency's wait, shared by the shim and the frame generation DLL
 controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
 ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
                               amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
