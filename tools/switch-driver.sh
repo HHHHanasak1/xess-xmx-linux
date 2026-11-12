@@ -40,6 +40,9 @@ if ! XMX_CHECK_LIB="$NEW" XMX_CHECK_ICD="$TMPICD" bash "$PKG/tools/session-check
 fi
 echo "$match" > "$LIB/active.new" && mv -f "$LIB/active.new" "$LIB/active"
 echo "== default: Mesa $match. Games started from now on use it (unless their launch options set MESA)."
-if command -v systemctl >/dev/null && ! systemctl --user show-environment 2>/dev/null | grep -q "^VK_DRIVER_FILES=$PKG/run/intel_icd.json"; then
+if command -v systemctl >/dev/null && systemctl --user show-environment 2>/dev/null | grep -q "^MESA=stock-"; then
+  echo "   This session is in stock mode (unpatched Mesa + VK_LAYER_XESS_xmx), so games keep using that driver. To use"
+  echo "   Mesa $match: XMX_DRIVER=patched ./install.sh, then log out and in."
+elif command -v systemctl >/dev/null && ! systemctl --user show-environment 2>/dev/null | grep -q "^VK_DRIVER_FILES=$PKG/run/intel_icd.json"; then
   echo "   This session does not use the patched driver (session check failed, or install.sh not run): log out and in once."
 fi
