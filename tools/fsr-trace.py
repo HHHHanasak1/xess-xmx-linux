@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# fsr-trace.py <ffx_xefg_trace.txt> [from_s to_s] [--frames=N] [--dump] [--min-world-ms=M] [--max-world-ms=M]
+# fsr-trace.py <ffx_xefg_trace.txt> [from_s to_s] [--frames=N] [--dump] [--subs] [--min-world-ms=M] [--max-world-ms=M]
 # Reads the event file of FFX_XEFG_TRACE=1 (ffxfg/ffx_trace.h, a debug build of the frame generation DLL): the time line
 # of every frame on the FSR routes. Prints, for the frames with an FFX prepare (frame generation running), and
 # separately for the stretches with the low latency's wait on and off (FFX_XEFG_AB):
@@ -12,6 +12,8 @@
 #     last real present returned
 # and, with FFX_XEFG_AB, the frame time of every turn and per setting the mean of its turns: what the wait costs in
 # frame rate shows between neighbouring turns, a scene drifts more than that over a run.
+# --subs (a trace made with FFX_XEFG_TRACE_SUBS=1 too): every submission to a D3D12 queue with the time the GPU
+# finished it: per queue the time of a frame with unfinished work, and --frames=N frames with all their submissions.
 # --frames=N lists N frames from the middle with all their events; --dump prints the events as they are;
 # --min-world-ms=M leaves out frames shorter than M ms (menus) from the statistics, --max-world-ms=M frames longer
 # than M ms (loading, hitches) from the turns' means. from_s to_s: only that part of the file (seconds).
@@ -63,6 +65,130 @@ def new_frame(n, hold_on, since):
             "since": since}
 
 
+def subs(path, t_from, t_to, nshow, lo, hi):
+    """FFX_XEFG_TRACE_SUBS=1: every submission to a D3D12 queue with the time the GPU finished it: the queues, per queue
+    the time of a frame in which it had unfinished work, and nshow frames from the middle with all their submissions"""
+    queues = {}
+    subs = []          # [submit t, tid, queue, value, lists, flags, done t or None]
+    bykey = {}
+    frames = []        # [call, pxc, take, ret, n]
+    rp = []            # real presents (call, ret, tid)
+    rp_open = {}
+    gpu = {12: {}, 13: {}, 19: {}}
+    pt = None
+    cur = None
+    for line in open(path):
+        p = line.split()
+        if len(p) != 6:
+            continue
+        t = int(p[0]) / 1000.0
+        if t_from is not None and t < t_from:
+            continue
+        if t_to is not None and t > t_to:
+            break
+        tid, ty, n, a, b = int(p[1]), int(p[2]), int(p[3]), int(p[4]), int(p[5])
+        if ty == 21:
+            queues[n] = (a, b)
+        elif ty == 7:
+            v, q = b >> 8, (b >> 4) & 15
+            if v:
+                s = [t, tid, q, v, a, b & 15, None]
+                subs.append(s)
+                bykey[(q, v)] = s
+        elif ty == 20:
+            # every value up to a of queue b is finished now
+            v = a
+            while v > 0 and (b, v) in bykey and bykey[(b, v)][6] is None:
+                bykey[(b, v)][6] = t
+                v -= 1
+        elif ty == 1:
+            pt = tid
+            cur = [t, None, None, None, b]
+        elif ty == 2 and cur:
+            cur[1] = t
+        elif ty == 3 and cur:
+            cur[2] = t
+        elif ty == 4 and cur and tid == pt:
+            cur[3] = t
+            frames.append(cur)
+            cur = None
+        elif ty == 5:
+            rp_open[tid] = t
+        elif ty == 6 and tid in rp_open:
+            rp.append((rp_open.pop(tid), t, tid))
+        elif ty in gpu:
+            gpu[ty][a] = t
+
+    TYPES = {0: "direct", 1: "bundle", 2: "compute", 3: "copy"}
+    print("queues:", ", ".join(f"q{i} {TYPES.get(ty, ty)} {ptr:x}" for i, (ptr, ty) in sorted(queues.items())))
+    good = [(a, b) for a, b in zip(frames, frames[1:]) if lo <= b[2] - a[2] <= hi]
+    print(f"{len(frames)} frames, {len(good)} of {lo}..{hi} ms, {len(subs)} submissions")
+    if not good:
+        return
+
+    # per queue: the time per frame with unfinished work on it (from take to take)
+    busy = collections.defaultdict(list)
+    T = []
+    subs.sort(key=lambda s: s[0])
+    si = 0
+    for a, b in good:
+        t0, t1 = a[2], b[2]
+        T.append(t1 - t0)
+        per = collections.defaultdict(list)
+        for s in subs:
+            if s[6] is None or s[6] < t0 - 100:
+                continue
+            if s[0] > t1:
+                break
+            per[s[2]].append((max(s[0], t0), min(s[6], t1)))
+        for q, iv in per.items():
+            iv = sorted(x for x in iv if x[1] > x[0])
+            tot, end = 0.0, None
+            for x0, x1 in iv:
+                if end is None or x0 > end:
+                    tot += x1 - x0
+                    end = x1
+                elif x1 > end:
+                    tot += x1 - end
+                    end = x1
+            busy[q].append(tot)
+    print(f"frame time mean {statistics.fmean(T):.2f} ms")
+    for q in sorted(busy):
+        v = busy[q] + [0.0] * (len(good) - len(busy[q]))
+        print(f"  q{q} ({TYPES.get(queues.get(q, (0, -1))[1], '?')}): unfinished work for {statistics.fmean(v):6.2f} ms of a frame ({100 * statistics.fmean(v) / statistics.fmean(T):.0f}%)")
+
+    mid = len(good) // 2
+    for a, b in good[mid:mid + nshow]:
+        t0, t1 = a[2], b[2]
+        print(f"\nframe with present {b[4]}: take {t0:.3f} -> take {t1:.3f} ({t1 - t0:.2f} ms); times from the first take")
+        rows = [(b[0] - t0, "PRESENT CALLED by the game"), (b[1] - t0, "proxy Present called"), (0.0, "take (proxy Present returned)"),
+                (t1 - t0, "TAKE (proxy Present returned)")]
+        for c, r, tid in rp:
+            if t0 - 1 <= c <= t1 + 1:
+                rows.append((c - t0, f"real present by t{tid}, {r - c:.2f} ms inside"))
+        for ty, nm in ((12, "GPU reached the Present call of"), (13, "GPU finished the interpolation of"), (19, "GPU got to the first work of")):
+            for k, t in gpu[ty].items():
+                if t0 <= t <= t1:
+                    rows.append((t - t0, f"{nm} present {k}"))
+        lastdone = {}
+        for s in subs:
+            if s[0] < t0 - 40:
+                continue
+            if s[0] > t1 + 1:
+                break
+            d = s[6]
+            prev = lastdone.get(s[2])
+            ran = (d - max(s[0], prev)) if d is not None and prev is not None else (d - s[0] if d is not None else None)
+            if d is not None:
+                lastdone[s[2]] = d
+            if s[0] >= t0 - 1 or (d is not None and d >= t0):
+                rows.append((s[0] - t0, f"submit t{s[1]} q{s[2]}#{s[3]} {s[4]} lists{' (own)' if s[5] & 2 else ''} -> finished at "
+                             + (f"{d - t0:7.2f} ({ran:5.2f} ms after the one before / its submission)" if d is not None else "?")))
+        for t, txt in sorted(rows):
+            print(f"  {t:8.2f}  {txt}")
+
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     opts = [a for a in sys.argv[1:] if a.startswith("--")]
@@ -76,12 +202,18 @@ def main():
         return
     minw = next((float(a.split("=")[1]) for a in opts if a.startswith("--min-world-ms=")), 0.0)
     maxw = next((float(a.split("=")[1]) for a in opts if a.startswith("--max-world-ms=")), 1e9)
+    if "--subs" in opts:
+        k = next((int(a.split("=")[1]) for a in opts if a.startswith("--frames=")), 2)
+        subs(args[0], t0 * 1000 if t0 is not None else None, t1 * 1000 if t1 is not None else None, k, minw or 20.0,
+             maxw if maxw < 1e9 else 80.0)
+        return
     F = collections.OrderedDict()
     cur = None            # the present under way on the present thread
     last_ret = None       # (n, time) of the newest GP_RET
     pres_tid = None
     hold_on, switch_t = 0, None
     rp, rp_open = [], {}
+    G3 = {}
     for t, tid, ty, n, a, b in ev:
         if ty == 1:
             pres_tid = tid
@@ -108,6 +240,8 @@ def main():
             for k in list(F.keys())[-8:]:
                 if k <= a and key not in F[k]:
                     F[k][key] = t
+        elif ty == 19:
+            G3[a] = t     # the queue and the GPU reached the first submission of the frame with present number a
         elif ty == 16 and a == 1:
             hold_on, switch_t = b, t
         elif ty == 5:
@@ -184,6 +318,9 @@ def main():
              [p["gpu2"] - first(f) for f in fr for p in [F.get(f["n"] - 1)] if first(f) and p and "gpu2" in p])
         stat("previous frame's interpolation done -> Present call",
              [f["gp_call"] - p["gpu2"] for f in fr for p in [F.get(f["n"] - 1)] if p and "gpu2" in p])
+        stat("first work -> queue and GPU got to it", [G3[f["n"]] - first(f) for f in fr if first(f) and f["n"] in G3])
+        stat("GPU finished the frame before -> got to first work",
+             [G3[f["n"]] - p["gpu2"] for f in fr for p in [F.get(f["n"] - 1)] if f["n"] in G3 and p and "gpu2" in p])
         stat("frame start -> first work (the game's queue)", [first(f) - f["prev_ret"] for f in fr if first(f)])
         stat("first work -> Present call", [f["gp_call"] - first(f) for f in fr if first(f)])
         stat("first submission on any queue -> Present call", [f["gp_call"] - f["ecl"][0][0] for f in fr if f["ecl"]])

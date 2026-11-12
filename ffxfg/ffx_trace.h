@@ -32,6 +32,9 @@ enum Type : uint16_t {
     WAITOBJ = 17,  // GetFrameLatencyWaitableObject
     SCCALL = 18,   // another swap chain method called by the game: a = which (1 GetBuffer, 2 GetCurrentBackBufferIndex,
                    //                                             3 ResizeBuffers, 4 GetDesc*), n = us inside
+    GPU3 = 19,     // the queue and the GPU reached the game's first submission of the frame that ends with present a
+    SUBDONE = 20,  // FFX_XEFG_TRACE_SUBS: the GPU finished submission a of queue b (ECL: b = flags | queue << 4 | a << 8)
+    SUBQ = 21,     // a queue seen by FFX_XEFG_TRACE_SUBS: a = its pointer, b = its type (0 direct, 2 compute, 3 copy), n = index
 };
 
 struct Ev {
@@ -491,6 +494,104 @@ static void GpuMarkDestroy(GpuMark* g)
     CloseHandle(g->ev);
     CloseHandle(g->wake);
     delete g;
+}
+
+// FFX_XEFG_TRACE_SUBS=1: when the GPU finished each submission. A fence per queue, signalled after every
+// ExecuteCommandLists (SubSignal), and a thread per queue that notes when each value is reached. Never torn down.
+struct SubQueue {
+    ID3D12CommandQueue* q = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE ev = nullptr, wake = nullptr;
+    std::atomic<uint64_t> signaled{0};
+    std::mutex lock;
+    int index = 0;
+};
+static bool g_subs = false;
+static SubQueue g_subQ[8];
+static std::atomic<int> g_nSubQ{0};
+static std::mutex g_subLock;
+
+static DWORD WINAPI SubThread(void* p)
+{
+    auto* s = (SubQueue*)p;
+    t_own = true;
+    uint64_t done = 0;
+    for (;;) {
+        if (done >= s->signaled.load()) {
+            WaitForSingleObject(s->wake, 100);
+            continue;
+        }
+        uint64_t v = done + 1;
+        if (s->fence->GetCompletedValue() < v) {
+            s->fence->SetEventOnCompletion(v, s->ev);
+            WaitForSingleObject(s->ev, 1000);
+        }
+        uint64_t c = s->fence->GetCompletedValue();
+        if (c >= v && c != UINT64_MAX) {
+            Put(SUBDONE, c, (uint64_t)s->index);
+            done = c;
+        }
+    }
+    return 0;
+}
+
+// after an ExecuteCommandLists on q: returns the value signalled behind it (0 = none) and the queue's index
+static uint64_t SubSignal(ID3D12CommandQueue* q, int* index)
+{
+    if (!g_subs || !g_on)
+        return 0;
+    SubQueue* s = nullptr;
+    int n = g_nSubQ.load();
+    for (int i = 0; i < n && !s; i++)
+        if (g_subQ[i].q == q)
+            s = &g_subQ[i];
+    if (!s) {
+        std::lock_guard<std::mutex> lk(g_subLock);
+        n = g_nSubQ.load();
+        for (int i = 0; i < n && !s; i++)
+            if (g_subQ[i].q == q)
+                s = &g_subQ[i];
+        if (!s) {
+            if (n >= 8)
+                return 0;
+            SubQueue* c = &g_subQ[n];
+            ID3D12Device* dev = nullptr;
+            if (FAILED(q->GetDevice(IID_PPV_ARGS(&dev))))
+                return 0;
+            HRESULT hr = dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&c->fence));
+            dev->Release();
+            if (FAILED(hr))
+                return 0;
+            if (!g_origSetEvent) {
+                void** vt = *(void***)c->fence;
+                PatchVt(vt, 9, (void*)H_SetEvent, (void**)&g_origSetEvent);
+            }
+            c->q = q;
+            c->index = n;
+            c->ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+            c->wake = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+            CloseHandle(CreateThread(nullptr, 0, SubThread, c, 0, nullptr));
+            Put(SUBQ, (uint64_t)(uintptr_t)q, (uint64_t)q->GetDesc().Type, (uint16_t)n);
+            g_nSubQ = n + 1;
+            s = c;
+        }
+    }
+    bool was = t_own;
+    t_own = true;
+    uint64_t v = 0;
+    {
+        std::lock_guard<std::mutex> lk(s->lock);   // several threads submit to one queue: the values stay in order
+        v = s->signaled.load() + 1;
+        if (SUCCEEDED(q->Signal(s->fence, v))) {
+            s->signaled.store(v);
+            SetEvent(s->wake);
+        } else {
+            v = 0;
+        }
+    }
+    t_own = was;
+    *index = s->index;
+    return v;
 }
 
 static void HookQueueVt(ID3D12CommandQueue* q)
