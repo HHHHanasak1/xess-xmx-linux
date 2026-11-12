@@ -27,7 +27,9 @@
 # The variables behind them go into Proton's user_settings, which never override one the launch options set themselves.
 # XESS=latest: while the game runs, each libxess.dll / libxess_fg.dll / libxell.dll in the game folder that is older
 # than the SDK's is renamed to <name>.xmx-orig and replaced by a link to the SDK's file; each libxess_dx11.dll by a link
-# to the package's (dx11bridge/, XeSS for D3D11 on D3D12), with the SDK's libxess.dll added next to it if the game has
+# to the package's (dx11bridge/, XeSS for D3D11 on D3D12). Every link points to a copy made for the run
+# (<lock file>.d/, removed with it), not into the package: Wuthering Waves' launcher 3.0 deleted package files through
+# the links, with the SDK's libxess.dll added next to it if the game has
 # none there. When Proton exits (the
 # game ended, or Steam stopped it) the originals are put back. A run that was killed outright leaves the links; the
 # next game start (with or without XESS) or uninstall.sh puts the originals back. Steam starts Proton more than once for
@@ -35,7 +37,7 @@
 # it lives: links whose lock nobody holds any more are left over; links of a live run are not touched.
 # FSR / FSR_FG swap the same way; a file the game does not have (libxess_fg.dll, libxell.dll, the upscaler and frame
 # generation DLLs next to the loader) is added as a link (no .xmx-orig) and removed again.
-import atexit, fcntl, os, signal, sys
+import atexit, fcntl, os, shutil, signal, sys
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(PKG, "xess")
@@ -165,7 +167,10 @@ def ours(path, listed=False):
         return False
     d = os.path.dirname(os.readlink(path))
     if d in (STORE, FFXFG, FFX, DX11, VKWRAP):
-        return True
+        return True   # a link of an older version of this script, straight to the package's file
+    if os.path.basename(os.path.dirname(os.path.dirname(d))) == "xess-swap" and d.endswith(
+            ("/xess", "/ffxfg", "/ffx", "/dx11bridge", "/vkwrap")) and os.path.dirname(d).endswith(".d"):
+        return True   # a link to a run's copy (Swaps.link)
     return os.path.basename(d) in ("xess", "ffxfg", "ffx", "dx11bridge", "vkwrap") and (
         listed or os.path.isfile(os.path.join(os.path.dirname(d), "tools", "proton-hook.py")))
 
@@ -192,6 +197,10 @@ def clean_left_over():
         return
     for name in names:
         lf = os.path.join(LOCKS, name)
+        if name.endswith(".d"):
+            if not os.path.exists(lf[:-2]):
+                shutil.rmtree(lf, ignore_errors=True)   # the copies of a run whose lock file is gone
+            continue
         try:
             fd = os.open(lf, os.O_RDWR)
         except OSError:
@@ -208,6 +217,7 @@ def clean_left_over():
                     say("XESS / FSR_FG: %s put back (left by a run that was killed)" % p)
             if not any(ours(p, True) for p in paths):
                 os.remove(lf)
+                shutil.rmtree(lf + ".d", ignore_errors=True)
 
 
 class Swaps:
@@ -217,8 +227,20 @@ class Swaps:
         self.paths = []
         self.lock = None
 
+    def copy(self, target):
+        """this run's copy of the package file target (<lock>.d/<target's folder>/<name>). The game's links point here,
+        not into the package: a launcher that repairs the game folder through a link (Wuthering Waves' launcher 3.0
+        deleted the package's libxell.dll and libxess_dx11.dll that way) then only reaches this copy"""
+        d = os.path.join(self.lock.name + ".d", os.path.basename(os.path.dirname(target)))
+        c = os.path.join(d, os.path.basename(target))
+        if not os.path.isfile(c):
+            os.makedirs(d, exist_ok=True)
+            shutil.copy2(target, c + ".tmp")
+            os.replace(c + ".tmp", c)
+        return c
+
     def link(self, f, target):
-        """f (existing or not) becomes a link to target; an existing f is kept as f.xmx-orig"""
+        """f (existing or not) becomes a link to this run's copy of target; an existing f is kept as f.xmx-orig"""
         if self.lock is None:
             os.makedirs(LOCKS, exist_ok=True)
             path = os.path.join(LOCKS, "%d-%x" % (os.getpid(), id(self)))
@@ -236,7 +258,7 @@ class Swaps:
         tmp = f + ".xmx-tmp"
         if os.path.lexists(tmp):
             os.remove(tmp)
-        os.symlink(target, tmp)
+        os.symlink(self.copy(target), tmp)
         self.paths.append(f)
         if os.path.exists(f):
             try:
@@ -596,6 +618,7 @@ def main():
             if swaps.lock:
                 os.remove(swaps.lock.name)
                 swaps.lock.close()
+                shutil.rmtree(swaps.lock.name + ".d", ignore_errors=True)
         except OSError:
             pass
         if n:
