@@ -59,11 +59,11 @@ while IFS= read -r lib; do
     # a link of the user's own that merely looks alike stays: ours has an original beside it, a lock file listing it, or
     # a package at its target. Originals back, each in one rename over the link; links to files the game never had go
     t=$(readlink "$f"); p=${t%/*/*}
-    if [ ! -f "$f.xmx-orig" ] && [ ! -f "$p/tools/proton-hook.py" ] &&
+    if [ ! -f "$f.xmx-orig" ] && [ ! -f "$p/tools/proton-hook.py" ] && case "$t" in */xess-swap/*.d/*) false ;; *) true ;; esac &&
        ! grep -qsxF "$f" "${XDG_CACHE_HOME:-$HOME/.cache}"/xess-xmx/xess-swap/*; then continue; fi
     if [ -f "$f.xmx-orig" ]; then mv -f "$f.xmx-orig" "$f" && echo "   restored $f"; else rm -f "$f" && echo "   removed $f"; fi
   done < <(find "$lib"/steamapps/common -maxdepth 12 \( -type l \( -lname "*/xess/lib*.dll" -o -lname "*/ffxfg/*.dll" -o -lname "*/ffx/amd_fidelityfx*.dll" \
-             -o -lname "*/dx11bridge/*.dll" -o -lname "*/vkwrap/*.dll" \) \
+             -o -lname "*/dx11bridge/*.dll" -o -lname "*/vkwrap/*.dll" -o -lname "*/xess-swap/*.d/*" \) \
              -o -name '*.ffxfg-orig' -o -name .ffxfg-added \) -print0 2>/dev/null)
   for d in "${!ffxfg[@]}"; do bash "$PKG/tools/fsr-fg.sh" off "$d"; done
   unset ffxfg
