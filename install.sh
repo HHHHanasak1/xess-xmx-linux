@@ -48,18 +48,16 @@ for d in "$PKG"/lib/mesa-stock-*/; do
 %s
 ' "$STOCKV" "$v" | sort -V | tail -1)" = "$v" ]; } && STOCKV=$v
 done
-# the GPUs the layer serves (layer/src/gens.h): Xe3 (device id & 0xfff0 = 0xb080 or 0xfd80) and Xe2 (Lunar Lake,
-# Battlemage: the ids of Mesa 26.3; the layer compiles every kernel for 128 GRF there)
+# the GPUs the layer serves: layer/gpu-ids.txt, the list compiled into the layer ("<xe3|xe2> <id>": Mesa 26.3's Panther
+# Lake, Wildcat Lake, Lunar Lake and Battlemage ids; on Xe2 the layer compiles every kernel for 128 GRF)
 served=""
 for dev in /sys/bus/pci/devices/*; do
   [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] || continue
   case "$(cat "$dev/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
-  id=$(cat "$dev/device" 2>/dev/null || echo 0)
-  case $(( id & 0xfff0 )) in $((0xb080))|$((0xfd80))) served="$served xe3"; continue ;; esac
-  case "$id" in
-    0x6420|0x64a0|0x64b0|0xe202|0xe209|0xe20b|0xe20c|0xe20d|0xe210|0xe211|0xe212|0xe215|0xe216|0xe220|0xe221|0xe222|0xe223)
-      served="$served xe2" ;;
-  esac
+  id=$(cat "$dev/device" 2>/dev/null) || continue
+  g=$(awk -v id="$id" '{ sub(/\r$/, ""); sub(/#.*/, "") } NF == 2 && tolower($2) == tolower(id) { print $1; exit }' \
+        "$PKG/layer/gpu-ids.txt" 2>/dev/null)
+  [ -n "$g" ] && served="$served $g"
 done
 case "${XMX_DRIVER:-}" in
   "") MODE=$(cat "$MODEF" 2>/dev/null) ;;

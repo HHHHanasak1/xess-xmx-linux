@@ -57,7 +57,8 @@ files += bundled
 # libVkLayer_xess_xmx.so is the CI artifact "xmx-layer" (job "layer", layer/build.sh) copied into layer/; the manifest
 # is the repository's layer/VkLayer_xess_xmx.json (library_path ./libVkLayer_xess_xmx.so, next to it). At run time it
 # needs tools/cm-compile.sh and the compiler bundle (igc/), which the package has anyway. BLAKE3 is compiled into it
-layer = ["layer/libVkLayer_xess_xmx.so", "layer/VkLayer_xess_xmx.json",
+# (its licences ship). layer/gpu-ids.txt: the GPUs the layer serves, which install.sh reads for its stock-mode choice
+layer = ["layer/libVkLayer_xess_xmx.so", "layer/VkLayer_xess_xmx.json", "layer/gpu-ids.txt",
          "layer/third_party/blake3/LICENSE_A2", "layer/third_party/blake3/LICENSE_CC0"]
 so = os.path.join(root, layer[0])
 if os.path.isfile(so):
