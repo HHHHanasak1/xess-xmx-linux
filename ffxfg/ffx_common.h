@@ -1,5 +1,5 @@
 // ffx_common.h - what the two FidelityFX provider DLLs, amd_fidelityfx_upscaler_dx12.dll (ffx_xess.cpp) and
-// amd_fidelityfx_framegeneration_dx12.dll (ffx_xefg.cpp), have in common: the log, the settings
+// amd_fidelityfx_framegeneration_dx12.dll (ffx_xefg*.cpp, through ffx_xefg.h), have in common: the log, the settings
 // (the environment and <name>.env beside the DLL) and the FFX resource states. Included after <windows.h>, <d3d12.h>
 // and the FFX API headers. Each DLL gets its own copy of the state below; the source files of one DLL share it (the
 // variables and functions are inline).
