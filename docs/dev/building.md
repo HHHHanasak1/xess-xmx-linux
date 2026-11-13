@@ -13,8 +13,8 @@ patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-tim
                               0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                               patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
                               cooperative matrix shaders
-layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's session default; xmx-stock.sh:
-                              the system's own, per game) and XeSS's Vulkan path on Xe3, with every driver of the package
+layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's and Xe2's session default; xmx-stock.sh:
+                              the system's own, per game) and XeSS's Vulkan path (Xe3: every driver of the package; Xe2: unpatched)
 shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
 common/lowlat_check.h         the check of the low latency's wait, shared by the shim and the frame generation DLL
 controllib/                   ControlLib.dll source: the frame generation override (XESS_FG)
@@ -186,7 +186,7 @@ If you omit the output directory argument (`layer/build.sh`), it defaults to `la
 
 ### Layer Unit Tests and Probing a New Mesa Version
 
-`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`), the C prologue table against the IGA assembler (`test_prologue`), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
+`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
 
 ANV's serialized compute shader format (`layer/src/anvbin.c`) differs between Mesa minor versions. `layer/src/layouts.h` holds one measured offset table (`struct anv_layout`) per supported version (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`), including `pd_size_patched` (`656` on 26.1.2, `664` on 26.3.0) for this project's patched drivers. The offsets were measured on exported binaries from the variant shaders in `layer/tests/variants` rather than taken from Mesa's headers:
 

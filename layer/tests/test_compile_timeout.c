@@ -56,7 +56,7 @@ main(int argc, char **argv)
    unlink(fp);
    unlink(pidf);
 
-   const struct xmx_dev_info dev = { 0xb080, 64 };
+   const struct xmx_dev_info dev = { 0xb080, 64, 0, "xe3" };
    struct timespec t0, t1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    uint8_t *img = NULL;

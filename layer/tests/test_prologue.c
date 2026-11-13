@@ -1,7 +1,7 @@
 /* test_prologue.c - helper of tests/build.sh for the prologue check:
  *   test_prologue cml <zebin> <options> <out.cml>   pack a zebin with the work-group size of its options into CML1
- *   test_prologue pro <in.cml> <out.bin>            write the C-built prologue of a CML1 kernel
- * build.sh compares the latter with tools/prologue_asm.py's assembled prologue of the same file. */
+ *   test_prologue pro <in.cml> <out.bin> [xe2|xe3]  write the C-built prologue of a CML1 kernel (default xe3)
+ * build.sh compares the latter with tools/prologue_asm.py's assembled prologue of the same file and platform. */
 #include "../src/cmk.h"
 #include "../src/prologue.h"
 
@@ -53,21 +53,26 @@ main(int argc, char **argv)
       }
       return wr(argv[4], cml, mn);
    }
-   if (argc == 4 && !strcmp(argv[1], "pro")) {
+   if ((argc == 4 || argc == 5) && !strcmp(argv[1], "pro")) {
+      enum xmx_isa isa = XMX_ISA_XE3;
+      if (argc == 5 && !strcmp(argv[4], "xe2"))
+         isa = XMX_ISA_XE2;
+      else if (argc == 5 && strcmp(argv[4], "xe3"))
+         return 2;
       size_t n, pn;
       uint8_t *d = rd(argv[2], &n);
       struct xmx_cml k;
       if (!d || !xmx_cml_parse(d, n, &k))
          return 2;
-      uint8_t *p = xmx_prologue(&k, &pn);
+      uint8_t *p = xmx_prologue(&k, isa, &pn);
       if (!p)
          return 3;
       size_t fn;
-      uint8_t *full = xmx_full_code(&k, &fn);
+      uint8_t *full = xmx_full_code(&k, isa, &fn);
       if (!full || fn != pn + k.code_size || memcmp(full, p, pn) || memcmp(full + pn, k.code, k.code_size))
          return 4;
       return wr(argv[3], p, pn);
    }
-   fprintf(stderr, "usage: test_prologue cml <zebin> <options> <out.cml> | pro <in.cml> <out.bin>\n");
+   fprintf(stderr, "usage: test_prologue cml <zebin> <options> <out.cml> | pro <in.cml> <out.bin> [xe2|xe3]\n");
    return 2;
 }

@@ -340,8 +340,9 @@ def pe_imports(path):
 def xess_vulkan(game, swaps, found):
     """XESS=latest, a Vulkan game with XeSS (its exe imports vulkan-1.dll; XESS_VK=1 forces, XESS_VK=0 skips): the
     package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and the layer,
-    which serves XeSS' Vulkan kernels on the package's patched and unpatched Mesa (Xe3). Without the layer XeSS stays
-    on DP4a: vkwrap checks that the layer serves the device."""
+    which serves XeSS' Vulkan kernels on the package's patched and unpatched Mesa on Xe3, and on the unpatched Mesa on
+    Xe2 (the patched one runs them itself there). Without the layer XeSS stays on DP4a: vkwrap checks that the layer
+    (or the patched driver) serves the device."""
     force = os.environ.get("XESS_VK", "")
     exe = sys.argv[2] if len(sys.argv) > 2 else ""
     if force == "0" or sys.argv[1] != "waitforexitandrun" or not exe.lower().endswith(".exe") or not os.path.isfile(exe):

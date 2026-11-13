@@ -8,6 +8,8 @@ O="${1:-$L/out}"
 mkdir -p "$O/gen"
 INC=(-I"$O/gen")
 [ -n "${VULKAN_HEADERS:-}" ] && INC+=(-I"$VULKAN_HEADERS/include")
+# the GPU list (gpu-ids.txt) for src/gens.h
+sh "$L/tools/gen_gpu_ids.sh" "$L/gpu-ids.txt" "$O/gen/gpu_ids.inc"
 # the template shader as a C array of SPIR-V words
 glslangValidator -V --target-env vulkan1.1 -S comp "$S/template.comp" -o "$O/gen/template.spv" >/dev/null
 python3 - "$O/gen/template.spv" "$O/gen/template_spv.h" <<'EOF'

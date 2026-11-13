@@ -1,0 +1,41 @@
+# The GPUs VK_LAYER_XESS_xmx serves on an unpatched ANV: <generation> <PCI device id>, one per line.
+# The one list of them: layer/build.sh compiles it into the layer (src/gens.h), install.sh reads it for its stock-mode
+# choice. The ids are those of Mesa 26.3 (include/pci_ids/iris_pci_ids.h). Generations: xe3 (kernels at their own GRF
+# count), xe2 (every kernel compiled for 128 GRF); see src/gens.h.
+# Not listed: Nova Lake (0xd740-0xd745 Xe3, 0xd750-0xd75f Xe3P), which the shim (shim/src/dll/GpuInfo.cpp) does not
+# detect yet, and Xe-HPG, which stays on the patched driver.
+# Panther Lake
+xe3 0xb080
+xe3 0xb081
+xe3 0xb082
+xe3 0xb083
+xe3 0xb084
+xe3 0xb085
+xe3 0xb086
+xe3 0xb087
+xe3 0xb08f
+xe3 0xb090
+xe3 0xb0a0
+xe3 0xb0b0
+# Wildcat Lake
+xe3 0xfd80
+xe3 0xfd81
+# Lunar Lake
+xe2 0x6420
+xe2 0x64a0
+xe2 0x64b0
+# Battlemage G21, BMG, G31
+xe2 0xe202
+xe2 0xe209
+xe2 0xe20b
+xe2 0xe20c
+xe2 0xe20d
+xe2 0xe210
+xe2 0xe211
+xe2 0xe212
+xe2 0xe215
+xe2 0xe216
+xe2 0xe220
+xe2 0xe221
+xe2 0xe222
+xe2 0xe223

@@ -17,7 +17,8 @@
  * XeSS is told "supported" only when the layer or the package's patched driver serves this device: vkCreateDevice
  * creates the self-test placeholder (1x1x19) and looks for C:\igdext_kernels\layer_canary (the layer's answer) or,
  * without it, anv_canary (the patched driver's). With the layer, the push goes to it as above. With the patched driver
- * alone ("driver mode", e.g. Xe-HPG and Xe2, which the layer does not serve), this DLL gives the driver what it knows
+ * alone ("driver mode": Xe-HPG, which the layer does not serve, and Xe2 on the patched driver, which the layer leaves
+ * to the driver's 256-GRF kernels; in stock mode Xe2 goes through the layer), this DLL gives the driver what it knows
  * from vkd3d-proton: a descriptor heap (one MUTABLE binding of HEAP_N descriptors, update-after-bind) and, per surface,
  * its heap index in the last push constants (patches/0001: surface k = heap[pc[push_size - 4 * nsurf + 4 * k]]). The
  * kernels' pipelines get that layout, and each push writes the resources into a ring of heap slots, binds the heap

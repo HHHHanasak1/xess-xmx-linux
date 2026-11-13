@@ -13,7 +13,9 @@
 # ~/.cache/xess-xmx/compile.log); CM_NO_LOAD_PAYLOAD=1 (CM_OUT_DIR path only, set by the layer for an unpatched
 # driver): the kernel does not load its payload from indirect data but expects it in registers, where the layer's
 # prologue puts it. It goes in as an internal option because the embedded -vc-payload options of some kernels replace
-# whatever -options says.
+# whatever -options says. CM_MAX_GRF=128 (set by the layer on Xe2, whose unpatched driver runs every thread with 128
+# GRF): the kernel's 256-GRF options (-doubleGRF, -ze-exp-register-file-size other than 128,
+# -ze-opt-large-register-file) are dropped, so ocloc compiles it for 128 GRF.
 set -u
 SPV=$1; OPT=$2; OUT=$3
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac
@@ -49,7 +51,13 @@ while IFS= read -r line || [ -n "$line" ]; do opts="$opts$line
 # the ocloc flags XeSS passes: -doubleGRF and -ze-*
 fl=
 set -f
-for o in $opts; do case $o in -doubleGRF*|-ze-*) fl="$fl$o " ;; esac; done
+for o in $opts; do
+  case $o in -doubleGRF*|-ze-*) ;; *) continue ;; esac
+  if [ "${CM_MAX_GRF:-}" = 128 ]; then
+    case $o in -doubleGRF*|-ze-opt-large-register-file*) continue ;; -ze-exp-register-file-size=128) ;; -ze-exp-register-file-size*) continue ;; esac
+  fi
+  fl="$fl$o "
+done
 set +f
 
 if [ -n "${CM_OUT_DIR:-}" ]; then

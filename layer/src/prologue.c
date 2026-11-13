@@ -1,9 +1,21 @@
 /* prologue.c - see prologue.h. The instruction sequence is the one of tools/prologue_asm.py (prologue_lines); the
- * encodings come from prologue_table.inc. */
+ * encodings come from prologue_table.inc, one table per instruction set. */
 #include "prologue.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+struct pro_table {
+   uint8_t clr[2][16];        /* r2 / r3 = 0 */
+   uint8_t imm[32][16];       /* dword i of r2..r3 = immediate (at imm_off) */
+   unsigned imm_off;
+   uint8_t gc[32 * 3][16];    /* [slot * 3 + i]: dword slot of r2..r3 = num_workgroups[i] */
+   uint8_t tid[16];
+   uint8_t r1clr[16];
+   uint8_t and41[16], shr42[16], and42[16], shr43[16];
+   unsigned and41_off, shr42_off, and42_off, shr43_off;
+   uint8_t lid[3][16];
+};
 
 #include "prologue_table.inc"
 
@@ -37,8 +49,11 @@ put_imm(uint8_t **p, const uint8_t enc[16], unsigned off, uint32_t v)
 }
 
 uint8_t *
-xmx_prologue(const struct xmx_cml *k, size_t *n)
+xmx_prologue(const struct xmx_cml *k, enum xmx_isa isa, size_t *n)
 {
+   if ((unsigned)isa >= XMX_ISA_COUNT)
+      return NULL;
+   const struct pro_table *T = &pro_tables[isa];
    const uint8_t *h = k->hdr;
    const uint32_t lx = xmx_rd32(h + XMX_H_LWS), ly = xmx_rd32(h + XMX_H_LWS + 4);
    const uint32_t cross = xmx_rd32(h + XMX_H_CROSS_SIZE);
@@ -54,32 +69,32 @@ xmx_prologue(const struct xmx_cml *k, size_t *n)
    if (!buf)
       return NULL;
    for (unsigned r = 0; r < nreg; r++)
-      put(&p, PRO_CLR[r]);
+      put(&p, T->clr[r]);
    for (unsigned i = 0; i < nreg * 16; i++) {
       const uint32_t v = 4 * i < 128 ? xmx_rd32(h + XMX_H_CROSS + 4 * i) : 0;
       if (v && 4 * i < cross)
-         put_imm(&p, PRO_IMM[i], PRO_IMM_OFF, v);
+         put_imm(&p, T->imm[i], T->imm_off, v);
    }
    if (k->gc_off != XMX_NO_GC)
       for (unsigned i = 0; i < 3; i++)
-         put(&p, PRO_GC[(k->gc_off / 4 + i) * 3 + i]);
-   put(&p, PRO_TID);
-   put(&p, PRO_R1CLR);
-   put_imm(&p, PRO_AND41, PRO_AND41_OFF, lx - 1);
-   put_imm(&p, PRO_SHR42, PRO_SHR42_OFF, (uint32_t)sx);
-   put_imm(&p, PRO_AND42, PRO_AND42_OFF, ly - 1);
-   put_imm(&p, PRO_SHR43, PRO_SHR43_OFF, (uint32_t)sxy);
+         put(&p, T->gc[(k->gc_off / 4 + i) * 3 + i]);
+   put(&p, T->tid);
+   put(&p, T->r1clr);
+   put_imm(&p, T->and41, T->and41_off, lx - 1);
+   put_imm(&p, T->shr42, T->shr42_off, (uint32_t)sx);
+   put_imm(&p, T->and42, T->and42_off, ly - 1);
+   put_imm(&p, T->shr43, T->shr43_off, (uint32_t)sxy);
    for (unsigned i = 0; i < 3; i++)
-      put(&p, PRO_LID[i]);
+      put(&p, T->lid[i]);
    *n = p - buf;
    return buf;
 }
 
 uint8_t *
-xmx_full_code(const struct xmx_cml *k, size_t *n)
+xmx_full_code(const struct xmx_cml *k, enum xmx_isa isa, size_t *n)
 {
    size_t pn;
-   uint8_t *pro = xmx_prologue(k, &pn);
+   uint8_t *pro = xmx_prologue(k, isa, &pn);
    if (!pro)
       return NULL;
    uint8_t *c = malloc(pn + k->code_size);
