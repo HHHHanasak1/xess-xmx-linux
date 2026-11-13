@@ -612,6 +612,7 @@ struct ScState {
     uint32_t capUs = 0;       // per real frame, 0 = none
     uint64_t capLastEnd = 0;
     int capCalm = 0;          // windows in a row that would allow a shorter interval
+    int capRoom = 0;          // windows in a row with the GPU well below capFloor and XeLL sleeping
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t maxInterpolations = 1;
@@ -1333,6 +1334,16 @@ static void CapAdjust(ScState* st)
         Log("cap auto: outside limiter at %.2f ms (in Present %.2f, GPU %.2f), cap off -> %d", frameMed, presentMed,
             needMs, (int)ro);
         return;
+    }
+    // The floor keeps the interval from swinging straight back into a GPU-bound stretch, and is forgotten slowly
+    // (0.999 a window, about 6 % a minute). Once XeLL has slept a quarter of the frame for 4 windows in a row while the
+    // GPU needs 10 % less than the floor (a lighter scene, the clock back up), it gives way 10 % a window: in Resident Evil
+    // 4 a heavy stretch at 1700 MHz left it at 30.8 ms for minutes while the GPU needed 21 ms (XeLL sleeping 22 ms).
+    if (st->capFloor > 0 && sleepMed > 0.25f * frameMed && (float)want < 0.9f * st->capFloor) {
+        if (++st->capRoom >= 4)
+            st->capFloor *= 0.9f;
+    } else {
+        st->capRoom = 0;
     }
     st->capFloor *= 0.999f;
     if (want < (uint32_t)st->capFloor)
