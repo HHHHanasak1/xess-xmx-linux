@@ -555,7 +555,6 @@ struct ScState {
     XellFrame xellFrames[8];
     unsigned xellNext = 0;   // the slot taken next
     struct FfxApiResource ui = {};
-    uint32_t uiFlags = 0;
     // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
     // presentation thread. FFX_XEFG_PACE=1 (default 0, no gain measured in CONTROL Resonant): released when the GPU has finished the presented frame, like
     // DXGI's own object: after each Present the game's queue signals `fence`, and `paceThread` releases the semaphore
@@ -643,7 +642,6 @@ struct FgCtx {
     uint32_t magic = MAGIC_FG;
     uint32_t flags = 0;
     uint32_t displayW = 0, displayH = 0, maxRenderW = 0, maxRenderH = 0;
-    uint32_t backBufferFormat = 0;
     ID3D12Device* device = nullptr;
     uint64_t prepares = 0;
 };
@@ -3251,7 +3249,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
         fg->displayH = d->displaySize.height;
         fg->maxRenderW = d->maxRenderSize.width;
         fg->maxRenderH = d->maxRenderSize.height;
-        fg->backBufferFormat = d->backBufferFormat;
         for (const ffxApiHeader* h = desc->pNext; h; h = h->pNext)
             if (h->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12)
                 fg->device = ((const ffxCreateBackendDX12Desc*)h)->device;
@@ -3330,7 +3327,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxConfigure(ffxContext* contex
         if (st->ui.resource)
             ((ID3D12Resource*)st->ui.resource)->Release();
         st->ui = d->uiResource;
-        st->uiFlags = d->flags;
         if (st->ui.resource) {
             ((ID3D12Resource*)st->ui.resource)->AddRef();
             if (!st->uiComposition && p_xefgSwapChainSetUiCompositionState) {

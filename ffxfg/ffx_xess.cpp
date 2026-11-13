@@ -181,14 +181,12 @@ static const char* kProviderVersionName = kProviderVersionNames[0];
 struct UpCtx {
     uint32_t magic = MAGIC_UP;
     std::mutex lock;
-    ID3D12Device* device = nullptr;
     uint32_t flags = 0;
     uint32_t maxRenderW = 0, maxRenderH = 0, maxUpscaleW = 0, maxUpscaleH = 0;
     xess_context_handle_t xess = nullptr;
     // what the XeSS context was initialised for; a change sets it up again
     bool inited = false;
     uint32_t initFlags = 0, outW = 0, outH = 0;
-    xess_quality_settings_t quality = XESS_QUALITY_SETTING_AA;
     float velScaleX = 0, velScaleY = 0;
     float expMul = 0;   // the exposure multiplier set on the XeSS context (0: not set since the last init)
     uint64_t expChanges = 0;
@@ -232,7 +230,6 @@ static bool SetUp(UpCtx* c, uint32_t outW, uint32_t outH, uint32_t xflags)
     c->outW = outW;
     c->outH = outH;
     c->initFlags = xflags;
-    c->quality = ip.qualitySetting;
     c->velScaleX = c->velScaleY = 0;
     c->expMul = 0;
     return c->inited;
@@ -401,7 +398,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
     if (!dev)
         return FFX_API_RETURN_ERROR_PARAMETER;
     auto* c = new UpCtx();
-    c->device = dev;
     c->flags = d->flags;
     c->maxRenderW = d->maxRenderSize.width;
     c->maxRenderH = d->maxRenderSize.height;
