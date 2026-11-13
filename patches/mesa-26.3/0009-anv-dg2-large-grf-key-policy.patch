@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: peigongdsd <peigong2013@outlook.com>
+Date: Wed, 11 Nov 2026 13:07:30 +0000
+Subject: [PATCH] anv: key DG2 register policy and retain 128 GRF for indirect-bindable shaders
+
+Generated-by: LLM
+
+---
+diff --git a/src/intel/vulkan/anv_shader_compile.c b/src/intel/vulkan/anv_shader_compile.c
+--- a/src/intel/vulkan/anv_shader_compile.c
++++ b/src/intel/vulkan/anv_shader_compile.c
+@@ -735,6 +735,7 @@
+       container_of(device, const struct anv_physical_device, vk);
+ 
+    populate_base_prog_key(&key->base, device, rs);
++   key->base.dg2_large_grf = pdevice->compiler->dg2_large_grf_enabled;
+ 
+    if (pdevice->drirc.debug.slm_robust_vectorization)
+       key->base.robust_flags |= BRW_ROBUSTNESS_SLM;
+@@ -2361,6 +2362,8 @@
+       case MESA_SHADER_COMPUTE:
+          populate_cs_prog_key(&shader_data->key.cs, vk_device->physical,
+                               info->robustness);
++         if (info->flags & VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT)
++            shader_data->key.cs.base.dg2_large_grf = false;
+          shader_data->prog_data.cs.force_simd32 =
+             device->info->ver >= 20 &&
+             shader_data->workaround != NULL &&
+diff --git a/src/intel/vulkan/genX_cmd_dgc.c b/src/intel/vulkan/genX_cmd_dgc.c
+--- a/src/intel/vulkan/genX_cmd_dgc.c
++++ b/src/intel/vulkan/genX_cmd_dgc.c
+@@ -967,6 +967,8 @@
+       }
+ 
+       genX(cmd_buffer_flush_compute_state)(cmd_buffer, indirect_set);
++      genX(cmd_buffer_set_cm_large_grf)(cmd_buffer,
++         indirect_set == NULL && get_cs_prog_data(comp_state)->base.grf_used > 128);
+ 
+       if (cmd_buffer->state.conditional_render_enabled)
+          genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
