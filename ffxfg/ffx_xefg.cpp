@@ -76,34 +76,13 @@
 #include "inc/xess/xell/xell.h"
 #include "inc/xess/xell/xell_d3d12.h"
 #include "ffx_oflow.h"
+#include "ffx_common.h"   // Log, EnvInt, InitLogAndEnv, ToD3D12State
 #include "../common/lowlat_check.h"
 
 #pragma comment(lib, "dxgi.lib")
 
 // ---------------------------------------------------------------------------------------------------------------
-// Logging
-
-static HMODULE g_self;
-static FILE* g_log;
-static std::mutex g_logLock;
-static LARGE_INTEGER g_qpf, g_qp0;
-
-static void Log(const char* fmt, ...)
-{
-    if (!g_log)
-        return;
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    double ms = (double)(now.QuadPart - g_qp0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
-    std::lock_guard<std::mutex> lk(g_logLock);
-    va_list ap;
-    va_start(ap, fmt);
-    fprintf(g_log, "%10.3f t%-5lu ", ms, GetCurrentThreadId());
-    vfprintf(g_log, fmt, ap);
-    fputc('\n', g_log);
-    va_end(ap);
-    fflush(g_log);
-}
+// Small helpers (the log is in ffx_common.h)
 
 // A patched vtable (vkd3d's queue, DXVK's adapter) jumps into this module from then on: it must never be unmapped
 // (games load, free and load the FidelityFX DLLs again). Pins once; false (logged once) = do not patch.
@@ -119,14 +98,6 @@ static bool PinSelf()
             Log("could not pin this DLL (%lu): the vendor id and queue hooks stay off", GetLastError());
     }
     return pinned.load() > 0;
-}
-
-static int EnvInt(const char* name, int def)
-{
-    char buf[32];
-    if (!GetEnvironmentVariableA(name, buf, sizeof(buf)))
-        return def;
-    return atoi(buf);
 }
 
 static uint64_t Qpc()
@@ -341,44 +312,8 @@ static HMODULE LoadBeside(const char* dir, const char* name)
 
 static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
 {
-    QueryPerformanceFrequency(&g_qpf);
-    QueryPerformanceCounter(&g_qp0);
-
-    char dir[MAX_PATH];
-    GetModuleFileNameA(g_self, dir, MAX_PATH);
-    char* slash = strrchr(dir, '\\');
-    if (slash)
-        slash[1] = 0;
-
-    {
-        // ffx_xefg.env beside the DLL: KEY=VALUE lines, set into the environment unless already set
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xefg.env", dir);
-        if (FILE* f = fopen(path, "r")) {
-            char line[512];
-            while (fgets(line, sizeof line, f)) {
-                for (size_t n = strlen(line); n && (line[n - 1] == 10 || line[n - 1] == 13);)  // strip CR LF
-                    line[--n] = 0;
-                char* eq = strchr(line, '=');
-                if (line[0] == '#' || !eq)
-                    continue;
-                *eq = 0;
-                if (!GetEnvironmentVariableA(line, nullptr, 0))
-                    SetEnvironmentVariableA(line, eq + 1);
-            }
-            fclose(f);
-        }
-    }
-
-    char env[MAX_PATH];
-    if (GetEnvironmentVariableA("FFX_XEFG_LOG", env, MAX_PATH)) {
-        if (strcmp(env, "0") != 0)
-            g_log = fopen(env, "a");
-    } else {
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xefg.log", dir);
-        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
-    }
+    char dir[MAX_PATH], env[MAX_PATH];
+    InitLogAndEnv("ffx_xefg", "FFX_XEFG_LOG", dir);   // ffx_xefg.env, ffx_xefg.log
 
     g_mult = EnvInt("FFX_XEFG_MULT", EnvInt("XESS_FG", 2));
     if (g_mult < 2)
@@ -496,28 +431,6 @@ static void XefgLogCallback(const char* message, xefg_swapchain_logging_level_t 
 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
-
-static D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
-{
-    D3D12_RESOURCE_STATES r = D3D12_RESOURCE_STATE_COMMON;
-    if (s & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS)
-        r |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    if (s & FFX_API_RESOURCE_STATE_COMPUTE_READ)
-        r |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_PIXEL_READ)
-        r |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_SRC)
-        r |= D3D12_RESOURCE_STATE_COPY_SOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_DEST)
-        r |= D3D12_RESOURCE_STATE_COPY_DEST;
-    if (s & FFX_API_RESOURCE_STATE_INDIRECT_ARGUMENT)
-        r |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    if (s & FFX_API_RESOURCE_STATE_RENDER_TARGET)
-        r |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-    if (s & FFX_API_RESOURCE_STATE_DEPTH_ATTACHMENT)
-        r |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    return r;
-}
 
 static void Mul4(const float* a, const float* b, float* out)
 {
