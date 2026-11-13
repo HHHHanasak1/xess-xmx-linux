@@ -40,6 +40,9 @@
 //   IGDEXT_XELL_CHECK=0    the low latency's wait is not checked (by default it stays only where the frame time with
 //                          it is within 1 % of the frame time without it and the latency is lower; the XMX shim
 //                          reads it too)
+//   FFX_XEFG_HDR10=1       XeSS-FG is told when the game's back buffer is HDR10 (PQ); by default it is not, and
+//                          interpolates the PQ values as they are ("HDR10" below). FFX_XEFG_HDR10_AB=s: measuring
+//                          aid, told and not told in turns of s seconds (told first)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
 #define WIN32_LEAN_AND_MEAN
@@ -183,6 +186,8 @@ static DBG_SWITCH int g_abSec = 0;       // FFX_XEFG_AB
 static DBG_SWITCH bool g_abOld = false;  // FFX_XEFG_AB_OLD
 static DBG_SWITCH float g_holdMs = 0;    // FFX_XEFG_HOLD
 static bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
+static bool g_hdr10 = false;        // FFX_XEFG_HDR10=1: XeSS-FG is told when the back buffer is HDR10 ("HDR10" below)
+static int g_hdr10AbSec = 0;        // FFX_XEFG_HDR10_AB
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static DBG_SWITCH bool g_mvNdc = false;   // FFX_XEFG_MVNDC
@@ -368,6 +373,8 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     TR(g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0);
     TR(if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH)) g_holdMs = (float)atof(env));
     g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
+    g_hdr10 = EnvInt("FFX_XEFG_HDR10", 0) != 0;
+    g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0);
     TR(tr::g_subs = EnvInt("FFX_XEFG_TRACE_SUBS", 0) != 0; if (EnvInt("FFX_XEFG_TRACE", 0)) tr::Start(dir));
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
         g_oflowDepth = (float)atof(env);
@@ -390,6 +397,10 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         Log("  each frame starts %.1f ms earlier", g_latMarginMs);
     if (!g_hudless || g_mvNdc || !g_sleep || !g_ownWait || !g_validityNow)
         Log("inputs: HUD-less %d, NDC mv %d, validity only now %d", g_hudless, g_mvNdc, g_validityNow);
+    if (g_hdr10AbSec > 0)
+        Log("HDR10 back buffers: XeSS-FG is told and not told in turns of %d s (FFX_XEFG_HDR10_AB)", g_hdr10AbSec);
+    else if (g_hdr10)
+        Log("HDR10 back buffers: XeSS-FG is told (FFX_XEFG_HDR10=1)");
 #ifdef FFXFG_DEBUG
     g_camera = EnvInt("FFX_XEFG_CAMERA", 1);
     g_jitter = (float)EnvInt("FFX_XEFG_JITTER", 1);
@@ -509,6 +520,14 @@ struct ScState {
     uint64_t oflowLastQpc = 0;          // FFX_XEFG_OFLOW with FSR_FG=inject: the last present, for the frame time
     uint64_t oflowTags = 0;
     std::atomic<int> colorSpace{-1};    // the last successful SetColorSpace1, -1 = none (FFX_XEFG_OFLOW's encoding)
+    // HDR10 (see there), all under hdrLock: what XeSS-FG's interpolation takes the back buffer for
+    std::mutex hdrLock;
+    bool hdrTold = false;               // for HDR10
+    bool hdrSet = false;                // the game set HDR10 since the buffers were last resized
+    bool hdrKept = false;               // the real swap chain took the colour space meant to be refused: no more tries
+    bool hdrSaid = false;
+    uint64_t hdrAbStart = 0;            // FFX_XEFG_HDR10_AB (present thread)
+    int hdrAbTurn = -1;                 // 0 told, 1 not told
     // FFX_XEFG_TIMES=1: frame times at the present, reported every 300 frames
     uint64_t tStart = 0, tLastEnd = 0;
     std::vector<float> tFrame, tPresent, tSleep;
@@ -2075,6 +2094,28 @@ static void HookFactory()
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// HDR10
+//
+// XeSS-FG learns how the back buffer is encoded from one call: the game's SetColorSpace1 on the proxy swap chain.
+// For DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 (HDR10, PQ) its interpolation takes the back buffer for HDR10, for
+// any other value for SDR. The proxy notes that first and then passes the call on to the real swap chain, whatever
+// that answers. (XeSS-FG 1.3.1; it forgets HDR10 again whenever it sets its interpolation up anew: a new size, or a
+// change between one and several generated frames.)
+// Told HDR10, XeSS-FG does not hand the PQ values to its network: it makes the network's images from them with
+// 350 nits as white, and everything brighter is one flat white there. A picture with large areas above that leaves
+// the network nothing to follow in them. CONTROL Resonant's HDR output goes up to about 1500 nits, and its sunlit
+// clouds stuttered at 3x and more while the camera turned (not at 2x, which runs another network, and not with the
+// game's HDR off). Not told, XeSS-FG gives the network the PQ values as they are: 350 nits is 0.64 there and
+// 1500 nits 0.80, so the bright areas keep their detail. The shown frames are made from the back buffers either
+// way and stay PQ.
+// So XeSS-FG is not told by default (FFX_XEFG_HDR10=1: it is). The real swap chain still has to get HDR10, and only
+// the proxy leads to it. After the game's call the proxy therefore gets a colour space that no swap chain takes
+// (kRefusedColorSpace): XeSS-FG is back at SDR, the real swap chain refuses the call and keeps HDR10. Should a swap
+// chain take it after all, HDR10 is set again at once, and XeSS-FG stays told from then on.
+static const DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+static const DXGI_COLOR_SPACE_TYPE kRefusedColorSpace = DXGI_COLOR_SPACE_CUSTOM;
+
+// ---------------------------------------------------------------------------------------------------------------
 // FgSwapChain: forwards everything to the XeSS-FG proxy, adds the XeLL markers and the present id.
 
 struct FgSwapChain final : IDXGISwapChain4 {
@@ -2149,6 +2190,8 @@ struct FgSwapChain final : IDXGISwapChain4 {
         if (n == 1 || n == 3 || n == 600)
             CheckRealVt("at a present");
 #endif
+        if (g_hdr10AbSec > 0 && st->xefgEnabled)
+            HdrAb();
         // The answers to what the game asks of the swap chain until its next Present (see "Low latency"). While
         // XeSS-FG's presentation thread is inside a Present of the real swap chain this waits for it, as the proxy's
         // Present below would: a frame held up in front of its present, as far as the low latency is concerned.
@@ -2304,8 +2347,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
         PollForget();
         HRESULT hr = sc->ResizeBuffers(n, w, h, f, fl);
         Log("ResizeBuffers %u %ux%u fmt %d flags 0x%x -> 0x%08lx", n, w, h, (int)f, fl, (unsigned long)hr);
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
             Resized();
+            HdrResized();
+        }
         Recheck();
         return hr;
     }
@@ -2455,11 +2500,89 @@ struct FgSwapChain final : IDXGISwapChain4 {
     }
     HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override
     {
+        std::lock_guard<std::mutex> lk(st->hdrLock);
+        // HDR10 once more while the real swap chain has it and XeSS-FG is not to know: nothing to pass on (a game
+        // that sets its colour space every frame would wait for the real swap chain's lock twice each time)
+        if (c == kHdr10 && st->hdrSet && !st->hdrTold && !HdrWant())
+            return S_OK;
         PollForget();
         const HRESULT hr = sc->SetColorSpace1(c);
-        if (SUCCEEDED(hr) && st->colorSpace.exchange((int)c) != (int)c)
+        st->hdrTold = c == kHdr10;   // XeSS-FG notes it whatever the real swap chain answered ("HDR10")
+        const bool changed = SUCCEEDED(hr) && st->colorSpace.exchange((int)c) != (int)c;
+        if (SUCCEEDED(hr))
+            st->hdrSet = c == kHdr10;
+        HdrSync();
+        if (changed && c == kHdr10)
+            Log("SetColorSpace1 %d (HDR10): XeSS-FG is %s", (int)c,
+                st->hdrTold ? "told" : "not told and interpolates the PQ values as they are (FFX_XEFG_HDR10=1: told)");
+        else if (changed)
             Log("SetColorSpace1 %d", (int)c);   // FFX_XEFG_OFLOW reads the back buffer in this encoding
         return hr;
+    }
+    // Whether XeSS-FG is to know of an HDR10 back buffer (see "HDR10")
+    bool HdrWant() const { return g_hdr10AbSec > 0 ? st->hdrAbTurn <= 0 : g_hdr10; }
+    // With st->hdrLock held: XeSS-FG's interpolation takes the back buffer for HDR10 only while the real swap chain
+    // has HDR10 and XeSS-FG is to know; the real swap chain keeps its colour space. Only the proxy leads to both.
+    void HdrSync()
+    {
+        const int cs = st->colorSpace.load();   // what the real swap chain has, -1: never set
+        const bool want = cs == (int)kHdr10 && HdrWant();
+        if (want == st->hdrTold)
+            return;
+        if (want || (cs >= 0 && cs != (int)kHdr10)) {
+            // the real swap chain's own colour space once more: XeSS-FG takes it for what it is (it was told HDR10
+            // by a call the real swap chain refused, or forgot HDR10, or is told for the first time)
+            sc->SetColorSpace1((DXGI_COLOR_SPACE_TYPE)cs);
+            st->hdrTold = want;
+            return;
+        }
+        if (st->hdrKept)
+            return;
+        const HRESULT hr = sc->SetColorSpace1(kRefusedColorSpace);
+        st->hdrTold = false;
+        if (SUCCEEDED(hr) && cs == (int)kHdr10) {
+            // the real swap chain took it: HDR10 again at once, and no further try
+            const HRESULT back = sc->SetColorSpace1(kHdr10);
+            st->hdrTold = true;
+            st->hdrKept = true;
+            Log("!! HDR10: the real swap chain took colour space 0x%x (0x%08lx), HDR10 is set again (0x%08lx): XeSS-FG "
+                "stays told, as with FFX_XEFG_HDR10=1",
+                (unsigned)kRefusedColorSpace, (unsigned long)hr, (unsigned long)back);
+        } else if (!st->hdrSaid) {
+            st->hdrSaid = true;
+            Log("HDR10: XeSS-FG is back at SDR through colour space 0x%x, which the real swap chain %s (0x%08lx)",
+                (unsigned)kRefusedColorSpace, FAILED(hr) ? "refused" : "took", (unsigned long)hr);
+        }
+    }
+    // After the buffers were resized: XeSS-FG forgets HDR10 when it sets its interpolation up again, and the game's
+    // next SetColorSpace1 goes to the real swap chain whatever it is
+    void HdrResized()
+    {
+        std::lock_guard<std::mutex> lk(st->hdrLock);
+        st->hdrSet = false;
+        if (st->hdrTold) {
+            st->hdrTold = false;
+            HdrSync();
+        }
+    }
+    // FFX_XEFG_HDR10_AB, on the present thread: told and not told in turns while XeSS-FG interpolates
+    void HdrAb()
+    {
+        const uint64_t now = Qpc();
+        if (!st->hdrAbStart)
+            st->hdrAbStart = now;
+        const int turn = (int)(((uint64_t)(QpcMs(st->hdrAbStart, now) / 1000.0f) / (uint64_t)g_hdr10AbSec) % 2);
+        if (turn == st->hdrAbTurn)
+            return;
+        std::lock_guard<std::mutex> lk(st->hdrLock);
+        st->hdrAbTurn = turn;
+        if (st->colorSpace.load() != (int)kHdr10)
+            return;
+        HdrSync();
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        Log("HDR10: XeSS-FG %s at %02d:%02d:%02d.%03d", st->hdrTold ? "told" : "not told", t.wHour, t.wMinute,
+            t.wSecond, t.wMilliseconds);
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
                                              IUnknown* const* queues) override
@@ -2467,8 +2590,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
         PollForget();
         HRESULT hr = sc->ResizeBuffers1(n, w, h, f, fl, mask, queues);
         Log("ResizeBuffers1 %u %ux%u fmt %d -> 0x%08lx", n, w, h, (int)f, (unsigned long)hr);
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
             Resized();
+            HdrResized();
+        }
         Recheck();
         return hr;
     }

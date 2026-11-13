@@ -190,6 +190,8 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XEFG_LOG=<path>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off. |
 | `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
 | `FFX_XEFG_HUDLESS=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Ignores the game's HUD-less color texture and leaves XeSS-FG UI composition off. |
+| `FFX_XEFG_HDR10=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Tells XeSS-FG when the game's back buffer is HDR10 (PQ); by default it is not told ([how-it-works.md](how-it-works.md#frame-generation-ffxfgffx_xefgcpp-amd_fidelityfx_framegeneration_dx12dll)). |
+| `FFX_XEFG_HDR10_AB=<s>` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (the log says when). |
 | `IGDEXT_XELL_CAP`, `IGDEXT_XELL_CHECK`, `IGDEXT_XELL_POLLS` | `amd_fidelityfx_framegeneration_dx12.dll` | The low latency's switches. This DLL reads them as the shim does (see the shim's table above). |
 | `FFX_XEFG_EXCLUSIVE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Lets exclusive fullscreen requests through instead of keeping the swap chain windowed (XeSS-FG then refuses to interpolate). |
 | `FFX_XEFG_VENDOR=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Disables the `IDXGIAdapter::GetDesc*` hook that reports `0x8086` to `libxess_fg.dll` and `libxell.dll` when DXVK spoofs another vendor ID. |
