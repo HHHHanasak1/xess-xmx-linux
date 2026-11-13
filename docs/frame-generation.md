@@ -318,16 +318,9 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_LOG=<path>\|0` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off |
 | `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG's own messages forwarded to `ffx_xefg.log`: `0` debug, `1` info, `2` warnings (default), `3` errors |
 | `FFX_XEFG_HUDLESS=0` | Ignore the game's HUD-less image and leave XeSS-FG UI composition off |
-| `FFX_XEFG_SLEEP=0` | Skip calling `xellSleep` after each present (XeLL stays on, as XeSS-FG requires it) |
-| `FFX_XEFG_OWNWAIT=0` | Hand the game the XeSS-FG proxy's own frame-latency waitable object instead of the DLL's semaphore (deadlocks CONTROL Resonant) |
-| `FFX_XEFG_PACE=1` | Release the DLL's waitable object when a GPU fence after the present finishes (with a 200 ms watchdog), instead of when `Present` returns (off by default; CONTROL Resonant at 6x showed no gain) |
 | `IGDEXT_XELL_CAP`, `IGDEXT_XELL_CHECK`, `IGDEXT_XELL_POLLS` | The low latency's options, the same as for a game's own XeSS-FG ([section 2](#2-low-latency-with-frame-generation)) |
-| `FFX_XEFG_AB=<s>` | Measuring aid: the low latency's wait is off and on in turns of `<s>` seconds. With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait |
-| `FFX_XEFG_HOLD=<ms>` | Measuring aid: a fixed wait in Present instead of the measured one (not checked) |
-| `FFX_XEFG_VALIDITY=0` | Measuring aid: tag depth and motion vectors as `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids copying them at prepare time to measure what the copy costs; can flicker if the game overwrites them before present) |
 | `FFX_XEFG_EXCLUSIVE=1` | Let exclusive fullscreen requests through to the swap chain (XeSS-FG then refuses to interpolate) |
 | `FFX_XEFG_VENDOR=0` | Disable the adapter `GetDesc*` hook that reports Intel's `0x8086` vendor ID to XeSS-FG and XeLL when DXVK spoofs another vendor (such as `FSR_VENDOR=amd`) |
-| `FFX_XEFG_MVNDC=1` | Pass `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scale motion vectors to Normalized Device Coordinates (NDC) |
 | `FFX_XEFG_OFLOW=1` | Compute motion vectors from the final backbuffer using FidelityFX optical flow and use constant depth (`OFLOW_FG=1` sets this) |
 | `FFX_XEFG_OFLOW_DIV=1..4` | Run optical flow at `1/n` of the display resolution (`1` to `4`, default `1`) |
 | `FFX_XEFG_OFLOW_DEPTH=<d>` | Constant depth value written for optical flow (default `1.0`) |
@@ -337,4 +330,4 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_TIMES=1` | Log frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow GPU time every 300 runs, and the gaps between the shown frames' `Present` calls (`shown frames over ...`) |
 | `XMX_LAYER_PACE=1` | Experiment, off by default, needs the layer (`stock` mode): spaces each rendered frame's images evenly on the display instead of one refresh apart. Use it only with a fixed cap at 3x or more (`FFX_XEFG_CAP=<us>`); at 2x under the automatic cap it lowers the frame rate by about 6% |
 
-*(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`, and the frame time line `FFX_XEFG_TRACE=1`.)*
+*(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`, and the frame time line `FFX_XEFG_TRACE=1`. The measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB` / `FFX_XEFG_AB_OLD`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, and `FFX_XEFG_MVNDC` are debug-build switches too: releases up to 20261113 read them in every build, later ones ignore them.)*

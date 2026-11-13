@@ -79,7 +79,7 @@ This project implements its own low-latency mode on top of the XeLL API (`shim/s
 
 **Test (FSR routes)**: CONTROL Resonant (`FSR=xess`), Resident Evil Requiem (`FSR_FG=xess`) and Forza Horizon 6 (`FSR=xess FSR_FG=inject`). Arc B390, XeSS-FG 1.3.1, 2026-11-11. The game stood at one spot without input. Forza Horizon 6 stood on its 3D car page, a light load for the GPU.
 
-Three settings took turns of 20 s within one run (`FFX_XEFG_AB=20 FFX_XEFG_AB_OLD=1`). Each setting got 4 turns and 1600 to 2400 frames:
+Three settings took turns of 20 s within one run (`FFX_XEFG_AB=20 FFX_XEFG_AB_OLD=1`, switches of a debug build since then). Each setting got 4 turns and 1600 to 2400 frames:
 
 * **before:** the swap chain answers the game's questions, and there is no wait. This is the old behaviour, and what `IGDEXT_XELL_CAP=off` gives.
 * **answers:** the DLL answers the questions, with no wait.
@@ -119,7 +119,7 @@ The controller read was checked against XeLL in Wuthering Waves, with its own Xe
 - **Cost of the wait** in frame rate, against the answers alone: 0.4% in CONTROL Resonant at 3x, 0.7% at 6x, nothing measurable in Resident Evil Requiem at 3x.
 - **Forza Horizon 6 benchmark:** the built-in benchmark, with the settings of section 2 and FG 3x (`FSR=xess FSR_FG=inject XESS_FG=3`, unpatched + layer), the second of two runs each. Average latency from the result screen: 86.7 -> 81.8 ms. Stutters: 137 -> 77. The frame rate rises only slightly (101 -> 103 fps). On the race track the GPU is busy for about 26 ms of each 28 ms frame, XeSS-FG's work included, so there is no idle GPU time to win back. The game's "GPU limited" figure (2.4%) counts only the game's own work.
 - **"Before" in this test** is the old code path inside the measuring build, with the game's HDR output on. The next test compares with the release build itself.
-- **Left open:** At 3x, CONTROL Resonant's first work still waits 8.7 ms in the GPU queue. A longer wait would use that, but then the DLL can no longer tell whether the GPU or the game is the limit. A fixed wait of 21 ms (`FFX_XEFG_HOLD=21`) gave 33.9 ms to GPU done but cost 7% of the frame rate.
+- **Left open:** At 3x, CONTROL Resonant's first work still waits 8.7 ms in the GPU queue. A longer wait would use that, but then the DLL can no longer tell whether the GPU or the game is the limit. A fixed wait of 21 ms (`FFX_XEFG_HOLD=21`, a debug-build switch since then) gave 33.9 ms to GPU done but cost 7% of the frame rate.
 
 **Test (all three paths, against the release build)**: 2026-11-11, Arc B390, SteamOS, 1920x1200, 144 Hz VRR, XeSS-FG 1.3.1. Separate runs, interleaved, the same spot or the same benchmark each time, no input. The release build is the package as installed: its shim and its frame generation DLL. "This build" has the low latency with the wait, the answers and the check on all three paths ([frame-generation.md](frame-generation.md), section 2).
 

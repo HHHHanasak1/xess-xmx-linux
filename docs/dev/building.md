@@ -133,7 +133,7 @@ ffxfg\build.bat
 
 `ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and `ffx_xefg.cpp` into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
 
-To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
+To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XEFG_TRACE`, `FFX_XESS_JITTER`, and the measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, `FFX_XEFG_MVNDC`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
 
 ```bat
 set FFXFG_DEBUG=1
