@@ -21,7 +21,9 @@ void xmx_cache_path(const struct xmx_dev_info *dev, const char *hash, char *dir,
 
 /* The CML1 image of a kernel, compiled from <sdir>/<name>.spv + .opt on a cache miss (name: the hash, or dyn_<id> of
  * an older shim with id >= 0). malloc'd image in *img; false if it cannot be had - then <sdir>/compile_failed.txt
- * gets the line "<id> <hash>" as with the driver, and the kernel is not tried again in this process. */
+ * gets the line "<id> <hash>" as with the driver, and the kernel is not tried again in this process. A miss of a kernel
+ * named by its hash (id < 0) also queues every other kernel of sdir without a cache file for background compiles
+ * (XMX_LAYER_COMPILE_JOBS at a time, the calling thread included; see compile.c). Thread-safe. */
 bool xmx_kernel_get(const struct xmx_dev_info *dev, const char *sdir, int id, const char *name, const char *hash,
                     uint8_t **img, size_t *n);
 

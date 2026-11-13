@@ -170,6 +170,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 |---|---|
 | `XMX_LAYER_LOG=1\|<path>` | `1`: logs to `stderr`; a path containing `/`: appends to that file. |
 | `XMX_LAYER_HELPER=<path>` | Compiler helper script (else `ANV_CM_HELPER`, else `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
+| `XMX_LAYER_COMPILE_JOBS=<n>` | Kernel compiles at a time, the pipeline thread that needs a kernel included: on a cache miss the other uncached kernels of `C:\igdext_kernels` are compiled by `n - 1` background threads (default: online CPUs, at most `8`; `1..32`; `1` = one after another, no prefetching). Unlike the driver's `ANV_CM_COMPILE_JOBS`, which counts only the background threads. |
 | `XMX_LAYER_PROF=1\|2` | GPU timestamp profiling of replaced dispatches: `=1` records a timestamp pair around every replaced dispatch and logs a per-kernel table every `XMX_LAYER_PROF_SEC` seconds; `=2` records one timestamp pair per contiguous run of replaced dispatches and reports them as one `runs` row (measuring XeSS's GPU time including barriers and copies between dispatches). |
 | `XMX_LAYER_PROF_SEC=<sec>` | Report period in seconds for `XMX_LAYER_PROF` (default `5.0`, minimum `> 0.5`). |
 
@@ -184,6 +185,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XESS_XESSLOG=0..3` | `amd_fidelityfx_upscaler_dx12.dll` | `libxess.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
 | `FFX_XESS_QUALITY=100..106` | `amd_fidelityfx_upscaler_dx12.dll` | Forces a specific XeSS quality setting (`100` Ultra Performance .. `105` Ultra Quality Plus, `106` Native AA). |
 | `FFX_XESS_AUTOEXPOSURE=0` | `amd_fidelityfx_upscaler_dx12.dll` | Debug: disables `XESS_INIT_FLAG_ENABLE_AUTOEXPOSURE`. |
+| `FFX_XESS_PREEXPOSURE=0` | `amd_fidelityfx_upscaler_dx12.dll` | Debug: does not pass the game's `preExposure` on (`xessSetExposureMultiplier` stays `1`); the behaviour of releases up to 20261111. |
 | `FFX_XEFG_MULT=<n>` | `amd_fidelityfx_framegeneration_dx12.dll` | Frames shown per rendered frame (default `XESS_FG`, else `2`), capped at XeSS-FG's maximum. Can also be set in `ffx_xefg.env`. |
 | `FFX_XEFG_LOG=<path>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off. |
 | `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |

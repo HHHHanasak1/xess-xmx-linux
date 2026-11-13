@@ -29,6 +29,10 @@ gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_com
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile_timeout" \
   "$T/test_compile_timeout.c" "$T/../src/compile.c" "$T/../src/cmk.c"
 "$O/test_compile_timeout" "$O"
+# compile jobs: failing compiles at most XMX_LAYER_COMPILE_JOBS at a time; only the needed kernel marked failed
+gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile_parallel" \
+  "$T/test_compile_parallel.c" "$T/../src/compile.c" "$T/../src/cmk.c" -lpthread
+"$O/test_compile_parallel" fail "$O"
 # end to end with ocloc: needs a kernel folder (dyn_N.spv/.opt + map.txt), the -noLoadPayload reference set and an IGC
 KSET="${KSET:-$HOME/decouple-exp/kernels/igdext_kernels}"
 if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${XMX_IGC_DIR:-}" ]; then
@@ -43,6 +47,15 @@ if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${XMX_IGC_DIR:-}" ]; then
   rm -rf "$O/cache"
   TEST_GEN=xe2 ANV_CM_HELPER="$T/../../tools/cm-compile.sh" XDG_CACHE_HOME="$O/cache" CM_LOG="$O/compile.log" \
     "$O/test_compile" "$K" "$CMK_SET" "$OLD"
+  # the whole folder under its hash names, one after another (1) and with the compile jobs (8): the same cache files
+  H="$O/hset"; rm -rf "$H" "$O/cache1" "$O/cache8"; mkdir -p "$H"
+  while read -r i h; do [ -f "$KSET/dyn_$i.spv" ] && cp "$KSET/dyn_$i.spv" "$H/$h.spv" && cp "$KSET/dyn_$i.opt" "$H/$h.opt"; done \
+    < "$KSET/map.txt"
+  for j in 1 8; do
+    XMX_LAYER_COMPILE_JOBS=$j ANV_CM_HELPER="$T/../../tools/cm-compile.sh" CM_DEVICE=ptl XDG_CACHE_HOME="$O/cache$j" \
+      CM_LOG="$O/compile.log" "$O/test_compile_parallel" run "$H"
+  done
+  diff -r "$O/cache1/xess-xmx/kernels" "$O/cache8/xess-xmx/kernels" && echo "test_compile_parallel: same cache files"
 else
   echo "test_compile: skipped (KSET, CMK_SET or XMX_IGC_DIR missing)"
 fi

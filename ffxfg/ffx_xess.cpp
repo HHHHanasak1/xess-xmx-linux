@@ -12,6 +12,8 @@
 //   FFX_XESS_QUALITY=100..106  the XeSS quality setting (default: the one whose input range holds the game's maximum
 //                        render size)
 //   FFX_XESS_AUTOEXPOSURE=0  no XeSS auto exposure for a game that asks for it (debug)
+//   FFX_XESS_PREEXPOSURE=0  ignore the game's FSR pre-exposure: XeSS's exposure multiplier stays 1, as in releases up
+//                        to 20261111 (A/B debug)
 //   FFX_XESS_JITTER=<f>  jitter times this (-1 negates it); only in a build with FFXFG_DEBUG (build.bat)
 // The same KEY=VALUE lines can go into ffx_xess.env next to the DLL (the environment wins).
 #define WIN32_LEAN_AND_MEAN
@@ -80,6 +82,7 @@ typedef xess_result_t (*PFN_xessD3D12Execute)(xess_context_handle_t, ID3D12Graph
 typedef xess_result_t (*PFN_xessGetOptimalInputResolution)(xess_context_handle_t, const xess_2d_t*,
                                                            xess_quality_settings_t, xess_2d_t*, xess_2d_t*, xess_2d_t*);
 typedef xess_result_t (*PFN_xessSetVelocityScale)(xess_context_handle_t, float, float);
+typedef xess_result_t (*PFN_xessSetExposureMultiplier)(xess_context_handle_t, float);
 typedef xess_result_t (*PFN_xessDestroyContext)(xess_context_handle_t);
 typedef xess_result_t (*PFN_xessSetLoggingCallback)(xess_context_handle_t, xess_logging_level_t, xess_app_log_callback_t);
 
@@ -89,6 +92,7 @@ static PFN_xessD3D12Init p_xessD3D12Init;
 static PFN_xessD3D12Execute p_xessD3D12Execute;
 static PFN_xessGetOptimalInputResolution p_xessGetOptimalInputResolution;
 static PFN_xessSetVelocityScale p_xessSetVelocityScale;
+static PFN_xessSetExposureMultiplier p_xessSetExposureMultiplier;   // optional: without it pre-exposure is ignored
 static PFN_xessDestroyContext p_xessDestroyContext;
 static PFN_xessSetLoggingCallback p_xessSetLoggingCallback;
 
@@ -97,6 +101,7 @@ static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static int g_xessLogLevel = 2;
 static int g_quality = 0;
 static bool g_autoExposure = true;
+static bool g_preExposure = true;   // FFX_XESS_PREEXPOSURE=0: ignore FSR's preExposure (the old behaviour)
 #ifdef FFXFG_DEBUG
 static float g_jitterScale = 1.0f;   // FFX_XESS_JITTER=<f>: jitter times this (-1 negates it)
 #else
@@ -150,9 +155,11 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
         g_jitterScale = (float)atof(env);
 #endif
     g_autoExposure = EnvInt("FFX_XESS_AUTOEXPOSURE", 1) != 0;
+    g_preExposure = EnvInt("FFX_XESS_PREEXPOSURE", 1) != 0;
     Log("=== ffx_xess start pid %lu", GetCurrentProcessId());
-    if (g_quality || g_jitterScale != 1.0f || !g_autoExposure)
-        Log("debug: quality %d, jitter x%g, auto exposure %d", g_quality, g_jitterScale, g_autoExposure);
+    if (g_quality || g_jitterScale != 1.0f || !g_autoExposure || !g_preExposure)
+        Log("debug: quality %d, jitter x%g, auto exposure %d, pre-exposure %d", g_quality, g_jitterScale,
+            g_autoExposure, g_preExposure);
 
     char path[MAX_PATH];
     snprintf(path, MAX_PATH, "%slibxess.dll", dir);
@@ -175,6 +182,10 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     LOAD(xessSetVelocityScale)
     LOAD(xessDestroyContext)
     LOAD(xessSetLoggingCallback)
+    p_xessSetExposureMultiplier =
+        m ? (PFN_xessSetExposureMultiplier)GetProcAddress(m, "xessSetExposureMultiplier") : nullptr;
+    if (m && !p_xessSetExposureMultiplier)
+        Log("missing xessSetExposureMultiplier: the game's pre-exposure is ignored");
     g_libOk = ok;
     if (ok) {
         xess_version_t v = {};
@@ -268,6 +279,8 @@ struct UpCtx {
     uint32_t initFlags = 0, outW = 0, outH = 0;
     xess_quality_settings_t quality = XESS_QUALITY_SETTING_AA;
     float velScaleX = 0, velScaleY = 0;
+    float expMul = 0;   // the exposure multiplier set on the XeSS context (0: not set since the last init)
+    uint64_t expChanges = 0;
     uint64_t dispatches = 0;
 };
 
@@ -310,6 +323,7 @@ static bool SetUp(UpCtx* c, uint32_t outW, uint32_t outH, uint32_t xflags)
     c->initFlags = xflags;
     c->quality = ip.qualitySetting;
     c->velScaleX = c->velScaleY = 0;
+    c->expMul = 0;
     return c->inited;
 }
 
@@ -411,6 +425,22 @@ static ffxReturnCode_t Upscale(UpCtx* c, const ffxDispatchDescUpscale* d)
     br.Add(d->output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     br.Run(cl);
 
+    // Pre-exposure: the game multiplied its colour by preExposure. FSR divides that out of the input and multiplies it
+    // back into the output (so its history stays in one space while the game's exposure changes). XeSS's exposure
+    // multiplier does the same with its value: the input times it, the output divided by it. So it gets
+    // 1 / preExposure. Execute's exposureScale is not used for it: in XeSS 3.0.2 that one has no effect once an
+    // exposure texture or auto exposure is in use, which is how every FSR game seen so far runs (CONTROL Resonant and
+    // Resident Evil Requiem pass an exposure texture, Cyberpunk 2077 and Forza Horizon 6 ask for auto exposure).
+    float mul = 1.0f;
+    if (g_preExposure && d->preExposure > 0.0f && std::isfinite(d->preExposure))
+        mul = 1.0f / d->preExposure;
+    if (mul != c->expMul && p_xessSetExposureMultiplier) {
+        xess_result_t mr = p_xessSetExposureMultiplier(c->xess, mul);
+        if (++c->expChanges <= 3 || mr != XESS_RESULT_SUCCESS)
+            Log("exposure multiplier %g (preExposure %g) -> %d", mul, d->preExposure, (int)mr);
+        c->expMul = mul;
+    }
+
     xess_d3d12_execute_params_t e = {};
     e.pColorTexture = (ID3D12Resource*)d->color.resource;
     e.pVelocityTexture = (ID3D12Resource*)d->motionVectors.resource;
@@ -430,10 +460,10 @@ static ffxReturnCode_t Upscale(UpCtx* c, const ffxDispatchDescUpscale* d)
     c->dispatches++;
     if (c->dispatches <= 3 || c->dispatches % 600 == 0 || r != XESS_RESULT_SUCCESS)
         Log("upscale #%llu render %ux%u -> %ux%u jitter %.3f,%.3f mvScale %.1f,%.1f reset %d exposure %p "
-            "preExposure %.3f sharpen %d -> %d",
+            "preExposure %.3f (multiplier changes %llu) sharpen %d -> %d",
             (unsigned long long)c->dispatches, d->renderSize.width, d->renderSize.height, outW, outH,
             d->jitterOffset.x, d->jitterOffset.y, d->motionVectorScale.x, d->motionVectorScale.y, (int)d->reset,
-            d->exposure.resource, d->preExposure, (int)d->enableSharpening, (int)r);
+            d->exposure.resource, d->preExposure, (unsigned long long)c->expChanges, (int)d->enableSharpening, (int)r);
     return r == XESS_RESULT_SUCCESS ? FFX_API_RETURN_OK : FFX_API_RETURN_ERROR_RUNTIME_ERROR;
 }
 
