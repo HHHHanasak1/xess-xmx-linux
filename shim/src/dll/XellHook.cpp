@@ -77,6 +77,30 @@ static void XellLogCb(const char* msg, uint32_t level)
     if (msg) XLog("XeLL[%u] %s", level, msg);
 }
 
+// Up to four pointers, added and removed with compare-exchange and looked up without a lock (on every xellSleep, on
+// every call of the swap chain's methods): the XeLL contexts and the swap chains that the package's own frame
+// generation DLL tells the shim to leave to it (IgdextXellExternalPacing, IgdextXefgProxyOwned).
+struct PtrSlots
+{
+    void* volatile p[4];
+    bool Has(void* x) const
+    {
+        for (int i = 0; i < 4; ++i) if (p[i] == x) return true;
+        return false;
+    }
+    int Add(void* x)   // 1: added, 0: was there already, -1: no free slot
+    {
+        if (Has(x)) return 0;
+        for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&p[i], x, nullptr) == nullptr) return 1;
+        return -1;
+    }
+    bool Remove(void* x)
+    {
+        for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&p[i], nullptr, x) == x) return true;
+        return false;
+    }
+};
+
 // IGDEXT_XELL_LOG: where the game reads its input. XInputGetState of Wine's xinput DLLs is hooked (they start with an
 // 8-byte hot-patch no-op: a jump to the hook goes there, the original runs from behind it) and the time of each call is
 // kept. The latency line then has a second figure next to simulation start -> present end: from the frame's input read
@@ -323,26 +347,20 @@ static void AutoPaceWait(void* ctx, uint32_t frame)
     }
 }
 
-// XeLL contexts whose caller paces the frame start itself (IgdextXellExternalPacing): a few slots, read without a lock
-// on every xellSleep
-static void* volatile g_extPaced[4];
+// XeLL contexts whose caller paces the frame start itself (IgdextXellExternalPacing), looked up on every xellSleep
+static PtrSlots g_extPaced;
 
 extern "C" void IgdextXellExternalPacing(void* ctx, int on)
 {
     if (!ctx) return;
-    for (int i = 0; i < 4; ++i) if (!on && InterlockedCompareExchangePointer(&g_extPaced[i], nullptr, ctx) == ctx)
-    { XLog("xell context %p: frame start no longer paced by its caller", ctx); return; }
-    if (!on) return;
-    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return;
-    for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&g_extPaced[i], ctx, nullptr) == nullptr)
-    { XLog("xell context %p: frame start paced by its caller (no AutoPaceWait)", ctx); return; }
-    XLog("xell context %p: no free slot, AutoPaceWait stays on for it", ctx);
-}
-
-static bool ExternallyPaced(void* ctx)
-{
-    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return true;
-    return false;
+    if (!on)
+    {
+        if (g_extPaced.Remove(ctx)) XLog("xell context %p: frame start no longer paced by its caller", ctx);
+        return;
+    }
+    const int added = g_extPaced.Add(ctx);
+    if (added > 0) XLog("xell context %p: frame start paced by its caller (no AutoPaceWait)", ctx);
+    else if (added < 0) XLog("xell context %p: no free slot, AutoPaceWait stays on for it", ctx);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -375,7 +393,7 @@ typedef HRESULT (STDMETHODCALLTYPE* PFN_ScResize1)(IDXGISwapChain*, UINT, UINT, 
 
 void** volatile g_scVt;          // the virtual table the hooks are in
 void* g_scOrig[SC_SLOTS];        // its own entries
-void* volatile g_scOwned[4];     // swap chains whose wrapper answers its game itself (IgdextXefgProxyOwned)
+PtrSlots g_scOwned;              // swap chains whose wrapper answers its game itself (IgdextXefgProxyOwned)
 
 struct ScAnswers
 {
@@ -386,11 +404,7 @@ struct ScAnswers
     LONG saidStats, saidCs, saidWaited;
 } g_ans = { SRWLOCK_INIT };
 
-bool ScOwned(void* sc)
-{
-    for (int i = 0; i < 4; ++i) if (g_scOwned[i] == sc) return true;
-    return false;
-}
+bool ScOwned(void* sc) { return g_scOwned.Has(sc); }
 
 bool AnswersOn(void* sc) { return g_capAuto && g_polls && g_fgState == 1 && !ScOwned(sc); }
 
@@ -605,17 +619,16 @@ void ProxyHook(IUnknown* unk)
 extern "C" void IgdextXefgProxyOwned(void* swapChain, int on)
 {
     if (!swapChain) return;
-    for (int i = 0; i < 4; ++i) if (!on && InterlockedCompareExchangePointer(&g_scOwned[i], nullptr, swapChain) == swapChain) return;
-    if (!on) return;
-    for (int i = 0; i < 4; ++i) if (g_scOwned[i] == swapChain) return;
-    for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&g_scOwned[i], swapChain, nullptr) == nullptr)
-    { XLog("swap chain %p: its wrapper answers the game itself", swapChain); return; }
+    if (!on) { g_scOwned.Remove(swapChain); return; }
+    const int added = g_scOwned.Add(swapChain);
+    if (added > 0) XLog("swap chain %p: its wrapper answers the game itself", swapChain);
+    else if (added < 0) XLog("swap chain %p: no free slot, its calls are answered here as for a game's own XeSS-FG", swapChain);
 }
 
 static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
-    const bool pace = g_capAuto && !ExternallyPaced(ctx);
+    const bool pace = g_capAuto && !g_extPaced.Has(ctx);
     if (!g_log) { const uint32_t rr = g_origSleep(ctx, frame); if (pace) AutoPaceWait(ctx, frame); return rr; }
     if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
