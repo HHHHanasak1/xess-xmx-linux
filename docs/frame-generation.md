@@ -135,7 +135,7 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 
 ### Tested Games
 
-* **CONTROL Resonant:** XeSS SR and 2x to 6x (`FSR=xess`). With HDR10 (PQ) on, bright sunlit clouds flickered at 3x and higher while the camera turned, while XeSS-FG was told about HDR10 (now only with `FFX_XEFG_HDR10=1`).
+* **CONTROL Resonant:** XeSS SR and 2x to 6x (`FSR=xess`). With HDR10 (PQ) on, bright sunlit clouds stuttered at 3x and higher while the camera turned, while XeSS-FG was told about HDR10 (now only with `FFX_XEFG_HDR10=1`).
 * **Resident Evil Requiem:** 4x and 5x (`FSR=xess` / `FSR_FG=xess`). The game ships XeSS frame generation as well, but does not offer it under Proton, so its FSR frame generation is the way to run XeSS-FG there.
 * **Cyberpunk 2077:** The "FSR 4" upscaling option (XeSS SR) and 5x (`FSR=xess`). The game's own XeSS (`XESS=latest`) is better there.
 * **Wuthering Waves** (FSR 3.1.1 in one DLL): XeSS SR and 5x (`FSR=xess FSR_VENDOR=amd`). The game's own XeSS is the one to use.
@@ -185,7 +185,7 @@ FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
 
 ### Known Limits of `FSR=xess` / `FSR_FG=xess`
 
-* **HDR10 and XeSS-FG (`FFX_XEFG_HDR10=1`):** Told that the back buffer is HDR10, XeSS-FG's network works on images in which 350 nits is white, and everything brighter is one flat white. In CONTROL Resonant (up to about 1500 nits), sunlit clouds then flickered at 3x and higher while the camera turned. So by default XeSS-FG is not told and interpolates the PQ values as they are; the display still gets HDR10. Games with their own XeSS-FG tell it, as on Windows.
+* **HDR10 and XeSS-FG (`FFX_XEFG_HDR10=1`):** Told that the back buffer is HDR10, XeSS-FG's network works on images in which 350 nits is white, and everything brighter is one flat white. In CONTROL Resonant (up to about 1500 nits), sunlit clouds then stuttered at 3x and higher while the camera turned. So by default XeSS-FG is not told and interpolates the PQ values as they are; the display still gets HDR10. Games with their own XeSS-FG tell it, as on Windows.
 * **HUD ghosting (`FFX_XEFG_HUDLESS=0`):** When a game passes FSR a HUD-less image, the DLL enables XeSS-FG's UI composition from it. Setting `FFX_XEFG_HUDLESS=0` leaves UI composition off so XeSS-FG interpolates the whole image, UI included; in Cyberpunk 2077 that leaves less ghosting on dialog text.
 
 ---

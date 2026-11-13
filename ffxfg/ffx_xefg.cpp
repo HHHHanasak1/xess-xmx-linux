@@ -2196,7 +2196,7 @@ static void HookFactory()
 // Told HDR10, XeSS-FG does not hand the PQ values to its network: it makes the network's images from them with
 // 350 nits as white, and everything brighter is one flat white there. A picture with large areas above that leaves
 // the network nothing to follow in them. CONTROL Resonant's HDR output goes up to about 1500 nits, and its sunlit
-// clouds flickered at 3x and more while the camera turned (not at 2x, which runs another network, and not with the
+// clouds stuttered at 3x and more while the camera turned (not at 2x, which runs another network, and not with the
 // game's HDR off). Not told, XeSS-FG gives the network the PQ values as they are: 350 nits is 0.64 there and
 // 1500 nits 0.80, so the bright areas keep their detail. The shown frames are made from the back buffers either
 // way and stay PQ.
