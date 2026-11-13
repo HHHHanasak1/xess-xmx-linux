@@ -230,6 +230,12 @@ static void placeholder_store(uint32_t *w, uint32_t z, uint32_t a, uint32_t b, u
 
 /* ---- CM kernels: files for the layer, a placeholder module ------------------------------------------------------- */
 
+/* Keep in step with shim/src/dll/D3D12Api.cpp (igdext64.dll, D3D12), which names and writes a kernel's files the same
+ * way (Fnv1a64, WriteFileOnce, DynKernelFiles): the hash is FNV-1a 64 over the SPIR-V and then the compile options,
+ * the files are C:\igdext_kernels\<hash as 16 hex digits>.spv / .opt, each written under a temporary name and renamed.
+ * If the two differ, the same kernel gets two names, and the driver and the layer compile and cache it twice. Only the
+ * temporary name is not the same: it has the thread id in it here, as XeSS creates the same module from several
+ * threads at once and nothing serialises them; the shim writes under a lock and names the process alone. */
 static const char *const kdir = "C:\\igdext_kernels";
 
 static uint64_t fnv1a(uint64_t h, const void *p, size_t n)
