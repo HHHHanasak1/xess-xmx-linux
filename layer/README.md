@@ -43,6 +43,7 @@ The Vulkan driver must be an unpatched ANV (or this project's patched one, for t
 |---|---|
 | `XMX_LAYER_LOG` | `1`: log to `stderr`; a file path (containing `/`): append to that file |
 | `XMX_LAYER_HELPER` | Path to the compile script (defaults to `ANV_CM_HELPER`, else `tools/cm-compile.sh` next to `ANV_CM_KERNEL_DIR`) |
+| `XMX_LAYER_COMPILE_JOBS=<n>` | Kernel compiles at a time (`1`–`32`; default the online CPUs, at most `8`). On a cache miss the thread that needs the kernel compiles it, and `n - 1` background threads compile the other kernels of the shim's folder that have no cache file yet, as the patched driver does (`ANV_CM_COMPILE_JOBS`, which counts only the background threads). `1` compiles one kernel after another when XeSS asks for it, as before |
 | `ANV_CM_COMPILE_TIMEOUT=<s>` | As for the driver: seconds one run of the compile script may take before its process group is killed and the kernel is marked failed (`compile_failed.txt`; default `120`, `0` = no limit) |
 | `XMX_LAYER_PROF=1` | Measures the GPU time of every replaced dispatch and writes a per-kernel table to the log every 5 s |
 | `XMX_LAYER_PROF=2` | Records one timestamp pair per run of back-to-back replaced dispatches, reported as one row `runs` (XeSS's GPU time including the gaps between its dispatches) |

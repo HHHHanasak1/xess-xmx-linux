@@ -170,6 +170,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 |---|---|
 | `XMX_LAYER_LOG=1\|<path>` | `1`: logs to `stderr`; a path containing `/`: appends to that file. |
 | `XMX_LAYER_HELPER=<path>` | Compiler helper script (else `ANV_CM_HELPER`, else `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
+| `XMX_LAYER_COMPILE_JOBS=<n>` | Kernel compiles at a time, the pipeline thread that needs a kernel included: on a cache miss the other uncached kernels of `C:\igdext_kernels` are compiled by `n - 1` background threads (default: online CPUs, at most `8`; `1..32`; `1` = one after another, no prefetching). Unlike the driver's `ANV_CM_COMPILE_JOBS`, which counts only the background threads. |
 | `XMX_LAYER_PROF=1\|2` | GPU timestamp profiling of replaced dispatches: `=1` records a timestamp pair around every replaced dispatch and logs a per-kernel table every `XMX_LAYER_PROF_SEC` seconds; `=2` records one timestamp pair per contiguous run of replaced dispatches and reports them as one `runs` row (measuring XeSS's GPU time including barriers and copies between dispatches). |
 | `XMX_LAYER_PROF_SEC=<sec>` | Report period in seconds for `XMX_LAYER_PROF` (default `5.0`, minimum `> 0.5`). |
 

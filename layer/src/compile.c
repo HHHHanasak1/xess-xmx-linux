@@ -6,9 +6,11 @@
 #include "cmk.h"
 
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
@@ -84,14 +86,18 @@ xmx_compile_log(const char *fmt, ...)
       snprintf(path, sizeof(path), "%s/xess-xmx/compile.log", xdg);
    else
       snprintf(path, sizeof(path), "%s/.cache/xess-xmx/compile.log", getenv("HOME") ? getenv("HOME") : "/tmp");
+   /* compiles run in parallel (see prefetch): one line at a time */
+   static pthread_mutex_t lm = PTHREAD_MUTEX_INITIALIZER;
+   pthread_mutex_lock(&lm);
    FILE *f = fopen(path, "a");
-   if (!f)
-      return;
-   va_list ap;
-   va_start(ap, fmt);
-   vfprintf(f, fmt, ap);
-   va_end(ap);
-   fclose(f);
+   if (f) {
+      va_list ap;
+      va_start(ap, fmt);
+      vfprintf(f, fmt, ap);
+      va_end(ap);
+      fclose(f);
+   }
+   pthread_mutex_unlock(&lm);
 }
 
 /* the compile script: XMX_LAYER_HELPER, else ANV_CM_HELPER, else <package>/tools/cm-compile.sh next to
@@ -412,12 +418,253 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
    return ok;
 }
 
-/* kernels that failed to compile in this process: not tried again until the next launch (as the driver) */
-static char failed[64][20];
-static unsigned nfailed;
-static mtx_t fm;
-static once_flag fo = ONCE_FLAG_INIT;
-static void fm_init(void) { mtx_init(&fm, mtx_plain); }
+/* ---- compile jobs ----------------------------------------------------------------------------------------------
+ * As the patched driver (anv_cm_prefetch): every kernel this process compiles has a job, keyed by its cache file. The
+ * kernel a pipeline needs now is compiled by the thread creating that pipeline (XeSS asks for its kernels one at a
+ * time, inside vkCreateComputePipelines). On such a miss, the other kernels in the shim's folder that have no cache file
+ * (all of them on a first launch with a filled folder, after a driver, IGC or helper update, or with a new cache) are
+ * queued for worker threads, so that they are ready when XeSS asks for them. XMX_LAYER_COMPILE_JOBS is the number of
+ * compiles at a time, the needing thread included (default the online CPUs, at most 8; 1 = one after another, no
+ * workers). A thread that needs a kernel a worker is compiling waits for it; a queued one it takes over. A failed
+ * background compile is not final (the kernel is compiled again when it is needed); a failed compile of a needed
+ * kernel is not tried again in this process (the next launch retries it), and only that one is marked in
+ * compile_failed.txt. Cache files are written under a private name and renamed into place (compile_one). */
+enum job_state { JOB_QUEUED, JOB_RUNNING, JOB_OK, JOB_PREFETCH_FAILED, JOB_FAILED };
+
+struct job {
+   enum job_state state;
+   struct xmx_dev_info dev;   /* this and the fields below never change after the job is created */
+   char hash[20], name[32];
+   char sdir[512], cdir[512], path[700];
+};
+
+#define MAX_JOBS 1024
+static struct job *jobs[MAX_JOBS];   /* never freed: a few hundred per process at most */
+static unsigned njobs, nworkers;
+static pthread_mutex_t jobs_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t jobs_cnd = PTHREAD_COND_INITIALIZER;
+/* the current batch (from the first queued or running job to the moment none is left), for one log line */
+static unsigned busy, batch_n, batch_failed;
+static struct timespec batch_t0;
+
+/* XMX_LAYER_COMPILE_JOBS (1..32), else the online CPUs, at most 8 */
+static unsigned
+max_jobs(void)
+{
+   const char *s = getenv("XMX_LAYER_COMPILE_JOBS");
+   if (s && s[0]) {
+      char *end;
+      const unsigned long v = strtoul(s, &end, 10);
+      if (!*end)
+         return v < 1 ? 1 : v > 32 ? 32 : (unsigned)v;
+   }
+   const long n = sysconf(_SC_NPROCESSORS_ONLN);
+   return n < 1 ? 1 : n > 8 ? 8 : (unsigned)n;
+}
+
+/* one more job queued or running (the first starts a batch); job_done: one finished (the last one ends the batch and
+ * logs it). Both called with jobs_mtx held. */
+static void
+job_busy(void)
+{
+   if (busy++ == 0) {
+      clock_gettime(CLOCK_MONOTONIC, &batch_t0);
+      batch_n = batch_failed = 0;
+   }
+   batch_n++;
+}
+
+static void
+job_done(struct job *j, enum job_state st)
+{
+   j->state = st;
+   batch_failed += st != JOB_OK;
+   pthread_cond_broadcast(&jobs_cnd);
+   if (--busy == 0 && batch_n > 1) {
+      struct timespec t1;
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      xmx_compile_log("compile jobs (layer): %u kernel(s) (%u failed) in %.1f s, %u at a time\n", batch_n,
+                      batch_failed, (t1.tv_sec - batch_t0.tv_sec) + (t1.tv_nsec - batch_t0.tv_nsec) / 1e9,
+                      max_jobs());
+   }
+}
+
+/* The job of cache file path, created in state st if there is none (*created); NULL if the table is full. Called with
+ * jobs_mtx held. */
+static struct job *
+job_get(const char *path, enum job_state st, const struct xmx_dev_info *dev, const char *sdir, const char *name,
+        const char *hash, const char *cdir, bool *created)
+{
+   *created = false;
+   for (unsigned i = 0; i < njobs; i++)
+      if (!strcmp(jobs[i]->path, path))
+         return jobs[i];
+   if (njobs == MAX_JOBS)
+      return NULL;
+   struct job *j = calloc(1, sizeof(*j));
+   if (!j)
+      return NULL;
+   j->state = st;
+   j->dev = *dev;
+   snprintf(j->hash, sizeof(j->hash), "%s", hash);
+   snprintf(j->name, sizeof(j->name), "%s", name);
+   snprintf(j->sdir, sizeof(j->sdir), "%s", sdir);
+   snprintf(j->cdir, sizeof(j->cdir), "%s", cdir);
+   snprintf(j->path, sizeof(j->path), "%s", path);
+   jobs[njobs++] = j;
+   *created = true;
+   job_busy();
+   return j;
+}
+
+static void *
+worker(void *arg)
+{
+   (void)arg;
+   pthread_mutex_lock(&jobs_mtx);
+   for (;;) {
+      struct job *j = NULL;
+      for (unsigned i = 0; i < njobs && !j; i++)
+         if (jobs[i]->state == JOB_QUEUED)
+            j = jobs[i];
+      if (!j)
+         break;
+      j->state = JOB_RUNNING;
+      pthread_mutex_unlock(&jobs_mtx);
+      /* another process may have compiled it meanwhile */
+      const bool ok = access(j->path, R_OK) == 0 || compile_one(&j->dev, j->sdir, j->name, j->hash, j->cdir, j->path);
+      pthread_mutex_lock(&jobs_mtx);
+      job_done(j, ok ? JOB_OK : JOB_PREFETCH_FAILED);
+   }
+   nworkers--;   /* workers end when the queue is empty; the next miss starts new ones */
+   pthread_mutex_unlock(&jobs_mtx);
+   return NULL;
+}
+
+/* The workers run code of this library: it stays mapped even if the loader unloads the layer (the last
+ * vkDestroyInstance) while they compile. */
+static void
+pin_library(void)
+{
+   Dl_info dl;
+   if (dladdr((void *)pin_library, &dl) && dl.dli_fname)
+      (void)dlopen(dl.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE);
+}
+
+static bool
+hash_ok(const char *h)
+{
+   for (unsigned i = 0; i < 16; i++)
+      if (!((h[i] >= '0' && h[i] <= '9') || (h[i] >= 'a' && h[i] <= 'f')))
+         return false;
+   return true;
+}
+
+/* Queues every kernel of the shim's folder sdir that has no cache file and no job in this process (<16 hex
+ * digits>.spv with its .opt: the shim writes both under a temporary name and renames them, the .opt last), and starts
+ * workers for them. */
+static void
+prefetch(const struct xmx_dev_info *dev, const char *sdir)
+{
+   const unsigned max = max_jobs() - 1;
+   if (max == 0)
+      return;
+   DIR *d = opendir(sdir);
+   if (!d)
+      return;
+   unsigned queued = 0;
+   struct dirent *e;
+   while ((e = readdir(d))) {
+      char hash[17], opt[600], cdir[512], path[700];
+      if (strlen(e->d_name) != 20 || strcmp(e->d_name + 16, ".spv") != 0)
+         continue;
+      memcpy(hash, e->d_name, 16);
+      hash[16] = 0;
+      if (!hash_ok(hash))
+         continue;
+      xmx_cache_path(dev, hash, cdir, sizeof(cdir), path, sizeof(path));
+      if (access(path, R_OK) == 0)
+         continue;
+      snprintf(opt, sizeof(opt), "%s/%s.opt", sdir, hash);
+      if (access(opt, R_OK) != 0)
+         continue;
+      bool created;
+      pthread_mutex_lock(&jobs_mtx);
+      job_get(path, JOB_QUEUED, dev, sdir, hash, hash, cdir, &created);
+      pthread_mutex_unlock(&jobs_mtx);
+      queued += created;
+   }
+   closedir(d);
+   if (queued == 0)
+      return;
+   static pthread_once_t pin_once = PTHREAD_ONCE_INIT;
+   pthread_once(&pin_once, pin_library);
+   pthread_mutex_lock(&jobs_mtx);
+   unsigned waiting = 0;
+   for (unsigned i = 0; i < njobs; i++)
+      waiting += jobs[i]->state == JOB_QUEUED;
+   unsigned started = 0;
+   while (nworkers < max && nworkers < waiting) {
+      /* signals blocked in the workers, so that none of the game's handlers runs on them */
+      sigset_t all, old;
+      sigfillset(&all);
+      pthread_sigmask(SIG_SETMASK, &all, &old);
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      pthread_t t;
+      const int rc = pthread_create(&t, &attr, worker, NULL);
+      pthread_attr_destroy(&attr);
+      pthread_sigmask(SIG_SETMASK, &old, NULL);
+      if (rc != 0)
+         break;
+      nworkers++;
+      started++;
+   }
+   pthread_mutex_unlock(&jobs_mtx);
+   xmx_compile_log("compile jobs (layer): %u more kernel(s) without a cache file queued, %u background compile(s) "
+                   "started\n", queued, started);
+}
+
+/* A kernel needed now: compiled on this thread, or waited for if a worker is compiling it. with_prefetch: queue the
+ * other kernels of sdir too (placeholders of the hash format). *fresh is false when the kernel failed earlier in this
+ * process and was not tried again. */
+static bool
+compile_needed(const struct xmx_dev_info *dev, const char *sdir, const char *name, const char *hash, const char *cdir,
+               const char *path, bool with_prefetch, bool *fresh)
+{
+   *fresh = false;
+   bool created;
+   pthread_mutex_lock(&jobs_mtx);
+   struct job *j = job_get(path, JOB_RUNNING, dev, sdir, name, hash, cdir, &created);
+   while (j && !created) {
+      if (j->state == JOB_RUNNING) {
+         pthread_cond_wait(&jobs_cnd, &jobs_mtx);
+         continue;
+      }
+      if (j->state == JOB_FAILED || (j->state == JOB_OK && access(path, R_OK) == 0)) {
+         const bool ok = j->state == JOB_OK;
+         pthread_mutex_unlock(&jobs_mtx);
+         return ok;
+      }
+      /* still queued (taken over), failed in the background, or its file is gone: compile it here */
+      if (j->state != JOB_QUEUED)
+         job_busy();
+      j->state = JOB_RUNNING;
+      break;
+   }
+   pthread_mutex_unlock(&jobs_mtx);
+   if (with_prefetch)
+      prefetch(dev, sdir);
+   *fresh = true;
+   const bool ok = compile_one(dev, sdir, name, hash, cdir, path);
+   if (j) {
+      pthread_mutex_lock(&jobs_mtx);
+      job_done(j, ok ? JOB_OK : JOB_FAILED);
+      pthread_mutex_unlock(&jobs_mtx);
+   }
+   return ok;
+}
 
 bool
 xmx_kernel_get(const struct xmx_dev_info *dev, const char *sdir, int id, const char *name, const char *hash,
@@ -430,28 +677,22 @@ xmx_kernel_get(const struct xmx_dev_info *dev, const char *sdir, int id, const c
       return true;
    free(*img);
    *img = NULL;
-   call_once(&fo, fm_init);
-   mtx_lock(&fm);
-   bool known = false;
-   for (unsigned k = 0; k < nfailed && !known; k++)
-      known = !strcmp(failed[k], hash);
-   mtx_unlock(&fm);
-   if (known)
-      return false;
-   if (compile_one(dev, sdir, name, hash, cdir, path) && (*img = read_file(path, n)) && xmx_cml_parse(*img, *n, &m))
+   bool fresh;
+   if (compile_needed(dev, sdir, name, hash, cdir, path, id < 0, &fresh) && (*img = read_file(path, n)) &&
+       xmx_cml_parse(*img, *n, &m))
       return true;
    free(*img);
    *img = NULL;
-   mtx_lock(&fm);
-   if (nfailed < 64)
-      snprintf(failed[nfailed++], sizeof(failed[0]), "%s", hash);
-   mtx_unlock(&fm);
+   if (!fresh)
+      return false;   /* failed before in this process: marked then */
    char mark[600];
    snprintf(mark, sizeof(mark), "%s/compile_failed.txt", sdir);
+   pthread_mutex_lock(&jobs_mtx);   /* one appending thread at a time */
    FILE *ff = fopen(mark, "a");
    if (ff) {
       fprintf(ff, "%d %s\n", id, hash);
       fclose(ff);
    }
+   pthread_mutex_unlock(&jobs_mtx);
    return false;
 }
