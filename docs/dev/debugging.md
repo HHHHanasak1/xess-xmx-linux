@@ -85,7 +85,7 @@ Written by `./install.sh` to `~/.config/environment.d/50-xess-xmx.conf` or by `.
 | `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | The patched driver's kernel folder (`<package>/kernels`) and compiler helper (`<package>/tools/cm-compile.sh`). |
 | `INTC_ALT_DRIVER_EXTENSIONS_PATH` | Points XeSS at the prefix folder containing the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`). Proton Experimental exposes a driver store in the registry and needs no help; Proton 11.0 has none, and without this variable XeSS never loads the shim there (no XMX, frame generation capped at 2x). GE-Proton sets its own value (`C:\Windows\System32`) for every game. |
 
-*(On Xe3 GPUs with `(device_id & 0xfff0) == 0xb080` or `0xfd80`, i.e., `0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`, where `./install.sh` defaults to `stock` mode, `50-xess-xmx.conf` also sets `MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh`, and `XMX_IGC_DIR=<package>/igc`.)*
+*(On the Xe3 and Xe2 GPUs of `layer/gpu-ids.txt`, where `./install.sh` defaults to `stock` mode, `50-xess-xmx.conf` also sets `MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh`, and `XMX_IGC_DIR=<package>/igc`.)*
 
 ### Launch-Option Shorthands (`tools/proton-hook.py`)
 

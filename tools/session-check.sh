@@ -20,7 +20,7 @@
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 # the default driver (lib/libvulkan_intel.so only forwards to the one lib/active names)
 LIB="${XMX_CHECK_LIB:-$PKG/lib/mesa-$(cat "$PKG/lib/active" 2>/dev/null)/libvulkan_intel.so}"
-# stock mode (install.sh's default on Xe3, or XMX_DRIVER=stock): the session's MESA=stock-<version> picks the
+# stock mode (install.sh's default on Xe3 and Xe2, or XMX_DRIVER=stock): the session's MESA=stock-<version> picks the
 # package's unpatched driver
 STOCK=0
 CHECK_MESA=""

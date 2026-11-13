@@ -8,9 +8,14 @@
 struct xmx_dev_info {
    uint32_t pci_id;      /* VkPhysicalDeviceProperties::deviceID */
    uint32_t grf_bytes;   /* 64 on Xe2 and later, 32 on Xe-HPG / Xe-LPG */
+   uint32_t max_grf;     /* 0: as the kernel's options ask (up to 256 GRF); 128: every kernel compiled for 128 GRF
+                          * (Xe2, see gens.h; XMX_LAYER_FORCE_GRF=128 on Xe3) */
+   const char *gen;      /* generation name (gens.h), part of the cache file name; NULL = "any" */
 };
 
-/* Cache file of a kernel: <XDG_CACHE_HOME or ~/.cache>/xess-xmx/kernels/<hash>_<pci>_<toolchain>.cml */
+/* Cache file of a kernel: <XDG_CACHE_HOME or ~/.cache>/xess-xmx/kernels/<hash>_<pci>_<gen>[-g128]_<toolchain>.cml;
+ * the toolchain value (xmx_toolchain_gen) is mixed with max_grf as well, so that 128- and 256-GRF images never share
+ * a file. */
 void xmx_cache_path(const struct xmx_dev_info *dev, const char *hash, char *dir, size_t dirlen, char *path,
                     size_t pathlen);
 
