@@ -275,7 +275,7 @@ In Resident Evil 4 at 1920x1200, frame rate is about 50 fps without frame genera
 
 **Automatic rendered frame-rate cap (`FFX_XEFG_CAP=auto`):**
 Because generated frames sit between two rendered ones, an uneven rendered frame rate shows directly (uncapped Resident Evil 4 swung between 20 and 28 ms per rendered frame). By default with `OFLOW_FG=1`, the DLL limits the rendered frame rate through XeLL's frame cap (`FFX_XEFG_CAP=auto`):
-* It measures the GPU time of every frame on the game's command queue, from the game's first submission after a present to the end of optical flow right before the next present, and scales that time by the GPU clock read from the `xe` kernel driver's `act_freq` sysfs file (so an idle clock drop under the cap does not drag the cap down).
+* It measures the GPU time of every frame on the game's command queue, from the game's first submission after a present to the end of optical flow right before the next present, and scales that time by the GPU clock read from the `xe` (`act_freq`) or `i915` (`rps_act_freq_mhz`, `gt_act_freq_mhz`) kernel driver's sysfs file (so an idle clock drop under the cap does not drag the cap down).
 * Every 30 frames, it sets the interval to the 90th-percentile GPU time plus the learned overhead for interpolation and present (`FFX_XEFG_CAP_PAD`, first guess `1.5` ms), at least one display refresh per frame shown.
 * When the game reaches an outside limit (gamescope's frame limit or the display's refresh rate) and waits inside `Present`, the auto cap turns itself off and lets that limit pace the game until the game no longer reaches it.
 * Set `FFX_XEFG_CAP=<us>` for a fixed interval per rendered frame in microseconds, or `FFX_XEFG_CAP=0` to disable the cap.

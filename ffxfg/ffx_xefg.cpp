@@ -1188,7 +1188,8 @@ static uint32_t BeforePresent(ScState* st)
 // slept while frames took longer than the interval, the GPU could not keep up: the interval becomes that frame time.
 // Longer at once; shorter after 2 windows in a row, 2 % a step at most and not below the last GPU-bound interval, which
 // is forgotten at 0.1 % a window (back up to it + 1 %); at least one frame of the display per frame shown.
-// The GPU's actual frequency from the xe driver (MHz, 0 while idle), read through Wine's Z: drive. A capped frame
+// The GPU's actual frequency (MHz, 0 while idle) from the xe driver, or from i915 (its per-GT file, else the older
+// one on the card), read through Wine's Z: drive. A capped frame
 // lets the GPU idle, its governor lowers the clock and the same work takes longer: without this the cap would chase its
 // own tail down (2026-11-06 RE4: 49 -> 35 fps).
 static int GpuFreqMhz()
@@ -1197,15 +1198,22 @@ static int GpuFreqMhz()
     static bool tried = false;
     if (!tried) {
         tried = true;
-        for (int c = 0; c < 4 && h == INVALID_HANDLE_VALUE; ++c) {
-            char path[128];
-            snprintf(path, sizeof path, "Z:\\sys\\class\\drm\\card%d\\device\\tile0\\gt0\\freq0\\act_freq", c);
-            h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (h != INVALID_HANDLE_VALUE)
-                Log("cap auto: GPU frequency from %s", path);
-        }
+        static const char* const kFiles[] = {
+            "device\\tile0\\gt0\\freq0\\act_freq",   // xe
+            "gt\\gt0\\rps_act_freq_mhz",             // i915
+            "gt_act_freq_mhz",                       // i915, also on kernels before the per-GT files
+        };
+        for (int c = 0; c < 4 && h == INVALID_HANDLE_VALUE; ++c)
+            for (int k = 0; k < 3 && h == INVALID_HANDLE_VALUE; ++k) {
+                char path[128];
+                snprintf(path, sizeof path, "Z:\\sys\\class\\drm\\card%d\\%s", c, kFiles[k]);
+                h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
+                                nullptr);
+                if (h != INVALID_HANDLE_VALUE)
+                    Log("cap auto: GPU frequency from %s", path);
+            }
         if (h == INVALID_HANDLE_VALUE)
-            Log("cap auto: no GPU frequency (xe sysfs not readable), GPU times taken as they are");
+            Log("cap auto: no GPU frequency (xe/i915 sysfs not readable), GPU times taken as they are");
     }
     if (h == INVALID_HANDLE_VALUE)
         return -1;
