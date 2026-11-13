@@ -16,10 +16,8 @@
 //   FFX_XEFG_MULT=n   frames shown per rendered frame (2 = one interpolated frame; default: XESS_FG, else 2)
 //   FFX_XEFG_LOG=path log file (default ffx_xefg.log next to the DLL); FFX_XEFG_LOG=0 turns it off
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
-//   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
-//   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
-//   FFX_XEFG_PACE=1        release our waitable object when the GPU finished the frame, not when Present returns
-//   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
+//   (FFX_XEFG_SLEEP, OWNWAIT, PACE, VALIDITY, MVNDC, AB, AB_OLD and HOLD, measuring aids, are read by a debug build
+//   only: see DBG_SWITCH below)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 //   FFX_XEFG_OFLOW=1       motion vectors from FidelityFX optical flow on the final image instead of the game's,
 //                          constant depth (FFX_XEFG_OFLOW_DEPTH, default 1.0), no camera, no HUD-less color or UI: what
@@ -39,10 +37,6 @@
 //                          swap chain every frame (GetFrameStatistics, CheckColorSpaceSupport) is answered as of
 //                          its last Present and never waits for XeSS-FG's presentation thread; 0: asked from the
 //                          swap chain each time (the XMX shim reads it too, for a game's own XeSS-FG)
-//   FFX_XEFG_AB=s          measuring aid: the low latency's wait is off and on in turns of s seconds (off first);
-//                          with FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait),
-//                          the answers as of the last Present, the wait too. FFX_XEFG_HOLD=ms: a fixed wait in the
-//                          place of the one the low latency works out
 //   IGDEXT_XELL_CHECK=0    the low latency's wait is not checked (by default it stays only where the frame time with
 //                          it is within 1 % of the frame time without it and the latency is lower; the XMX shim
 //                          reads it too)
@@ -108,12 +102,16 @@ static uint64_t Qpc()
 }
 static float QpcMs(uint64_t a, uint64_t b) { return (float)((double)(b - a) * 1000.0 / (double)g_qpf.QuadPart); }
 
-// TR(...): only in a debug build (FFX_XEFG_TRACE)
+// TR(...): only in a debug build (FFXFG_DEBUG): the calls of FFX_XEFG_TRACE, and the reads of the DBG_SWITCH variables.
+// DBG_SWITCH: a switch that only a debug build reads from the environment (build.bat with FFXFG_DEBUG=1). In a release
+// build it is a constant at its default, and the compiler leaves out the code that the switch would turn on.
 #ifdef FFXFG_DEBUG
 #include "ffx_trace.h"
 #define TR(...) __VA_ARGS__
+#define DBG_SWITCH
 #else
 #define TR(...)
+#define DBG_SWITCH const
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -152,9 +150,20 @@ static bool g_libsOk;
 static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static int g_mult = 2;
 static int g_xefgLogLevel = 2;
-static bool g_sleep = true;
-static bool g_ownWait = true;
-static bool g_pace = false;     // FFX_XEFG_PACE=1: the waitable object is released when the GPU finished the frame, not when Present returns
+// Measuring aids and experiments that only a debug build reads (DBG_SWITCH):
+//   FFX_XEFG_SLEEP=0     no xellSleep (XeLL stays enabled, as XeSS-FG requires)
+//   FFX_XEFG_OWNWAIT=0   hand the game the proxy's frame latency waitable object (a game that waits on it before each
+//                        frame can deadlock, for example CONTROL Resonant)
+//   FFX_XEFG_PACE=1      release our waitable object when the GPU finished the frame, not when Present returns
+//   FFX_XEFG_VALIDITY=0  tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; can flicker)
+//   FFX_XEFG_MVNDC=1     motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+//   FFX_XEFG_AB=s        the low latency's wait is off and on in turns of s seconds (off first); with
+//                        FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait), the answers
+//                        as of the last Present, the wait too
+//   FFX_XEFG_HOLD=ms     a fixed wait in the place of the one the low latency works out
+static DBG_SWITCH bool g_sleep = true;
+static DBG_SWITCH bool g_ownWait = true;
+static DBG_SWITCH bool g_pace = false;
 static bool g_noExclusive = true;
 static int g_oflow = 0;          // FFX_XEFG_OFLOW=1 (see the top)
 static float g_oflowDepth = 1.0f;
@@ -170,13 +179,13 @@ static double g_latMarginMs = 0;   // IGDEXT_XELL_CAP=auto:<ms>: each frame star
 // of that sleep would hide it)
 static bool g_ffxCap = false;
 static bool g_pollCache = false;    // IGDEXT_XELL_POLLS (see the top)
-static int g_abSec = 0;             // FFX_XEFG_AB (see the top)
-static bool g_abOld = false;        // FFX_XEFG_AB_OLD
-static float g_holdMs = 0;          // FFX_XEFG_HOLD
+static DBG_SWITCH int g_abSec = 0;       // FFX_XEFG_AB
+static DBG_SWITCH bool g_abOld = false;  // FFX_XEFG_AB_OLD
+static DBG_SWITCH float g_holdMs = 0;    // FFX_XEFG_HOLD
 static bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
-static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+static DBG_SWITCH bool g_mvNdc = false;   // FFX_XEFG_MVNDC
 #ifdef FFXFG_DEBUG
 // debug build (build.bat with FFXFG_DEBUG=1): change or leave out one of the game's inputs at a time, to find the one
 // behind an artifact
@@ -195,7 +204,7 @@ static int g_dumpEvery = 0;
 static float g_renderTime = -1;
 static float g_renderScale = 1;
 #endif
-static bool g_validityNow = true;  // FFX_XEFG_VALIDITY=0: depth and motion vectors tagged UNTIL_NEXT_PRESENT (no copy; can flicker)
+static DBG_SWITCH bool g_validityNow = true;   // FFX_XEFG_VALIDITY
 static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
 
 static HMODULE g_xefgModule, g_xellModule;
@@ -319,13 +328,13 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     if (g_mult < 2)
         g_mult = 2;
     g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
-    g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
-    g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
-    g_pace = EnvInt("FFX_XEFG_PACE", 0) != 0;
+    TR(g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0);
+    TR(g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0);
+    TR(g_pace = EnvInt("FFX_XEFG_PACE", 0) != 0);
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
-    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
-    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
+    TR(g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0);
+    TR(g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0);
     g_oflow = EnvInt("FFX_XEFG_OFLOW", 0);
     g_times = EnvInt("FFX_XEFG_TIMES", 0) != 0;
     if (GetEnvironmentVariableA("FFX_XEFG_CAP", env, MAX_PATH))
@@ -355,10 +364,9 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     // chain's own answers the game ran with an idle GPU part of the time, 30.3 ms a frame with a 95th percentile of
     // 42 ms; with these answers 27.7 ms and 32 ms, under the same cap. At 2x there is no difference.)
     g_pollCache = EnvInt("IGDEXT_XELL_POLLS", g_lat != 0) != 0;
-    g_abSec = EnvInt("FFX_XEFG_AB", 0);
-    g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0;
-    if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH))
-        g_holdMs = (float)atof(env);
+    TR(g_abSec = EnvInt("FFX_XEFG_AB", 0));
+    TR(g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0);
+    TR(if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH)) g_holdMs = (float)atof(env));
     g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
     TR(tr::g_subs = EnvInt("FFX_XEFG_TRACE_SUBS", 0) != 0; if (EnvInt("FFX_XEFG_TRACE", 0)) tr::Start(dir));
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
