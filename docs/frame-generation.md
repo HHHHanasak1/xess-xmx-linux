@@ -313,6 +313,7 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XESS_XESSLOG=0..3` | XeSS's own messages forwarded to `ffx_xess.log`: `0` debug, `1` info, `2` warnings (default), `3` errors |
 | `FFX_XESS_QUALITY=100..106` | Force the XeSS quality setting. The values are `100` Ultra Performance, `101` Performance, and `102` Balanced. They continue with `103` Quality, `104` Ultra Quality, `105` Ultra Quality Plus, and `106` Native AA |
 | `FFX_XESS_AUTOEXPOSURE=0` | Debug: disable XeSS auto exposure |
+| `FFX_XESS_PREEXPOSURE=0` | Debug: ignore the game's FSR pre-exposure (XeSS's exposure multiplier stays `1`, as in releases up to 20261111) |
 | `FFX_XEFG_MULT=<n>` | Frames shown per rendered frame (default `XESS_FG`, else `2`), capped at XeSS-FG's maximum |
 | `FFX_XEFG_LOG=<path>\|0` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off |
 | `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG's own messages forwarded to `ffx_xefg.log`: `0` debug, `1` info, `2` warnings (default), `3` errors |

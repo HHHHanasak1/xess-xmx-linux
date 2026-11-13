@@ -184,6 +184,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XESS_XESSLOG=0..3` | `amd_fidelityfx_upscaler_dx12.dll` | `libxess.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
 | `FFX_XESS_QUALITY=100..106` | `amd_fidelityfx_upscaler_dx12.dll` | Forces a specific XeSS quality setting (`100` Ultra Performance .. `105` Ultra Quality Plus, `106` Native AA). |
 | `FFX_XESS_AUTOEXPOSURE=0` | `amd_fidelityfx_upscaler_dx12.dll` | Debug: disables `XESS_INIT_FLAG_ENABLE_AUTOEXPOSURE`. |
+| `FFX_XESS_PREEXPOSURE=0` | `amd_fidelityfx_upscaler_dx12.dll` | Debug: does not pass the game's `preExposure` on (`xessSetExposureMultiplier` stays `1`); the behaviour of releases up to 20261111. |
 | `FFX_XEFG_MULT=<n>` | `amd_fidelityfx_framegeneration_dx12.dll` | Frames shown per rendered frame (default `XESS_FG`, else `2`), capped at XeSS-FG's maximum. Can also be set in `ffx_xefg.env`. |
 | `FFX_XEFG_LOG=<path>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off. |
 | `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
