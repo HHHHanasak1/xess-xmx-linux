@@ -156,7 +156,7 @@ Use these instead ([frame-generation.md](frame-generation.md), [launch-options.m
 
 ## Using the System's Own Driver for One Game (`xmx-stock.sh`)
 
-**Experimental.** If you want a single game to run on your Linux distribution's own unpatched Mesa ANV driver (instead of the drivers in this package) while still running XeSS on XMX through the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), put `xmx-stock.sh` in the game's Steam launch options:
+If you want a single game to run on your Linux distribution's own unpatched Mesa ANV driver (instead of the drivers in this package) while still running XeSS on XMX through the package's Vulkan layer `VK_LAYER_XESS_xmx` (`layer/`), put `xmx-stock.sh` in the game's Steam launch options:
 
 ```text
 /path/to/package/xmx-stock.sh %command%

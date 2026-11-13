@@ -9,7 +9,7 @@
 - **XMX** (Xe Matrix Extensions, the GPU's hardware matrix engines): the native path this project enables.
 - **FG 3x**: XeSS frame generation at 3x (`XESS_FG=3`). XeSS's generic path offers at most 2x, so DP4a is compared without frame generation only.
 - **26.1.2 / 26.3**: this project's patched Mesa ANV (Intel's open-source Vulkan driver) builds from release `20261104` (Mesa `26.1.2` / `26.3.0-rc3`).
-- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels. It was first available as `xmx-stock.sh` (experimental) from release `20261107`. The package's unpatched driver + layer is now the session default on Xe3 ([drivers.md](drivers.md)). Xe3 here means `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`.
+- **Unpatched + layer**: Mesa `26.3.0-rc3` as Mesa ships it, with this project's Vulkan layer (`VK_LAYER_XESS_xmx`) running the same XMX kernels. It was first available as `xmx-stock.sh` from release `20261107`. The package's unpatched driver + layer is now the session default on Xe3 and Xe2 ([drivers.md](drivers.md)); these runs are on Xe3. Xe3 here means `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F`.
 - All runs use the libraries from Intel's XeSS SDK 3.0.2 (`XESS=latest`).
 
 ---
@@ -53,7 +53,7 @@ Super resolution (SR) comes from one of two sources: the game's own XeSS ("XeSS-
 - GPU frame rate: XMX is about 5% faster than DP4a (26.3: +4.8%, 26.1.2: +5.5%); 26.3 is about 10% faster than 26.1.2.
 - FSR translated to XeSS performs like the game's own XeSS (GPU 55.3 against 55.0): the translation costs nothing measurable.
 - Unpatched + layer gives 103 fps against 98 fps on the patched driver; GPU frame rate is about the same, with 74 stutters against 162.
-- Unpatched + layer against the patched driver: matches in Cyberpunk 2077 and is faster in Forza Horizon 6. Other games may run slower on it; it needs more testing.
+- Unpatched + layer against the patched driver: matches in Cyberpunk 2077 and is faster in Forza Horizon 6. These are the two games in which both were measured.
 
 ---
 

@@ -7,7 +7,7 @@ This guide covers all four ways to run XeSS frame generation on XMX, how to set 
 * **The game's own XeSS-FG (`XESS_FG=<n>`, section 1):** Override the frame generation multiplier.
 * **FSR 3.1+ games (`FSR=xess`, `FSR_FG=xess`, section 3):** Run a game's AMD FidelityFX Super Resolution (FSR) 3.1+ upscaling and frame generation on XeSS.
 * **FSR 3.1+ upscaling games without FSR frame generation (`FSR=xess FSR_FG=inject`, section 4):** Inject an XeSS-FG swap chain fed by the FSR upscaler (for games where frame generation is NVIDIA DLSS-G only).
-* **Any Direct3D 12 (DX12) game via optical flow (`OFLOW_FG=1`, experimental, section 5):** Run XeSS-FG using motion vectors computed from the final image.
+* **Any Direct3D 12 (DX12) game via optical flow (`OFLOW_FG=1`, section 5):** Run XeSS-FG at 2x using motion vectors computed from the final image (3x and higher are experimental).
 * **Low latency (section 2):** One feature on all of these paths. It keeps frames from queueing.
 
 For internal implementation details of `ControlLib.dll`, the shim hooks, the FidelityFX translation DLLs, and optical flow, see [dev/how-it-works.md](dev/how-it-works.md). For what to use in a given game, see [games.md](games.md). For all launch options in one list, see [launch-options.md](launch-options.md).
@@ -27,7 +27,8 @@ XESS=latest XESS_FG=4 %command%
 ```
 
 * **2x to 4x (`XESS_FG=2`, `XESS_FG=3`, `XESS_FG=4`):** Matches the range of the frame generation override in Intel Graphics Software on Windows. To answer the override query of `libxess_fg.dll`, `install.sh` and `enable.sh` place `ControlLib.dll` into each prefix. The file goes to `C:\windows\system32\ControlLib.dll`. The DLL accepts `XESS_FG` up to `16` and reports anything above `4` as 4x.
-* **5x to 8x (`XESS_FG=5` .. `XESS_FG=8`, experimental):** `libxess_fg.dll` ignores `ControlLib.dll` overrides above 4x. So the shim (`igdext64.dll`) raises the maximum number of interpolated frames inside `libxess_fg.dll` at runtime, capped at `8`. If verification through the public API fails, the game stays at 4x. Intel does not support more than 4x. All four multipliers (`5` to `8`) work and were tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390, but every step above 4x lowers the base rendered frame rate and adds input latency. **7x and 8x are not recommended** because of the latency.
+* **5x and 6x (`XESS_FG=5`, `XESS_FG=6`):** `libxess_fg.dll` ignores `ControlLib.dll` overrides above 4x. So the shim (`igdext64.dll`) raises the maximum number of interpolated frames inside `libxess_fg.dll` at runtime. If verification through the public API fails, the game stays at 4x. Intel does not support more than 4x. Every step above 4x lowers the base rendered frame rate and adds input latency.
+* **7x and 8x (`XESS_FG=7`, `XESS_FG=8`, experimental):** Raised the same way, capped at `8`. **Not recommended** because of the latency. All four multipliers (`5` to `8`) work and were tested in Cyberpunk 2077 and Wuthering Waves on an Arc B390.
 * **In-game toggles:** You still switch frame generation on and off in the game's menu. In a game with its own multi-frame menu (such as Wuthering Waves, which offers 2x/3x/4x), `XESS_FG` takes precedence over the menu's number while still letting you turn frame generation off in the menu.
 * **Fallback limit:** If the XMX path falls back to generic shaders (because the self-test failed or a kernel failed to compile), generic XeSS frame generation is limited to 2x. A game set to 3x or 4x will run at 2x until the XMX path works again.
 
@@ -50,7 +51,7 @@ So the package removes the queue itself. It holds the game back where a frame st
 |---|---|---|---|
 | A game's own XeSS-FG (`XESS=latest`) | The shim (`igdext64.dll`) | In XeLL's sleep (`xellSleep`), where the game starts a frame | XeLL's time stamps of each frame |
 | FSR routes (`FSR=xess`, `FSR_FG=xess`, `FSR_FG=inject`) | The frame generation DLL | In `Present`, after XeSS-FG's Present has returned | The DLL's own times: how long a frame waited in front of its Present, and when the GPU finished the frame before |
-| `OFLOW_FG=1` | The frame generation DLL's frame cap ([section 5](#5-frame-generation-for-any-dx12-game-oflow_fg1-experimental)) | In XeLL's sleep, at an interval that follows the GPU | The GPU time of each frame on the game's queue |
+| `OFLOW_FG=1` | The frame generation DLL's frame cap ([section 5](#5-frame-generation-for-any-dx12-game-oflow_fg1)) | In XeLL's sleep, at an interval that follows the GPU | The GPU time of each frame on the game's queue |
 
 The same three things happen on every path:
 
@@ -229,9 +230,11 @@ The SoC is at its power limit in both runs. The second generated frame (3x inste
 
 ---
 
-## 5. Frame Generation for Any DX12 Game (`OFLOW_FG=1`, Experimental)
+## 5. Frame Generation for Any DX12 Game (`OFLOW_FG=1`)
 
-**Experimental.** XeSS-FG needs motion vectors and depth, which a game without XeSS or FSR 3.1+ does not provide. With `OFLOW_FG=1`, the package computes motion vectors from the final presented image using FidelityFX optical flow (FidelityFX SDK 1.1.4, linked into `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`) and writes a constant depth texture, similar to driver-level frame generation (AMD Fluid Motion Frames, NVIDIA Smooth Motion). `dxgi.dll` next to the game's executable gives the game an XeSS-FG swap chain.
+XeSS-FG needs motion vectors and depth, which a game without XeSS or FSR 3.1+ does not provide. With `OFLOW_FG=1`, the package computes motion vectors from the final presented image using FidelityFX optical flow (FidelityFX SDK 1.1.4, linked into `ffxfg/amd_fidelityfx_framegeneration_dx12.dll`) and writes a constant depth texture, similar to driver-level frame generation (AMD Fluid Motion Frames, NVIDIA Smooth Motion). `dxgi.dll` next to the game's executable gives the game an XeSS-FG swap chain.
+
+Optical flow is meant for 2x (one generated frame per rendered frame). 3x and higher work with it but are **experimental**.
 
 **If a game has XeSS or FSR 3.1+, use `XESS=latest` or `FSR=xess` instead:** the game's own motion vectors, depth, and HUD-less image are better than optical flow on the final image. If `FSR` or `FSR_FG` is set alongside `OFLOW_FG=1`, `OFLOW_FG` is ignored.
 
@@ -243,7 +246,7 @@ In the game's Steam launch options, set:
 OFLOW_FG=1 %command%
 ```
 
-* Use `XESS_FG=<n>` to set the number of frames shown per rendered frame (default `2`, one generated frame).
+* Use `XESS_FG=<n>` to set the number of frames shown per rendered frame (default `2`, one generated frame). `3` and higher are experimental with optical flow.
 * **DX12 only:** For a Unity game that defaults to D3D11, pass `-force-d3d12` after `%command%` if its `UnityPlayer.dll` supports DX12 (`strings UnityPlayer.dll | grep force-d3d12`):
   ```text
   OFLOW_FG=1 %command% -force-d3d12

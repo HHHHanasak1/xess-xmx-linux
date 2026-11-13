@@ -11,7 +11,7 @@ For every other case, find what your game ships in the list below. All launch op
 * **The menu offers only 2x frame generation:** Set the multiplier with `XESS_FG=`, for example `XESS_FG=3` ([frame-generation.md](frame-generation.md#setting-the-multiplier-xess_fg)). *Example: Cyberpunk 2077.*
 * **No XeSS Frame Generation, but FSR 3.1+ frame generation:** `FSR=xess %command%` runs the game's FSR upscaling and frame generation on XeSS ([frame-generation.md](frame-generation.md#3-fsr-31-on-xess-fsrxess-and-fsr_fgxess)). *Example: CONTROL Resonant.*
 * **No XeSS Frame Generation and no FSR frame generation, but FSR 3.1+ upscaling:** `FSR=xess FSR_FG=inject %command%` adds XeSS frame generation fed by the FSR upscaler ([frame-generation.md](frame-generation.md#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)). *Example: Forza Horizon 6, whose own frame generation is NVIDIA DLSS-G only.*
-* **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds experimental frame generation from optical flow on the final image; there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1-experimental)). *Examples: Resident Evil 4 (2023), Viewfinder.*
+* **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds frame generation from optical flow on the final image (2x; 3x and higher are experimental); there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1)). *Examples: Resident Evil 4 (2023), Viewfinder.*
 * **D3D11 with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-d3d11-game)).
 * **Vulkan with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)). Not yet tested on Xe-HPG and Xe2.
 
@@ -26,8 +26,8 @@ If the game still runs XeSS on DP4a or sees no Intel GPU, see [troubleshooting.m
 | Forza Horizon 6 | XeSS SR, XeSS-FG from FSR upscaling | `FSR=xess FSR_FG=inject` | Arc B390 |
 | CONTROL Resonant | XeSS SR, XeSS-FG from FSR | `FSR=xess` | Arc B390 |
 | Resident Evil Requiem | XeSS-FG from FSR (XeSS SR too with `FSR=xess`) | `FSR=xess` or `FSR_FG=xess` | Arc B390 |
-| Resident Evil 4 (2023) | XeSS-FG from optical flow (experimental) | `OFLOW_FG=1` | Arc B390 |
-| Viewfinder | XeSS-FG from optical flow (experimental) | `OFLOW_FG=1`, `-force-d3d12` after `%command%` | Arc B390 |
+| Resident Evil 4 (2023) | XeSS-FG from optical flow | `OFLOW_FG=1` | Arc B390 |
+| Viewfinder | XeSS-FG from optical flow | `OFLOW_FG=1`, `-force-d3d12` after `%command%` | Arc B390 |
 | Satisfactory | XeSS SR | None | Arc A310 (Xe-HPG), by a user ([#28](https://github.com/HHHHanasak1/xess-xmx-linux/issues/28)) |
 
 Wuthering Waves and Cyberpunk 2077 were tested on Mesa 26.1.2 and 26.3.0-rc1, Forza Horizon 6 with `FSR_FG=inject` on Mesa 26.3.0-rc2, Satisfactory on Mesa 26.3.0-rc1; the benchmarks in [performance.md](performance.md) used 26.1.2 and 26.3.0-rc3. Details for the FSR and optical-flow games are in [frame-generation.md](frame-generation.md); [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) has a Final Fantasy VII Rebirth comparison (~15% faster on Mesa 26.3 + XMX than on 26.1.2 + DP4a).
