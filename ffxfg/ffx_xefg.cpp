@@ -16,8 +16,8 @@
 //   FFX_XEFG_MULT=n   frames shown per rendered frame (2 = one interpolated frame; default: XESS_FG, else 2)
 //   FFX_XEFG_LOG=path log file (default ffx_xefg.log next to the DLL); FFX_XEFG_LOG=0 turns it off
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
-//   (FFX_XEFG_SLEEP, OWNWAIT, PACE, VALIDITY, MVNDC, AB, AB_OLD and HOLD, measuring aids, are read by a debug build
-//   only: see DBG_SWITCH below)
+//   (FFX_XEFG_SLEEP, OWNWAIT, PACE, VALIDITY, MVNDC, AB, AB_OLD, HOLD and HDR10_AB, measuring aids, are read by a
+//   debug build only: see DBG_SWITCH below)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 //   FFX_XEFG_OFLOW=1       motion vectors from FidelityFX optical flow on the final image instead of the game's,
 //                          constant depth (FFX_XEFG_OFLOW_DEPTH, default 1.0), no camera, no HUD-less color or UI: what
@@ -41,8 +41,7 @@
 //                          it is within 1 % of the frame time without it and the latency is lower; the XMX shim
 //                          reads it too)
 //   FFX_XEFG_HDR10=1       XeSS-FG is told when the game's back buffer is HDR10 (PQ); by default it is not, and
-//                          interpolates the PQ values as they are ("HDR10" below). FFX_XEFG_HDR10_AB=s: measuring
-//                          aid, told and not told in turns of s seconds (told first)
+//                          interpolates the PQ values as they are ("HDR10" below)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
 #define WIN32_LEAN_AND_MEAN
@@ -187,7 +186,7 @@ static DBG_SWITCH bool g_abOld = false;  // FFX_XEFG_AB_OLD
 static DBG_SWITCH float g_holdMs = 0;    // FFX_XEFG_HOLD
 static bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
 static bool g_hdr10 = false;        // FFX_XEFG_HDR10=1: XeSS-FG is told when the back buffer is HDR10 ("HDR10" below)
-static int g_hdr10AbSec = 0;        // FFX_XEFG_HDR10_AB
+static DBG_SWITCH int g_hdr10AbSec = 0;   // FFX_XEFG_HDR10_AB=s: told and not told in turns of s seconds, told first
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
 static DBG_SWITCH bool g_mvNdc = false;   // FFX_XEFG_MVNDC
@@ -374,7 +373,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     TR(if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH)) g_holdMs = (float)atof(env));
     g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
     g_hdr10 = EnvInt("FFX_XEFG_HDR10", 0) != 0;
-    g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0);
+    TR(g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0));
     TR(tr::g_subs = EnvInt("FFX_XEFG_TRACE_SUBS", 0) != 0; if (EnvInt("FFX_XEFG_TRACE", 0)) tr::Start(dir));
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
         g_oflowDepth = (float)atof(env);
@@ -2571,7 +2570,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
         const uint64_t now = Qpc();
         if (!st->hdrAbStart)
             st->hdrAbStart = now;
-        const int turn = (int)(((uint64_t)(QpcMs(st->hdrAbStart, now) / 1000.0f) / (uint64_t)g_hdr10AbSec) % 2);
+        const int turn = (int)(((uint64_t)(QpcMs(st->hdrAbStart, now) / 1000.0f) / (uint64_t)(g_hdr10AbSec > 0 ? g_hdr10AbSec : 1)) % 2);
         if (turn == st->hdrAbTurn)
             return;
         std::lock_guard<std::mutex> lk(st->hdrLock);

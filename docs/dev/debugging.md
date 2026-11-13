@@ -191,7 +191,6 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
 | `FFX_XEFG_HUDLESS=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Ignores the game's HUD-less color texture and leaves XeSS-FG UI composition off. |
 | `FFX_XEFG_HDR10=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Tells XeSS-FG when the game's back buffer is HDR10 (PQ); by default it is not told ([how-it-works.md](how-it-works.md#frame-generation-ffxfgffx_xefgcpp-amd_fidelityfx_framegeneration_dx12dll)). |
-| `FFX_XEFG_HDR10_AB=<s>` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (the log says when). |
 | `IGDEXT_XELL_CAP`, `IGDEXT_XELL_CHECK`, `IGDEXT_XELL_POLLS` | `amd_fidelityfx_framegeneration_dx12.dll` | The low latency's switches. This DLL reads them as the shim does (see the shim's table above). |
 | `FFX_XEFG_EXCLUSIVE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Lets exclusive fullscreen requests through instead of keeping the swap chain windowed (XeSS-FG then refuses to interpolate). |
 | `FFX_XEFG_VENDOR=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Disables the `IDXGIAdapter::GetDesc*` hook that reports `0x8086` to `libxess_fg.dll` and `libxell.dll` when DXVK spoofs another vendor ID. |
@@ -220,6 +219,7 @@ Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](bui
 * `FFX_XEFG_AB=<s>`: measuring aid: the low latency's wait is off and on in turns of `<s>` seconds (the log says when). With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait.
 * `FFX_XEFG_HOLD=<ms>`: measuring aid: a fixed wait in `Present` instead of the one the low latency works out. It is not checked (`IGDEXT_XELL_CHECK`).
 * `FFX_XEFG_VALIDITY=0`: measuring aid: tags depth and motion vectors `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids the copy at prepare to measure its cost; can flicker if the game overwrites them before present).
+* `FFX_XEFG_HDR10_AB=<s>`: measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (`ffx_xefg.log` has the time of each change).
 * `FFX_XEFG_MVNDC=1`: sets `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scales motion vectors to NDC (`2 / width`, `-2 / height`).
 * `FFX_XEFG_TRACE_SUBS=1` (with `FFX_XEFG_TRACE=1`): also notes when the GPU finished each submission to a D3D12 queue. It signals a fence after every `ExecuteCommandLists`, so it is a little slower. `tools/fsr-trace.py --subs` lists them.
 
