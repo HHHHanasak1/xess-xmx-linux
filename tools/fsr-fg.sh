@@ -27,7 +27,7 @@ UPSCALER="$PKG/ffx/$UP"   # AMD's, for "on" with FSR 3.1.0-3.1.3
 OURS_UP="$PKG/ffxfg/$UP"
 SR=0                       # "all": the upscaler as well
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 game_dir() { # app id or folder -> the game's install folder
   local lib m dir
@@ -62,13 +62,13 @@ fg_dlls() { find "$1" -maxdepth 11 -name "${2:-$FG}" -print0 2>/dev/null; }
 place() { # <source> <file in the game> <label>: the game's own file kept as .ffxfg-orig, a new one noted in .ffxfg-added
   local src=$1 f=$2 d
   d=$(dirname "$f")
-  cmp -s "$f" "$src" && { echo "   ${f#$GAME/}: already $3"; return 0; }
+  cmp -s "$f" "$src" && { echo "   ${f#"$GAME"/}: already $3"; return 0; }
   if [ -f "$f" ]; then
     [ -f "$f.ffxfg-orig" ] || cp -p "$f" "$f.ffxfg-orig"
   else
     echo "$(basename "$f")" >> "$d/.ffxfg-added"
   fi
-  cp "$src" "$f" && echo "   ${f#$GAME/} <- $3"
+  cp "$src" "$f" && echo "   ${f#"$GAME"/} <- $3"
 }
 
 xess_libs() { # <folder>: the XeSS SDK's libxess_fg.dll / libxell.dll (and libxess.dll for "all"), unless the game's own are newer
@@ -77,7 +77,7 @@ xess_libs() { # <folder>: the XeSS SDK's libxess_fg.dll / libxell.dll (and libxe
   for name in $names; do
     lib="$1/$name"
     if [ -f "$lib" ] && ! cmp -s "$lib" "$STORE/$name" && newer "$lib" "$STORE/$name"; then
-      echo "   ${lib#$GAME/}: the game's own is newer, kept"; continue
+      echo "   ${lib#"$GAME"/}: the game's own is newer, kept"; continue
     fi
     place "$STORE/$name" "$lib" "XeSS SDK $(cat "$STORE/VERSION" 2>/dev/null)"
   done
@@ -132,7 +132,7 @@ package_copy() { # <file>: true when it is a copy of one of the package's DLLs o
 off() {
   local game=$1 o a f name n=0
   while IFS= read -r -d '' o; do
-    f="${o%.ffxfg-orig}"; mv -f "$o" "$f" && n=$((n + 1)) && echo "   restored ${f#$game/}"
+    f="${o%.ffxfg-orig}"; mv -f "$o" "$f" && n=$((n + 1)) && echo "   restored ${f#"$game"/}"
   done < <(find "$game" -maxdepth 11 -name '*.ffxfg-orig' -print0 2>/dev/null)
   # .ffxfg-added lists the files "on" put in that folder: only plain names are taken, and only a file that is still
   # the package's copy goes (one of the game's own, or one changed since, stays)
@@ -141,8 +141,8 @@ off() {
       case "$name" in ""|.|..|*/*) continue ;; esac
       f="$(dirname "$a")/$name"
       [ -f "$f" ] || continue
-      if ! package_copy "$f"; then echo "   kept $(dirname "${a#$game/}")/$name (not the package's copy)"; continue; fi
-      rm -f "$f" && n=$((n + 1)) && echo "   removed $(dirname "${a#$game/}")/$name"
+      if ! package_copy "$f"; then echo "   kept $(dirname "${a#"$game"/}")/$name (not the package's copy)"; continue; fi
+      rm -f "$f" && n=$((n + 1)) && echo "   removed $(dirname "${a#"$game"/}")/$name"
     done < "$a"
     rm -f "$a"
   done < <(find "$game" -maxdepth 11 -name .ffxfg-added -print0 2>/dev/null)
@@ -152,20 +152,20 @@ off() {
 status() {
   local game=$1 f
   while IFS= read -r -d '' f; do
-    if [ -L "$f" ]; then echo "${f#$game/}: XeSS-FG for this run (FSR / FSR_FG=xess)"
-    elif cmp -s "$f" "$OURS"; then echo "${f#$game/}: XeSS-FG (fsr-fg.sh on)"
-    else echo "${f#$game/}: the game's own FSR frame generation"; fi
+    if [ -L "$f" ]; then echo "${f#"$game"/}: XeSS-FG for this run (FSR / FSR_FG=xess)"
+    elif cmp -s "$f" "$OURS"; then echo "${f#"$game"/}: XeSS-FG (fsr-fg.sh on)"
+    else echo "${f#"$game"/}: the game's own FSR frame generation"; fi
   done < <(fg_dlls "$game")
   while IFS= read -r -d '' f; do
-    if [ -L "$f" ]; then echo "${f#$game/}: XeSS SR or AMD's upscaler for this run (FSR=xess / FSR_FG=xess)"
-    elif cmp -s "$f" "$OURS_UP"; then echo "${f#$game/}: XeSS SR (fsr-fg.sh all)"
-    elif cmp -s "$f" "$UPSCALER"; then echo "${f#$game/}: AMD's upscaler of FSR SDK 2.4.0 (fsr-fg.sh on)"
-    else echo "${f#$game/}: the game's own FSR upscaler"; fi
+    if [ -L "$f" ]; then echo "${f#"$game"/}: XeSS SR or AMD's upscaler for this run (FSR=xess / FSR_FG=xess)"
+    elif cmp -s "$f" "$OURS_UP"; then echo "${f#"$game"/}: XeSS SR (fsr-fg.sh all)"
+    elif cmp -s "$f" "$UPSCALER"; then echo "${f#"$game"/}: AMD's upscaler of FSR SDK 2.4.0 (fsr-fg.sh on)"
+    else echo "${f#"$game"/}: the game's own FSR upscaler"; fi
   done < <(fg_dlls "$game" "$UP")
   while IFS= read -r -d '' f; do
-    if [ -L "$f" ]; then echo "${f#$game/}: FidelityFX loader with XeSS-FG for this run (FSR_FG=xess)"
-    elif cmp -s "$f" "$LOADER"; then echo "${f#$game/}: FidelityFX loader with XeSS-FG (fsr-fg.sh on)"
-    else echo "${f#$game/}: the game's own FSR 3.1.0-3.1.3"; fi
+    if [ -L "$f" ]; then echo "${f#"$game"/}: FidelityFX loader with XeSS-FG for this run (FSR_FG=xess)"
+    elif cmp -s "$f" "$LOADER"; then echo "${f#"$game"/}: FidelityFX loader with XeSS-FG (fsr-fg.sh on)"
+    else echo "${f#"$game"/}: the game's own FSR 3.1.0-3.1.3"; fi
   done < <(fg_dlls "$game" "$SINGLE")
 }
 
