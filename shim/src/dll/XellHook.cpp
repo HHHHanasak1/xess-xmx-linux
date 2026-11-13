@@ -51,7 +51,6 @@ static uint32_t g_mfg = 0;   // generated frames per rendered frame, 0 = frame g
 // xefgSwapChainSetEnabled (Hook_XefgSetEnabled). The newer call of the two decides (Wuthering Waves switches frame
 // generation off in its menu through XeLL only, CONTROL Resonant's FSR route through XeSS-FG only). Neither seen = off: a game
 // that loads libxess_fg.dll but keeps frame generation off never calls either.
-static volatile bool g_fgSeen = false;
 static volatile LONG g_fgState = -1;   // -1 not seen, 0 off, 1 on: the newer of the two calls
 static volatile const char* g_fgSource = "not seen";
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
@@ -170,7 +169,7 @@ static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
     static int n = 0;
     if (n++ < 12 || (n % 600) == 0) XLog("xellSetFgEnabled ctx=%p a=%u b=%u", ctx, a, b);
     if (a == 1) { g_savedInterval = g_effInterval; g_fgOnTick = GetTickCount64(); }
-    g_mfg = a == 1 ? b : 0; g_fgSeen = true;
+    g_mfg = a == 1 ? b : 0;
     g_fgSource = "xellSetFgEnabled"; InterlockedExchange(&g_fgState, g_mfg != 0);
     return g_origFg(ctx, a, b);
 }
@@ -1210,7 +1209,6 @@ static int32_t Hook_XefgSetEnabled(void* ctx, uint32_t enable)
 }
 
 static bool g_fgWanted = false;
-static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
 static volatile LONG g_fgHooked = 0;
 static SRWLOCK g_fgHookLock = SRWLOCK_INIT;
 // hooks the exports of the libxess_fg that is loaded now, once per load (Wuthering Waves loads it, unloads it and
@@ -1266,7 +1264,6 @@ static bool XefgInstallHooks()
             if (!ok) g_fgGetSc = (PFN_XefgGetSwapChainPtr) e;   // not hooked: still there to ask (ProxyFromContext)
             FLog("xefgSwapChainD3D12GetSwapChainPtr %s", ok ? "hooked" : "NOT hooked");
         }
-        g_fgHookedModule = m;
         g_fgHooked = 1;
         done = true;
     }
