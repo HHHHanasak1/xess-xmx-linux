@@ -1,9 +1,11 @@
 #!/bin/bash
+# shellcheck disable=SC2034   # the XMX_* variables at the end are for the scripts that source this file
 # steam-libraries.sh - print every Steam library root (the folder that holds steamapps/), one per line: the main
 # install plus the libraries listed in steamapps/libraryfolders.vdf (SD card, second disk). Sourced or executed.
 #   steam_libraries [steam dir]      default: steam_root
-# Sourced, it also provides the helpers every script of the package shares (steam_root, steam_prefix_of,
-# xmx_icd_json, xmx_driver_files).
+# Sourced, it also provides what the scripts of the package share: steam_root, steam_prefix_of, prefix_shim_dirs,
+# xmx_icd_json, xmx_driver_files, and the constants and tests at the end (XMX_VKD3D_OFF, XMX_ALT_EXT, XMX_SYSTOOLS,
+# xmx_have_compiler, xmx_is_shim, xmx_is_controllib).
 # The Steam install folder: $STEAM_DIR, else the first that exists of ~/.local/share/Steam (Valve's installer,
 # SteamOS, Arch), ~/.steam/steam and ~/.steam/root (links every Steam client keeps; Debian's and Ubuntu's steam package
 # installs to ~/.steam/debian-installation), with links resolved, so it matches the paths in libraryfolders.vdf
@@ -63,6 +65,23 @@ xmx_driver_files() {
   done
   printf '%s\n' "$drivers"
 }
+# The vkd3d-proton extensions the package turns off (VKD3D_DISABLE_EXTENSIONS): the descriptor buffer and the descriptor
+# heap of vkd3d-proton 3.1+ (the kernel binding code needs vkd3d-proton's classic descriptor heap) and present wait 2
+# (with it, frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes).
+# xmx-stock.sh and tools/proton-hook.py (VKD3D_OFF) add the same three to a list that is already set.
+XMX_VKD3D_OFF=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2
+# the prefix folder that holds the shim, as XeSS sees it (INTC_ALT_DRIVER_EXTENSIONS_PATH)
+XMX_ALT_EXT='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
+# Protons installed by a distribution package (CachyOS: proton-cachyos) - usually only root can write there
+XMX_SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
+# true when the package folder has its compiler bundle (tools/get-igc.sh)
+#   xmx_have_compiler <package folder>
+xmx_have_compiler() { [ -x "$(ls "$1"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; }
+# true for an igdext64.dll of this package: every build of the shim names its IGDEXT_* switches, a stock one does not;
+# and for the package's ControlLib.dll, which names XESS_FG
+#   xmx_is_shim <igdext64.dll>, xmx_is_controllib <ControlLib.dll>
+xmx_is_shim() { grep -aq 'IGDEXT_' "$1"; }
+xmx_is_controllib() { grep -aq 'XESS_FG' "$1"; }
 # run directly: list the libraries. Sourced (enable.sh and rebuild-driver.sh run with set -e): the status must be 0,
 # which the if below gives when its condition is false
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then steam_libraries "$@"; fi

@@ -16,10 +16,8 @@
 //   FFX_XEFG_MULT=n   frames shown per rendered frame (2 = one interpolated frame; default: XESS_FG, else 2)
 //   FFX_XEFG_LOG=path log file (default ffx_xefg.log next to the DLL); FFX_XEFG_LOG=0 turns it off
 //   FFX_XEFG_XEFGLOG=0..3  XeSS-FG library log level forwarded to the log (default 2 = warnings)
-//   FFX_XEFG_SLEEP=0  no xellSleep (XeLL stays enabled, as XeSS-FG requires)
-//   FFX_XEFG_OWNWAIT=0     hand the game the proxy's frame latency waitable object (deadlocks CONTROL Resonant)
-//   FFX_XEFG_PACE=1        release our waitable object when the GPU finished the frame, not when Present returns
-//   FFX_XEFG_VALIDITY=0    tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; measuring aid, can flicker)
+//   (FFX_XEFG_SLEEP, OWNWAIT, PACE, VALIDITY, MVNDC, AB, AB_OLD, HOLD and HDR10_AB, measuring aids, are read by a
+//   debug build only: see DBG_SWITCH below)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
 //   FFX_XEFG_OFLOW=1       motion vectors from FidelityFX optical flow on the final image instead of the game's,
 //                          constant depth (FFX_XEFG_OFLOW_DEPTH, default 1.0), no camera, no HUD-less color or UI: what
@@ -39,16 +37,11 @@
 //                          swap chain every frame (GetFrameStatistics, CheckColorSpaceSupport) is answered as of
 //                          its last Present and never waits for XeSS-FG's presentation thread; 0: asked from the
 //                          swap chain each time (the XMX shim reads it too, for a game's own XeSS-FG)
-//   FFX_XEFG_AB=s          measuring aid: the low latency's wait is off and on in turns of s seconds (off first);
-//                          with FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait),
-//                          the answers as of the last Present, the wait too. FFX_XEFG_HOLD=ms: a fixed wait in the
-//                          place of the one the low latency works out
 //   IGDEXT_XELL_CHECK=0    the low latency's wait is not checked (by default it stays only where the frame time with
 //                          it is within 1 % of the frame time without it and the latency is lower; the XMX shim
 //                          reads it too)
 //   FFX_XEFG_HDR10=1       XeSS-FG is told when the game's back buffer is HDR10 (PQ); by default it is not, and
-//                          interpolates the PQ values as they are ("HDR10" below). FFX_XEFG_HDR10_AB=s: measuring
-//                          aid, told and not told in turns of s seconds (told first)
+//                          interpolates the PQ values as they are ("HDR10" below)
 // The same KEY=VALUE lines can go into ffx_xefg.env next to the DLL (the environment wins). XESS_FG itself belongs in
 // the launch options: the XMX shim reads it when it starts, before this DLL is loaded.
 #define WIN32_LEAN_AND_MEAN
@@ -79,34 +72,13 @@
 #include "inc/xess/xell/xell.h"
 #include "inc/xess/xell/xell_d3d12.h"
 #include "ffx_oflow.h"
+#include "ffx_common.h"   // Log, EnvInt, InitLogAndEnv, ToD3D12State
 #include "../common/lowlat_check.h"
 
 #pragma comment(lib, "dxgi.lib")
 
 // ---------------------------------------------------------------------------------------------------------------
-// Logging
-
-static HMODULE g_self;
-static FILE* g_log;
-static std::mutex g_logLock;
-static LARGE_INTEGER g_qpf, g_qp0;
-
-static void Log(const char* fmt, ...)
-{
-    if (!g_log)
-        return;
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    double ms = (double)(now.QuadPart - g_qp0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
-    std::lock_guard<std::mutex> lk(g_logLock);
-    va_list ap;
-    va_start(ap, fmt);
-    fprintf(g_log, "%10.3f t%-5lu ", ms, GetCurrentThreadId());
-    vfprintf(g_log, fmt, ap);
-    fputc('\n', g_log);
-    va_end(ap);
-    fflush(g_log);
-}
+// Small helpers (the log is in ffx_common.h)
 
 // A patched vtable (vkd3d's queue, DXVK's adapter) jumps into this module from then on: it must never be unmapped
 // (games load, free and load the FidelityFX DLLs again). Pins once; false (logged once) = do not patch.
@@ -124,14 +96,6 @@ static bool PinSelf()
     return pinned.load() > 0;
 }
 
-static int EnvInt(const char* name, int def)
-{
-    char buf[32];
-    if (!GetEnvironmentVariableA(name, buf, sizeof(buf)))
-        return def;
-    return atoi(buf);
-}
-
 static uint64_t Qpc()
 {
     LARGE_INTEGER t;
@@ -140,12 +104,16 @@ static uint64_t Qpc()
 }
 static float QpcMs(uint64_t a, uint64_t b) { return (float)((double)(b - a) * 1000.0 / (double)g_qpf.QuadPart); }
 
-// TR(...): only in a debug build (FFX_XEFG_TRACE)
+// TR(...): only in a debug build (FFXFG_DEBUG): the calls of FFX_XEFG_TRACE, and the reads of the DBG_SWITCH variables.
+// DBG_SWITCH: a switch that only a debug build reads from the environment (build.bat with FFXFG_DEBUG=1). In a release
+// build it is a constant at its default, and the compiler leaves out the code that the switch would turn on.
 #ifdef FFXFG_DEBUG
 #include "ffx_trace.h"
 #define TR(...) __VA_ARGS__
+#define DBG_SWITCH
 #else
 #define TR(...)
+#define DBG_SWITCH const
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -184,9 +152,20 @@ static bool g_libsOk;
 static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static int g_mult = 2;
 static int g_xefgLogLevel = 2;
-static bool g_sleep = true;
-static bool g_ownWait = true;
-static bool g_pace = false;     // FFX_XEFG_PACE=1: the waitable object is released when the GPU finished the frame, not when Present returns
+// Measuring aids and experiments that only a debug build reads (DBG_SWITCH):
+//   FFX_XEFG_SLEEP=0     no xellSleep (XeLL stays enabled, as XeSS-FG requires)
+//   FFX_XEFG_OWNWAIT=0   hand the game the proxy's frame latency waitable object (a game that waits on it before each
+//                        frame can deadlock, for example CONTROL Resonant)
+//   FFX_XEFG_PACE=1      release our waitable object when the GPU finished the frame, not when Present returns
+//   FFX_XEFG_VALIDITY=0  tag depth and motion vectors UNTIL_NEXT_PRESENT instead of ONLY_NOW (no copy; can flicker)
+//   FFX_XEFG_MVNDC=1     motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+//   FFX_XEFG_AB=s        the low latency's wait is off and on in turns of s seconds (off first); with
+//                        FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait), the answers
+//                        as of the last Present, the wait too
+//   FFX_XEFG_HOLD=ms     a fixed wait in the place of the one the low latency works out
+static DBG_SWITCH bool g_sleep = true;
+static DBG_SWITCH bool g_ownWait = true;
+static DBG_SWITCH bool g_pace = false;
 static bool g_noExclusive = true;
 static int g_oflow = 0;          // FFX_XEFG_OFLOW=1 (see the top)
 static float g_oflowDepth = 1.0f;
@@ -202,15 +181,15 @@ static double g_latMarginMs = 0;   // IGDEXT_XELL_CAP=auto:<ms>: each frame star
 // of that sleep would hide it)
 static bool g_ffxCap = false;
 static bool g_pollCache = false;    // IGDEXT_XELL_POLLS (see the top)
-static int g_abSec = 0;             // FFX_XEFG_AB (see the top)
-static bool g_abOld = false;        // FFX_XEFG_AB_OLD
-static float g_holdMs = 0;          // FFX_XEFG_HOLD
+static DBG_SWITCH int g_abSec = 0;       // FFX_XEFG_AB
+static DBG_SWITCH bool g_abOld = false;  // FFX_XEFG_AB_OLD
+static DBG_SWITCH float g_holdMs = 0;    // FFX_XEFG_HOLD
 static bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
 static bool g_hdr10 = false;        // FFX_XEFG_HDR10=1: XeSS-FG is told when the back buffer is HDR10 ("HDR10" below)
-static int g_hdr10AbSec = 0;        // FFX_XEFG_HDR10_AB
+static DBG_SWITCH int g_hdr10AbSec = 0;   // FFX_XEFG_HDR10_AB=s: told and not told in turns of s seconds, told first
 static bool g_hudless = true;   // FFX_XEFG_HUDLESS=0: no HUD-less color, no UI composition
 static int g_camera = 1;        // the game's camera as view and projection matrices (FFXFG_DEBUG: FFX_XEFG_CAMERA)
-static bool g_mvNdc = false;    // FFX_XEFG_MVNDC=1: motion vectors in NDC (init flag USE_NDC_VELOCITY), as Cyberpunk 2077 passes them
+static DBG_SWITCH bool g_mvNdc = false;   // FFX_XEFG_MVNDC
 #ifdef FFXFG_DEBUG
 // debug build (build.bat with FFXFG_DEBUG=1): change or leave out one of the game's inputs at a time, to find the one
 // behind an artifact
@@ -229,7 +208,7 @@ static int g_dumpEvery = 0;
 static float g_renderTime = -1;
 static float g_renderScale = 1;
 #endif
-static bool g_validityNow = true;  // FFX_XEFG_VALIDITY=0: depth and motion vectors tagged UNTIL_NEXT_PRESENT (no copy; can flicker)
+static DBG_SWITCH bool g_validityNow = true;   // FFX_XEFG_VALIDITY
 static char g_dir[MAX_PATH];    // the DLL's folder (the game's)
 
 static HMODULE g_xefgModule, g_xellModule;
@@ -346,56 +325,20 @@ static HMODULE LoadBeside(const char* dir, const char* name)
 
 static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
 {
-    QueryPerformanceFrequency(&g_qpf);
-    QueryPerformanceCounter(&g_qp0);
-
-    char dir[MAX_PATH];
-    GetModuleFileNameA(g_self, dir, MAX_PATH);
-    char* slash = strrchr(dir, '\\');
-    if (slash)
-        slash[1] = 0;
-
-    {
-        // ffx_xefg.env beside the DLL: KEY=VALUE lines, set into the environment unless already set
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xefg.env", dir);
-        if (FILE* f = fopen(path, "r")) {
-            char line[512];
-            while (fgets(line, sizeof line, f)) {
-                for (size_t n = strlen(line); n && (line[n - 1] == 10 || line[n - 1] == 13);)  // strip CR LF
-                    line[--n] = 0;
-                char* eq = strchr(line, '=');
-                if (line[0] == '#' || !eq)
-                    continue;
-                *eq = 0;
-                if (!GetEnvironmentVariableA(line, nullptr, 0))
-                    SetEnvironmentVariableA(line, eq + 1);
-            }
-            fclose(f);
-        }
-    }
-
-    char env[MAX_PATH];
-    if (GetEnvironmentVariableA("FFX_XEFG_LOG", env, MAX_PATH)) {
-        if (strcmp(env, "0") != 0)
-            g_log = fopen(env, "a");
-    } else {
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xefg.log", dir);
-        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
-    }
+    char dir[MAX_PATH], env[MAX_PATH];
+    InitLogAndEnv("ffx_xefg", "FFX_XEFG_LOG", dir);   // ffx_xefg.env, ffx_xefg.log
 
     g_mult = EnvInt("FFX_XEFG_MULT", EnvInt("XESS_FG", 2));
     if (g_mult < 2)
         g_mult = 2;
     g_xefgLogLevel = EnvInt("FFX_XEFG_XEFGLOG", 2);
-    g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0;
-    g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0;
-    g_pace = EnvInt("FFX_XEFG_PACE", 0) != 0;
+    TR(g_sleep = EnvInt("FFX_XEFG_SLEEP", 1) != 0);
+    TR(g_ownWait = EnvInt("FFX_XEFG_OWNWAIT", 1) != 0);
+    TR(g_pace = EnvInt("FFX_XEFG_PACE", 0) != 0);
     g_noExclusive = EnvInt("FFX_XEFG_EXCLUSIVE", 0) == 0;
     g_hudless = EnvInt("FFX_XEFG_HUDLESS", 1) != 0;
-    g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0;
-    g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0;
+    TR(g_mvNdc = EnvInt("FFX_XEFG_MVNDC", 0) != 0);
+    TR(g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0);
     g_oflow = EnvInt("FFX_XEFG_OFLOW", 0);
     g_times = EnvInt("FFX_XEFG_TIMES", 0) != 0;
     if (GetEnvironmentVariableA("FFX_XEFG_CAP", env, MAX_PATH))
@@ -425,13 +368,12 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     // chain's own answers the game ran with an idle GPU part of the time, 30.3 ms a frame with a 95th percentile of
     // 42 ms; with these answers 27.7 ms and 32 ms, under the same cap. At 2x there is no difference.)
     g_pollCache = EnvInt("IGDEXT_XELL_POLLS", g_lat != 0) != 0;
-    g_abSec = EnvInt("FFX_XEFG_AB", 0);
-    g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0;
-    if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH))
-        g_holdMs = (float)atof(env);
+    TR(g_abSec = EnvInt("FFX_XEFG_AB", 0));
+    TR(g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0);
+    TR(if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH)) g_holdMs = (float)atof(env));
     g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
     g_hdr10 = EnvInt("FFX_XEFG_HDR10", 0) != 0;
-    g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0);
+    TR(g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0));
     TR(tr::g_subs = EnvInt("FFX_XEFG_TRACE_SUBS", 0) != 0; if (EnvInt("FFX_XEFG_TRACE", 0)) tr::Start(dir));
     if (GetEnvironmentVariableA("FFX_XEFG_OFLOW_DEPTH", env, MAX_PATH))
         g_oflowDepth = (float)atof(env);
@@ -507,39 +449,6 @@ static void XefgLogCallback(const char* message, xefg_swapchain_logging_level_t 
 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
-
-static D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
-{
-    D3D12_RESOURCE_STATES r = D3D12_RESOURCE_STATE_COMMON;
-    if (s & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS)
-        r |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    if (s & FFX_API_RESOURCE_STATE_COMPUTE_READ)
-        r |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_PIXEL_READ)
-        r |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_SRC)
-        r |= D3D12_RESOURCE_STATE_COPY_SOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_DEST)
-        r |= D3D12_RESOURCE_STATE_COPY_DEST;
-    if (s & FFX_API_RESOURCE_STATE_INDIRECT_ARGUMENT)
-        r |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    if (s & FFX_API_RESOURCE_STATE_RENDER_TARGET)
-        r |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-    if (s & FFX_API_RESOURCE_STATE_DEPTH_ATTACHMENT)
-        r |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    return r;
-}
-
-static void Mul4(const float* a, const float* b, float* out)
-{
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            float s = 0;
-            for (int k = 0; k < 4; k++)
-                s += a[r * 4 + k] * b[k * 4 + c];
-            out[r * 4 + c] = s;
-        }
-}
 
 // Row-vector (DirectX) view matrix from camera position and basis.
 static void BuildView(const float* pos, const float* right, const float* up, const float* fwd, float* m)
@@ -664,7 +573,6 @@ struct ScState {
     XellFrame xellFrames[8];
     unsigned xellNext = 0;   // the slot taken next
     struct FfxApiResource ui = {};
-    uint32_t uiFlags = 0;
     // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
     // presentation thread. FFX_XEFG_PACE=1 (default 0, no gain measured in CONTROL Resonant): released when the GPU has finished the presented frame, like
     // DXGI's own object: after each Present the game's queue signals `fence`, and `paceThread` releases the semaphore
@@ -752,7 +660,6 @@ struct FgCtx {
     uint32_t magic = MAGIC_FG;
     uint32_t flags = 0;
     uint32_t displayW = 0, displayH = 0, maxRenderW = 0, maxRenderH = 0;
-    uint32_t backBufferFormat = 0;
     ID3D12Device* device = nullptr;
     uint64_t prepares = 0;
 };
@@ -1220,16 +1127,9 @@ static uint32_t BeforePresent(ScState* st)
     return id;
 }
 
-// FFX_XEFG_CAP=auto, every 30 real frames with st->lock held. The real frame interval = the 90th percentile of the GPU
-// time of a frame (or, without the optical flow's timer, of the frame without XeLL's sleep) + FFX_XEFG_CAP_PAD ms (the
-// interpolation and the present, default 3) + 3 %. Frames over 3x the median are left out (a paused game). If XeLL hardly
-// slept while frames took longer than the interval, the GPU could not keep up: the interval becomes that frame time.
-// Longer at once; shorter after 2 windows in a row, 2 % a step at most and not below the last GPU-bound interval, which
-// is forgotten at 0.1 % a window (back up to it + 1 %); at least one frame of the display per frame shown.
 // The GPU's actual frequency (MHz, 0 while idle) from the xe driver, or from i915 (its per-GT file, else the older
-// one on the card), read through Wine's Z: drive. A capped frame
-// lets the GPU idle, its governor lowers the clock and the same work takes longer: without this the cap would chase its
-// own tail down (2026-11-06 RE4: 49 -> 35 fps).
+// one on the card), read through Wine's Z: drive. A capped frame lets the GPU idle, its governor lowers the clock and
+// the same work takes longer: without this the cap would chase its own tail down (2026-11-06 RE4: 49 -> 35 fps).
 static int GpuFreqMhz()
 {
     static HANDLE h = INVALID_HANDLE_VALUE;
@@ -1291,6 +1191,13 @@ static double DisplayHz()
     return hz;
 }
 
+// FFX_XEFG_CAP=auto, every 30 real frames with st->lock held. The real frame interval = the 90th percentile of the GPU
+// time of a frame (or, without the optical flow's timer, of the frame without XeLL's sleep) + what a frame needs
+// beyond that (the interpolation and the present: FFX_XEFG_CAP_PAD ms, default 1.5, then learned) + 3 %. Frames over
+// 3x the median are left out (a paused game). If XeLL hardly slept while frames took longer than the interval, the GPU
+// could not keep up: the interval becomes that frame time. Longer at once; shorter after 2 windows in a row, 2 % a
+// step at most and not below the last GPU-bound interval, which is forgotten at 0.1 % a window (back up to it + 1 %);
+// at least one frame of the display per frame shown.
 static void CapAdjust(ScState* st)
 {
     auto med = [](std::vector<float> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
@@ -2663,7 +2570,7 @@ struct FgSwapChain final : IDXGISwapChain4 {
         const uint64_t now = Qpc();
         if (!st->hdrAbStart)
             st->hdrAbStart = now;
-        const int turn = (int)(((uint64_t)(QpcMs(st->hdrAbStart, now) / 1000.0f) / (uint64_t)g_hdr10AbSec) % 2);
+        const int turn = (int)(((uint64_t)(QpcMs(st->hdrAbStart, now) / 1000.0f) / (uint64_t)(g_hdr10AbSec > 0 ? g_hdr10AbSec : 1)) % 2);
         if (turn == st->hdrAbTurn)
             return;
         std::lock_guard<std::mutex> lk(st->hdrLock);
@@ -2709,12 +2616,11 @@ struct ScRef {
     ~ScRef() { if (st) ScRelease(st); }
 };
 
-static ScState* ScFromSwapChain(void* p)
+// whether a swap chain context is alive (there is one swap chain at a time)
+static bool HaveSwapChain()
 {
     std::lock_guard<std::mutex> lk(g_globalLock);
-    if (g_currentSc && g_currentSc->wrapper && (void*)static_cast<IDXGISwapChain4*>(g_currentSc->wrapper) == p)
-        return g_currentSc;
-    return g_currentSc;  // single swap chain: fall back to the current one
+    return g_currentSc != nullptr;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -3467,7 +3373,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
         fg->displayH = d->displaySize.height;
         fg->maxRenderW = d->maxRenderSize.width;
         fg->maxRenderH = d->maxRenderSize.height;
-        fg->backBufferFormat = d->backBufferFormat;
         for (const ffxApiHeader* h = desc->pNext; h; h = h->pNext)
             if (h->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12)
                 fg->device = ((const ffxCreateBackendDX12Desc*)h)->device;
@@ -3482,7 +3387,7 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
         uint32_t saved;
         if (!LoadFlags(&saved) || (saved & kXefgFfxFlags) != (d->flags & kXefgFfxFlags))
             SaveFlags(d->flags & kXefgFfxFlags);
-        if (ScFromSwapChain(nullptr) && g_initFfxFlags != (d->flags & kXefgFfxFlags))
+        if (HaveSwapChain() && g_initFfxFlags != (d->flags & kXefgFfxFlags))
             Log("!! XeSS-FG was set up for flags 0x%x, the game uses 0x%x (depth direction, motion vectors): wrong until "
                 "the game starts again, which then uses the game's",
                 g_initFfxFlags, d->flags & kXefgFfxFlags);
@@ -3546,7 +3451,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxConfigure(ffxContext* contex
         if (st->ui.resource)
             ((ID3D12Resource*)st->ui.resource)->Release();
         st->ui = d->uiResource;
-        st->uiFlags = d->flags;
         if (st->ui.resource) {
             ((ID3D12Resource*)st->ui.resource)->AddRef();
             if (!st->uiComposition && p_xefgSwapChainSetUiCompositionState) {

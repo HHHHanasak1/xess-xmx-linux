@@ -1,0 +1,26 @@
+# How the code in layer/ is written (Mesa's style), for clang-format (checked with clang-format 19; the "Kind" of
+# AlignTrailingComments needs clang-format 16 or newer).
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: the lines were broken and the
+# comments aligned by hand, and about 4 % of the existing lines would change (2026-11).
+#
+# 3 spaces. The return type of a function on its own line and its brace on the next one, every other brace on the
+# line that opens the block. "type *name". At most 120 columns. { 1, 2 } with spaces inside. Trailing comments stay
+# where they were put (three spaces, or one column within a block; clang-format leaves them alone only up to the
+# first comment line of 120 columns in a file). Comments are wrapped by hand, and the includes stay in the order they
+# are in.
+BasedOnStyle: LLVM
+IndentWidth: 3
+ContinuationIndentWidth: 3
+ColumnLimit: 120
+PointerAlignment: Right
+BreakBeforeBraces: WebKit
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+AllowShortFunctionsOnASingleLine: None
+Cpp11BracedListStyle: false
+AlignEscapedNewlines: DontAlign
+AlignTrailingComments:
+  Kind: Leave
+MaxEmptyLinesToKeep: 2
+ReflowComments: false
+SortIncludes: false

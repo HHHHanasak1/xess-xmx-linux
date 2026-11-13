@@ -93,7 +93,8 @@ static void say(const char* fmt, ...)
 
 // XESS_FG=<n> -> override value n-1 (2x = 1 ... 4x = 3); 0 = the application's choice. XeSS-FG accepts 1..3 (Intel's
 // public enum ends at 4x) and ignores anything else, so more than 4x is handed over as 4x; the shim raises it further
-// (igdext64.dll, XefgHook). The shim also sets XESS_FG_PROBE in the process while it creates a probe context.
+// (XefgRaise in the shim's XellHook.cpp). The shim also sets XESS_FG_PROBE in the process while it creates a probe
+// context.
 static uint32_t override_value(void)
 {
     char b[16];

@@ -14,6 +14,13 @@ static const unsigned char kDummyUAV[] = {
 };
 #include "placeholders.inc"
 #include "DxbcChecksum.h"
+
+// Keep in step with vkwrap/vkwrap.c (vulkan-1.dll, XeSS in a Vulkan game), which names and writes a kernel's files the
+// same way (fnv1a, write_once, w_csm): the hash is FNV-1a 64 over the SPIR-V and then the compile options, the files
+// are C:\igdext_kernels\<hash as 16 hex digits>.spv / .opt, each written under a temporary name and renamed. If the two
+// differ, the same kernel gets two names, and the driver and the layer compile and cache it twice. Only the temporary
+// name is not the same: <file>.<process id>.tmp here, where g_dynMutex lets one thread write at a time, and
+// <file>.<process id>.<thread id>.tmp there, where XeSS creates the same module from several threads at once.
 static unsigned long long Fnv1a64(const void* a, size_t na, const void* b, size_t nb)
 {
     unsigned long long h = 14695981039346656037ull;

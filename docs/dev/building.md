@@ -21,9 +21,9 @@ controllib/                   ControlLib.dll source: the frame generation overri
 ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
                               amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
                               dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject, and
-                              for any DX12 game from optical flow, OFLOW_FG=1); get-headers.sh fetches the AMD /
-                              Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
-                              optical flow libraries
+                              for any DX12 game from optical flow, OFLOW_FG=1); ffx_common.h: the log and settings
+                              code of the first two; get-headers.sh fetches the AMD / Intel headers they are built
+                              against, build-ffxsdk.bat the FidelityFX SDK 1.1.4 optical flow libraries
 dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
 vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interfaces for Vulkan games
 icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
@@ -39,14 +39,18 @@ tools/switch-driver.sh        sets the default among the package's drivers (per 
 tools/session-check.sh        the driver check run before each session
 tools/cmk_pack.py             zebin -> .cmk packer (the driver has a C port; cm-compile.sh uses this one for older drivers)
 tools/xell-probe.sh           XeLL driver-mode probe (debugging.md)
+tools/fsr-trace.py            reads the frame time line a debug build of the frame generation DLL writes (FFX_XEFG_TRACE=1)
 tools/gen_placeholders.py     placeholder templates for run-time kernels; tools/check_placeholders.py consistency check
 tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
 tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
 tools/make-release.py         builds the release archive (the developer tools stay out of it)
+tools/tests/install-sandbox.sh  test: the install scripts in a sandbox (CI job install-scripts)
 docs/                         user guides (install, drivers, games, frame generation, launch options, performance, troubleshooting)
 docs/dev/                     developer documents (how it works, building, debugging)
+.clang-format                 in each source directory: how its code is written, for clang-format ("Code Style" below)
 .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the D3D11/Vulkan DLLs, the ICD,
                               both patched drivers, the unpatched driver, the bundled libraries (lib/bundled) and the layer, checks the scripts
+                              and runs the install scripts in a sandbox
 ```
 
 The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
@@ -98,7 +102,7 @@ python tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch   
 python tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 ```
 
-`tools/check_placeholders.py` checks that the template shapes, magic value (`0x584d5843`), self-test canary constants (`0x00414e43` and `0x7fa15952`), byte offsets (`kPlaceholderKernelHashAt` and `kPlaceholderCanaryHashAt`), and custom DXBC MD5 checksums (`shim/src/dll/DxbcChecksum.h`) match the driver patches.
+`tools/check_placeholders.py` checks that the template shapes, magic value (`0x584d5843`), self-test canary constants (`0x00414e43` and `0x7fa15952`), byte offsets (`kPlaceholderKernelHashAt` and `kPlaceholderCanaryHashAt`), and custom DXBC MD5 checksums (`shim/src/dll/DxbcChecksum.h`) match the driver patches. It also checks the copies of those constants that the layer and `vulkan-1.dll` keep in their own sources, `layer/src/placeholder.h` and `vkwrap/vkwrap.c` (the magic value, the two work-group sizes, the self-test values and, for the layer, the older shim's self-test size), and that `vkwrap.c` has the layer's set number for XeSS's descriptor push (`XMX_VK_PUSH_SET` in `layer/src/layer.c`).
 
 #### Building `ControlLib.dll`
 
@@ -130,7 +134,7 @@ ffxfg\build.bat
 
 `ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and `ffx_xefg.cpp` into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
 
-To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
+To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XEFG_TRACE`, `FFX_XESS_JITTER`, and the measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, `FFX_XEFG_MVNDC`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
 
 ```bat
 set FFXFG_DEBUG=1
@@ -186,7 +190,7 @@ If you omit the output directory argument (`layer/build.sh`), it defaults to `la
 
 ### Layer Unit Tests and Probing a New Mesa Version
 
-`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
+`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), a compile script that hangs (`test_compile_timeout`: killed after `ANV_CM_COMPILE_TIMEOUT`, the kernel marked failed), the compile jobs (`test_compile_parallel`: at most `XMX_LAYER_COMPILE_JOBS` at a time, the same cache files with 1 and with 8 jobs), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
 
 ANV's serialized compute shader format (`layer/src/anvbin.c`) differs between Mesa minor versions. `layer/src/layouts.h` holds one measured offset table (`struct anv_layout`) per supported version (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`), including `pd_size_patched` (`656` on 26.1.2, `664` on 26.3.0) for this project's patched drivers. The offsets were measured on exported binaries from the variant shaders in `layer/tests/variants` rather than taken from Mesa's headers:
 
@@ -307,6 +311,33 @@ Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matri
 
 ---
 
+## Code Style (`.clang-format`)
+
+Each source directory has a `.clang-format` that says how its code is written:
+
+| Directory | Style | Existing lines a whole-file run would change |
+|---|---|---|
+| `ffxfg/`, `common/` | 4 spaces, the brace of a function on its own line, `Type* name`, 120 columns | about 4 % and 6 % |
+| `layer/` | Mesa's: 3 spaces, a function's return type on its own line, `type *name`, 120 columns | about 4 % |
+| `vkwrap/`, `dx11bridge/`, `icd/` | 3 spaces, the brace of a function on its own line, `type *name`, 120 columns | about 11 %, 2 % and none |
+| `shim/` (the files from dxvk-igdext) | 4 spaces, every brace on its own line, declarations aligned in columns, no column limit | about 2 % |
+| `shim/src/dll/` (this project's shim code) | 4 spaces, every brace on its own line, short statements on one line, no column limit | about 12 % |
+| `controllib/` | 4 spaces, every brace on its own line, 120 columns | about 16 % |
+
+The files are for new and changed lines: `clang-format --lines=<first>:<last> -i <file>`, or `git clang-format` (LLVM's script, which formats the lines that differ from `HEAD`). Do not run clang-format over a whole existing file. The code's lines were broken and its comments aligned by hand, and the last column says how much of it such a run would rewrite (clang-format 19, November 2026). Third-party code (`layer/third_party/`, `shim/d3dext-sdk/`) is not formatted at all.
+
+---
+
+## Testing the Install Scripts (`tools/tests/install-sandbox.sh`)
+
+```bash
+bash tools/tests/install-sandbox.sh        # KEEP=1 keeps the sandbox and prints its path
+```
+
+The test runs `install.sh` (patched mode, stock mode, a second time, and as the watcher does after a Proton update), `tools/switch-driver.sh`, `tools/session-check.sh` (with a driver that stops loading, and its copy in `~/.config/xess-xmx` with the package folder gone), `enable.sh` / `xmx-launch.sh` / `disable.sh`, `xmx-stock.sh`, `tools/fsr-fg.sh` and `uninstall.sh` in a temporary folder: a made-up `HOME` with a Steam tree (two libraries, three Protons, four prefixes, two games, one of them in a folder with `[`, `*` and a space in its name) and a package made of the tree's scripts plus stand-ins for the binaries, in a folder with a space in its name. `systemctl`, `vulkaninfo`, `pgrep` and `curl` are stubs that log their calls, so nothing outside the folder changes and no network, GPU or root is needed; a C compiler is, because the stand-in drivers are real (empty) shared objects that the driver check loads. It checks the files each step writes (the session environment, the systemd units, the shim and its `.stock` backups, the Proton hook) and, at the end, that both Steam libraries are file for file what they would be had the package never been installed. CI runs it as the job `install-scripts`.
+
+---
+
 ## Packaging a Release Archive (`tools/make-release.py`)
 
 With all binaries built and placed in their release locations in the working tree (`igdext64.dll`, `ControlLib.dll`, `ffxfg/*.dll`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, `lib/libvulkan_intel.so`, `lib/active`, `lib/mesa-*/libvulkan_intel.so`, `lib/bundled/*`, and `layer/libVkLayer_xess_xmx.so`), build the release zip archive:
@@ -315,4 +346,4 @@ With all binaries built and placed in their release locations in the working tre
 python3 tools/make-release.py <version> [out dir]
 ```
 
-`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.
+`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`, `fsr-trace.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.

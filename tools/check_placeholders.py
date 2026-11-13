@@ -4,7 +4,11 @@ Consistency check between the places that define the placeholder shaders of run-
 (ANV_CM_* in src/intel/vulkan/anv_cm.c of the ANV patch), the shim's templates (shim/src/dll/placeholders.inc, from
 tools/gen_placeholders.py) and the shim's self-test values (D3D12Api.cpp). Checks the templates' DXBC checksums, their
 numthreads and that the store immediates sit where the shim patches them, and that a patched copy (the shim's
-procedure) is a valid container again. Exits non-zero on any mismatch."""
+procedure) is a valid container again.
+The layer and vulkan-1.dll have the same constants in their own sources (they are built apart from the driver and the
+shim): layer/src/placeholder.h and vkwrap/vkwrap.c must give the driver's magic, work-group sizes and self-test
+values, and vkwrap.c the layer's set number for XeSS' descriptor push (layer/src/layer.c).
+Exits non-zero on any mismatch."""
 import math, os, re, struct, sys
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +24,32 @@ def define(patch, name):
     if not m:
         fail("%s not found in the patch" % name)
     return int(m.group(1), 0)
+
+
+def c_define(path, name):
+    """#define <name> <number> of a C source in the tree (path from the repository's root)"""
+    text = open(os.path.join(here, "..", *path.split("/")), encoding="utf-8").read()
+    m = re.search(r"^#define %s (0x[0-9a-fA-F]+|\d+)u?\b" % name, text, re.M)
+    if not m:
+        fail("%s not found in %s" % (name, path))
+    return int(m.group(1), 0)
+
+
+def check_copies(patch):
+    """the constants the layer and vulkan-1.dll define for themselves, against the driver's"""
+    names = {"XMX_MAGIC": "ANV_CM_DUMMY_MAGIC", "XMX_HASH_WG_Z": "ANV_CM_HASH_WG_Z", "XMX_CANARY_WG_Z": "ANV_CM_CANARY_WG_Z",
+             "XMX_CANARY_LO": "ANV_CM_CANARY_LO", "XMX_CANARY_HI": "ANV_CM_CANARY_HI",
+             "XMX_LEGACY_CANARY_WG_Z": "ANV_CM_LEGACY_CANARY_WG_Z"}
+    for path in ("layer/src/placeholder.h", "vkwrap/vkwrap.c"):
+        for ours, drv in names.items():
+            if path.endswith("vkwrap.c") and ours == "XMX_LEGACY_CANARY_WG_Z":
+                continue   # vulkan-1.dll never makes the self-test of an older shim
+            a, b = c_define(path, ours), define(patch, drv)
+            if a != b:
+                fail("%s: %s is %#x, the driver's %s is %#x" % (path, ours, a, drv, b))
+    a, b = c_define("vkwrap/vkwrap.c", "PUSH_SET"), c_define("layer/src/layer.c", "XMX_VK_PUSH_SET")
+    if a != b:
+        fail("vkwrap/vkwrap.c: PUSH_SET is %#x, layer/src/layer.c's XMX_VK_PUSH_SET is %#x" % (a, b))
 
 
 # ---- the DXBC checksum: MD5 (RFC 1321) with DXBC's own end of message (see shim/src/dll/DxbcChecksum.h)
@@ -145,8 +175,9 @@ def main():
         p[4:20] = dxbc_checksum(bytes(p))
         if dxbc_checksum(bytes(p)) != bytes(p[4:20]) or p[4:20] == blob[4:20]:
             fail("%s: patched copy not consistent" % name)
-    print("ok: placeholder templates (kernel 1,1,%d, self-test 1,1,%d) match the driver, checksums verified"
-          % (gen.KERNEL_Z, gen.CANARY_Z))
+    check_copies(patch)
+    print("ok: placeholder templates (kernel 1,1,%d, self-test 1,1,%d) match the driver, checksums verified; the layer "
+          "and vkwrap have the driver's constants" % (gen.KERNEL_Z, gen.CANARY_Z))
 
 
 if __name__ == "__main__":

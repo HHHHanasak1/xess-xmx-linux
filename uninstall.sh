@@ -17,12 +17,11 @@ systemctl --user daemon-reload 2>/dev/null
 . "$PKG/tools/steam-libraries.sh"
 STEAM="$(steam_root)"
 LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk)
-SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
 n=0
 restore_shim() { # <igdext64.dll path>
   local f=$1
   [ -f "$f" ] && [ -w "$f" ] || return
-  if [ -f "$f.stock" ]; then mv -f "$f.stock" "$f" && n=$((n + 1)); elif grep -aq 'IGDEXT_' "$f"; then rm -f "$f" && n=$((n + 1)); fi
+  if [ -f "$f.stock" ]; then mv -f "$f.stock" "$f" && n=$((n + 1)); elif xmx_is_shim "$f"; then rm -f "$f" && n=$((n + 1)); fi
 }
 remove_hook() { # <Proton folder>: the XESS hook; the user's own Proton settings back under their name
   local u="$1/user_settings.py"
@@ -30,7 +29,7 @@ remove_hook() { # <Proton folder>: the XESS hook; the user's own Proton settings
   rm -f "$u"
   [ -f "${u%.py}.user.py" ] && mv -f "${u%.py}.user.py" "$u"
 }
-for s in "$STEAM/compatibilitytools.d" $SYSTOOLS; do
+for s in "$STEAM/compatibilitytools.d" $XMX_SYSTOOLS; do
   for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do restore_shim "$f"; done
   for d in "$s"/*/; do remove_hook "${d%/}"; done
 done
@@ -45,7 +44,7 @@ while IFS= read -r lib; do
   for d in "$lib"/steamapps/common/Proton*/; do remove_hook "${d%/}"; done
   rm -rf "$lib"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels
   for c in "$lib"/steamapps/compatdata/*/pfx/drive_c/windows/system32/ControlLib.dll; do
-    [ -f "$c" ] && grep -aq 'XESS_FG' "$c" && rm -f "$c"
+    [ -f "$c" ] && xmx_is_controllib "$c" && rm -f "$c"
   done
   # one walk over the game folders for both: files a killed XESS=latest / FSR_FG=xess run left as links into this
   # package or one in another folder (tools/proton-hook.py), and the markers of games switched with tools/fsr-fg.sh on

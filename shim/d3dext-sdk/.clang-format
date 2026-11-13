@@ -1,0 +1,3 @@
+# Third-party code (Intel's igdext.h): it stays as its authors wrote it.
+DisableFormat: true
+SortIncludes: false

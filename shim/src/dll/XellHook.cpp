@@ -24,13 +24,13 @@
 // xellSleep of such a context gets no AutoPaceWait.
 #include "Stdafx.h"
 #include "Trace.h"
+#include "LdrNotify.h"
 #include "../../../common/lowlat_check.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
-#include <winternl.h>   // UNICODE_STRING for the loader notification
 
 #pragma pack(push, 1)
 struct XellSleepParams { uint32_t minimumIntervalUs; uint32_t flags; }; // flags bit0 = bLowLatencyMode, bit1 = bLowLatencyBoost
@@ -51,7 +51,6 @@ static uint32_t g_mfg = 0;   // generated frames per rendered frame, 0 = frame g
 // xefgSwapChainSetEnabled (Hook_XefgSetEnabled). The newer call of the two decides (Wuthering Waves switches frame
 // generation off in its menu through XeLL only, CONTROL Resonant's FSR route through XeSS-FG only). Neither seen = off: a game
 // that loads libxess_fg.dll but keeps frame generation off never calls either.
-static volatile bool g_fgSeen = false;
 static volatile LONG g_fgState = -1;   // -1 not seen, 0 off, 1 on: the newer of the two calls
 static volatile const char* g_fgSource = "not seen";
 static bool g_fixCap = false; static uint32_t g_effInterval = 0, g_savedInterval = 0; static ULONGLONG g_fgOnTick = 0;
@@ -70,18 +69,37 @@ static PFN_XellReports g_reports;
 static void XLog(const char* fmt, ...)
 {
     if (!g_log) return;
-    FILE* f = nullptr;
-    if (fopen_s(&f, "C:\\igdext_xell.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    va_list ap; va_start(ap, fmt); AppendLogLine("C:\\igdext_xell.log", fmt, ap); va_end(ap);
 }
 
 static void XellLogCb(const char* msg, uint32_t level)
 {
     if (msg) XLog("XeLL[%u] %s", level, msg);
 }
+
+// Up to four pointers, added and removed with compare-exchange and looked up without a lock (on every xellSleep, on
+// every call of the swap chain's methods): the XeLL contexts and the swap chains that the package's own frame
+// generation DLL tells the shim to leave to it (IgdextXellExternalPacing, IgdextXefgProxyOwned).
+struct PtrSlots
+{
+    void* volatile p[4];
+    bool Has(void* x) const
+    {
+        for (int i = 0; i < 4; ++i) if (p[i] == x) return true;
+        return false;
+    }
+    int Add(void* x)   // 1: added, 0: was there already, -1: no free slot
+    {
+        if (Has(x)) return 0;
+        for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&p[i], x, nullptr) == nullptr) return 1;
+        return -1;
+    }
+    bool Remove(void* x)
+    {
+        for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&p[i], nullptr, x) == x) return true;
+        return false;
+    }
+};
 
 // IGDEXT_XELL_LOG: where the game reads its input. XInputGetState of Wine's xinput DLLs is hooked (they start with an
 // 8-byte hot-patch no-op: a jump to the hook goes there, the original runs from behind it) and the time of each call is
@@ -170,7 +188,7 @@ static uint32_t Hook_SetFg(void* ctx, uint32_t a, uint32_t b)
     static int n = 0;
     if (n++ < 12 || (n % 600) == 0) XLog("xellSetFgEnabled ctx=%p a=%u b=%u", ctx, a, b);
     if (a == 1) { g_savedInterval = g_effInterval; g_fgOnTick = GetTickCount64(); }
-    g_mfg = a == 1 ? b : 0; g_fgSeen = true;
+    g_mfg = a == 1 ? b : 0;
     g_fgSource = "xellSetFgEnabled"; InterlockedExchange(&g_fgState, g_mfg != 0);
     return g_origFg(ctx, a, b);
 }
@@ -329,26 +347,20 @@ static void AutoPaceWait(void* ctx, uint32_t frame)
     }
 }
 
-// XeLL contexts whose caller paces the frame start itself (IgdextXellExternalPacing): a few slots, read without a lock
-// on every xellSleep
-static void* volatile g_extPaced[4];
+// XeLL contexts whose caller paces the frame start itself (IgdextXellExternalPacing), looked up on every xellSleep
+static PtrSlots g_extPaced;
 
 extern "C" void IgdextXellExternalPacing(void* ctx, int on)
 {
     if (!ctx) return;
-    for (int i = 0; i < 4; ++i) if (!on && InterlockedCompareExchangePointer(&g_extPaced[i], nullptr, ctx) == ctx)
-    { XLog("xell context %p: frame start no longer paced by its caller", ctx); return; }
-    if (!on) return;
-    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return;
-    for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&g_extPaced[i], ctx, nullptr) == nullptr)
-    { XLog("xell context %p: frame start paced by its caller (no AutoPaceWait)", ctx); return; }
-    XLog("xell context %p: no free slot, AutoPaceWait stays on for it", ctx);
-}
-
-static bool ExternallyPaced(void* ctx)
-{
-    for (int i = 0; i < 4; ++i) if (g_extPaced[i] == ctx) return true;
-    return false;
+    if (!on)
+    {
+        if (g_extPaced.Remove(ctx)) XLog("xell context %p: frame start no longer paced by its caller", ctx);
+        return;
+    }
+    const int added = g_extPaced.Add(ctx);
+    if (added > 0) XLog("xell context %p: frame start paced by its caller (no AutoPaceWait)", ctx);
+    else if (added < 0) XLog("xell context %p: no free slot, AutoPaceWait stays on for it", ctx);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -381,7 +393,7 @@ typedef HRESULT (STDMETHODCALLTYPE* PFN_ScResize1)(IDXGISwapChain*, UINT, UINT, 
 
 void** volatile g_scVt;          // the virtual table the hooks are in
 void* g_scOrig[SC_SLOTS];        // its own entries
-void* volatile g_scOwned[4];     // swap chains whose wrapper answers its game itself (IgdextXefgProxyOwned)
+PtrSlots g_scOwned;              // swap chains whose wrapper answers its game itself (IgdextXefgProxyOwned)
 
 struct ScAnswers
 {
@@ -392,11 +404,7 @@ struct ScAnswers
     LONG saidStats, saidCs, saidWaited;
 } g_ans = { SRWLOCK_INIT };
 
-bool ScOwned(void* sc)
-{
-    for (int i = 0; i < 4; ++i) if (g_scOwned[i] == sc) return true;
-    return false;
-}
+bool ScOwned(void* sc) { return g_scOwned.Has(sc); }
 
 bool AnswersOn(void* sc) { return g_capAuto && g_polls && g_fgState == 1 && !ScOwned(sc); }
 
@@ -611,17 +619,16 @@ void ProxyHook(IUnknown* unk)
 extern "C" void IgdextXefgProxyOwned(void* swapChain, int on)
 {
     if (!swapChain) return;
-    for (int i = 0; i < 4; ++i) if (!on && InterlockedCompareExchangePointer(&g_scOwned[i], nullptr, swapChain) == swapChain) return;
-    if (!on) return;
-    for (int i = 0; i < 4; ++i) if (g_scOwned[i] == swapChain) return;
-    for (int i = 0; i < 4; ++i) if (InterlockedCompareExchangePointer(&g_scOwned[i], swapChain, nullptr) == nullptr)
-    { XLog("swap chain %p: its wrapper answers the game itself", swapChain); return; }
+    if (!on) { g_scOwned.Remove(swapChain); return; }
+    const int added = g_scOwned.Add(swapChain);
+    if (added > 0) XLog("swap chain %p: its wrapper answers the game itself", swapChain);
+    else if (added < 0) XLog("swap chain %p: no free slot, its calls are answered here as for a game's own XeSS-FG", swapChain);
 }
 
 static uint32_t Hook_Sleep(void* ctx, uint32_t frame)
 {
     LONG n = InterlockedIncrement(&g_sleepCalls);
-    const bool pace = g_capAuto && !ExternallyPaced(ctx);
+    const bool pace = g_capAuto && !g_extPaced.Has(ctx);
     if (!g_log) { const uint32_t rr = g_origSleep(ctx, frame); if (pace) AutoPaceWait(ctx, frame); return rr; }
     if (n == 1 && g_setLog) XLog("xellSetLoggingCallback(debug) -> %u", g_setLog(ctx, 0, XellLogCb));
     if (n < 5 || (n % 600) == 0) XLog("xellSleep call #%ld frame=%u", (long) n, frame);
@@ -725,11 +732,11 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
     if (w != p)
     {
         const unsigned sh = (unsigned) (r & 7) * 8;
-        const uint64_t mask = 0xFFFFFFFFull << sh, rel = (uint64_t) (uint32_t) (int32_t) d << sh;
+        const uint64_t mask = 0xFFFFFFFFull << sh, newRel = (uint64_t) (uint32_t) (int32_t) d << sh;
         uint64_t cur = *(volatile uint64_t*) w;
         for (;;)
         {
-            const uint64_t prev = (uint64_t) InterlockedCompareExchange64((volatile LONG64*) w, (LONG64) ((cur & ~mask) | rel), (LONG64) cur);
+            const uint64_t prev = (uint64_t) InterlockedCompareExchange64((volatile LONG64*) w, (LONG64) ((cur & ~mask) | newRel), (LONG64) cur);
             if (prev == cur) break;
             cur = prev;
         }
@@ -747,19 +754,13 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
 }
 
 // The threads below wait for a library the game loads later. The loader tells them when it is mapped
-// (LdrRegisterDllNotification, as XellDriver.cpp's probe uses it; not in the SDK headers, documented in the Windows SDK
-// and implemented by Wine): the callback runs under the loader lock and does nothing but signal the thread's event. The
-// install code (PatchThunk pins this module, XefgInstallHooks calls FreeLibrary) runs on the thread, never in the
-// callback. One registration serves both threads; the last one done removes it before its module reference goes, so the
-// callback is never called into an unmapped module. Without the notification (registration refused) the threads poll as
-// they used to.
+// (LdrRegisterDllNotification, LdrNotify.h): the callback runs under the loader lock and does nothing but signal the
+// thread's event. The install code (PatchThunk pins this module, XefgInstallHooks calls FreeLibrary) runs on the
+// thread, never in the callback. One registration serves both threads; the last one done removes it before its module
+// reference goes, so the callback is never called into an unmapped module. Without the notification (registration
+// refused) the threads poll as they used to.
 namespace
 {
-struct LdrDllNotificationData_ { ULONG Flags; const UNICODE_STRING* FullDllName; const UNICODE_STRING* BaseDllName; PVOID DllBase; ULONG SizeOfImage; };
-typedef VOID (CALLBACK* PFN_LdrDllNotification)(ULONG reason, const LdrDllNotificationData_* data, PVOID ctx);
-typedef NTSTATUS (NTAPI* PFN_LdrRegisterDllNotification)(ULONG flags, PFN_LdrDllNotification fn, PVOID ctx, PVOID* cookie);
-typedef NTSTATUS (NTAPI* PFN_LdrUnregisterDllNotification)(PVOID cookie);
-
 enum { WATCH_XELL = 0, WATCH_XEFG = 1, WATCH_COUNT = 2 };
 const wchar_t* const kWatchedDll[WATCH_COUNT] = { L"libxell.dll", L"libxess_fg.dll" };
 const DWORD kWatchTotalMs = 600000;   // 10 minutes, as the polling loops before (6000 x 100 ms, 60000 x 10 ms)
@@ -769,17 +770,11 @@ PVOID g_watchCookie = nullptr;
 int g_watchUsers = 0;
 PFN_LdrUnregisterDllNotification g_ldrUnregister = nullptr;
 
-bool DllNameIs(const UNICODE_STRING* s, const wchar_t* name)
+VOID CALLBACK OnWatchedDllLoaded(ULONG reason, const LdrDllNotificationData* data, PVOID)
 {
-    const size_t n = wcslen(name);
-    return s && s->Buffer && s->Length == n * sizeof(wchar_t) && _wcsnicmp(s->Buffer, name, n) == 0;
-}
-
-VOID CALLBACK OnWatchedDllLoaded(ULONG reason, const LdrDllNotificationData_* data, PVOID)
-{
-    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !data) return;
+    if (reason != kLdrDllLoaded || !data) return;
     for (int i = 0; i < WATCH_COUNT; ++i)
-        if (DllNameIs(data->BaseDllName, kWatchedDll[i])) SetEvent(g_watchEvent[i]);
+        if (LdrDllNameIs(data->BaseDllName, kWatchedDll[i])) SetEvent(g_watchEvent[i]);
 }
 
 // the event the loader signals when the library is mapped; nullptr when there is no notification (the caller polls).
@@ -946,12 +941,7 @@ static bool g_fgLog = false;
 static void FLog(const char* fmt, ...)
 {
     if (!g_fgLog) return;
-    FILE* f = nullptr;
-    if (fopen_s(&f, "C:\\igdext_xefg.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    va_list ap; va_start(ap, fmt); AppendLogLine("C:\\igdext_xefg.log", fmt, ap); va_end(ap);
 }
 
 static void XefgLogCb(const char* msg, int32_t level, void*)
@@ -1210,7 +1200,6 @@ static int32_t Hook_XefgSetEnabled(void* ctx, uint32_t enable)
 }
 
 static bool g_fgWanted = false;
-static HMODULE g_fgHookedModule;       // the libxess_fg whose exports are hooked; it can be unloaded and loaded again
 static volatile LONG g_fgHooked = 0;
 static SRWLOCK g_fgHookLock = SRWLOCK_INIT;
 // hooks the exports of the libxess_fg that is loaded now, once per load (Wuthering Waves loads it, unloads it and
@@ -1266,7 +1255,6 @@ static bool XefgInstallHooks()
             if (!ok) g_fgGetSc = (PFN_XefgGetSwapChainPtr) e;   // not hooked: still there to ask (ProxyFromContext)
             FLog("xefgSwapChainD3D12GetSwapChainPtr %s", ok ? "hooked" : "NOT hooked");
         }
-        g_fgHookedModule = m;
         g_fgHooked = 1;
         done = true;
     }

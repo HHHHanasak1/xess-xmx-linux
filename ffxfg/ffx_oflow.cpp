@@ -93,17 +93,6 @@ ID3D12Resource* Tex(ID3D12Device* d, uint32_t w, uint32_t h, DXGI_FORMAT f, D3D1
     return r;
 }
 
-void Barrier(ID3D12GraphicsCommandList* cl, ID3D12Resource* r, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
-{
-    D3D12_RESOURCE_BARRIER br = {};
-    br.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    br.Transition.pResource = r;
-    br.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    br.Transition.StateBefore = a;
-    br.Transition.StateAfter = b;
-    cl->ResourceBarrier(1, &br);
-}
-
 // a view format for a swap chain buffer (typeless and sRGB read as UNORM: the optical flow wants the encoded values)
 DXGI_FORMAT SrvFormat(DXGI_FORMAT f)
 {
@@ -230,7 +219,7 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
     if (!o->vec || !o->scd || !o->mv || !o->depth || (o->div > 1 && !o->lowres))
         return fail("CreateCommittedResource", 0);
 
-    // root signature: t0 = block vectors, u0 = motion vectors, u1 = depth (one table), b0 = 4 constants
+    // root signature: t0 = block vectors, u0 = motion vectors, u1 = depth (one table), b0 = the constants
     D3D12_DESCRIPTOR_RANGE rg[2] = {};
     rg[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
     rg[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 1};

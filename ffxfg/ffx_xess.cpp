@@ -37,39 +37,7 @@
 #undef XESS_TYPES_ONLY
 #include "inc/xess/xess/xess_d3d12.h"
 #include "xefg_bridge.h"
-
-// ---------------------------------------------------------------------------------------------------------------
-// Logging
-
-static HMODULE g_self;
-static FILE* g_log;
-static std::mutex g_logLock;
-static LARGE_INTEGER g_qpf, g_qp0;
-
-static void Log(const char* fmt, ...)
-{
-    if (!g_log)
-        return;
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    double ms = (double)(now.QuadPart - g_qp0.QuadPart) * 1000.0 / (double)g_qpf.QuadPart;
-    std::lock_guard<std::mutex> lk(g_logLock);
-    va_list ap;
-    va_start(ap, fmt);
-    fprintf(g_log, "%10.3f t%-5lu ", ms, GetCurrentThreadId());
-    vfprintf(g_log, fmt, ap);
-    fputc('\n', g_log);
-    va_end(ap);
-    fflush(g_log);
-}
-
-static int EnvInt(const char* name, int def)
-{
-    char buf[32];
-    if (!GetEnvironmentVariableA(name, buf, sizeof(buf)))
-        return def;
-    return atoi(buf);
-}
+#include "ffx_common.h"   // Log, EnvInt, InitLogAndEnv, ToD3D12State
 
 // ---------------------------------------------------------------------------------------------------------------
 // XeSS entry points, loaded at run time
@@ -110,47 +78,12 @@ static const float g_jitterScale = 1.0f;
 
 static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
 {
-    QueryPerformanceFrequency(&g_qpf);
-    QueryPerformanceCounter(&g_qp0);
-
     char dir[MAX_PATH];
-    GetModuleFileNameA(g_self, dir, MAX_PATH);
-    char* slash = strrchr(dir, '\\');
-    if (slash)
-        slash[1] = 0;
-
-    {
-        // ffx_xess.env beside the DLL: KEY=VALUE lines, set into the environment unless already set
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xess.env", dir);
-        if (FILE* f = fopen(path, "r")) {
-            char line[512];
-            while (fgets(line, sizeof line, f)) {
-                for (size_t n = strlen(line); n && (line[n - 1] == 10 || line[n - 1] == 13);)  // strip CR LF
-                    line[--n] = 0;
-                char* eq = strchr(line, '=');
-                if (line[0] == '#' || !eq)
-                    continue;
-                *eq = 0;
-                if (!GetEnvironmentVariableA(line, nullptr, 0))
-                    SetEnvironmentVariableA(line, eq + 1);
-            }
-            fclose(f);
-        }
-    }
-
-    char env[MAX_PATH];
-    if (GetEnvironmentVariableA("FFX_XESS_LOG", env, MAX_PATH)) {
-        if (strcmp(env, "0") != 0)
-            g_log = fopen(env, "a");
-    } else {
-        char path[MAX_PATH];
-        snprintf(path, MAX_PATH, "%sffx_xess.log", dir);
-        g_log = fopen(path, "w");   // the last run only: it stays in the game's folder
-    }
+    InitLogAndEnv("ffx_xess", "FFX_XESS_LOG", dir);   // ffx_xess.env, ffx_xess.log
     g_xessLogLevel = EnvInt("FFX_XESS_XESSLOG", 2);
     g_quality = EnvInt("FFX_XESS_QUALITY", 0);
 #ifdef FFXFG_DEBUG
+    char env[MAX_PATH];
     if (GetEnvironmentVariableA("FFX_XESS_JITTER", env, MAX_PATH))
         g_jitterScale = (float)atof(env);
 #endif
@@ -198,28 +131,6 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
 static void Init() { InitOnceExecuteOnce(&g_once, InitOnce, nullptr, nullptr); }
 
 static void XessLogCallback(const char* message, xess_logging_level_t level) { Log("xess[%d] %s", (int)level, message); }
-
-static D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
-{
-    D3D12_RESOURCE_STATES r = D3D12_RESOURCE_STATE_COMMON;
-    if (s & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS)
-        r |= D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    if (s & FFX_API_RESOURCE_STATE_COMPUTE_READ)
-        r |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_PIXEL_READ)
-        r |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_SRC)
-        r |= D3D12_RESOURCE_STATE_COPY_SOURCE;
-    if (s & FFX_API_RESOURCE_STATE_COPY_DEST)
-        r |= D3D12_RESOURCE_STATE_COPY_DEST;
-    if (s & FFX_API_RESOURCE_STATE_INDIRECT_ARGUMENT)
-        r |= D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    if (s & FFX_API_RESOURCE_STATE_RENDER_TARGET)
-        r |= D3D12_RESOURCE_STATE_RENDER_TARGET;
-    if (s & FFX_API_RESOURCE_STATE_DEPTH_ATTACHMENT)
-        r |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    return r;
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // What AMD's upscaler answers for the setup queries (FSR 3.1): per-dimension ratios, render size, jitter sequence
@@ -270,14 +181,12 @@ static const char* kProviderVersionName = kProviderVersionNames[0];
 struct UpCtx {
     uint32_t magic = MAGIC_UP;
     std::mutex lock;
-    ID3D12Device* device = nullptr;
     uint32_t flags = 0;
     uint32_t maxRenderW = 0, maxRenderH = 0, maxUpscaleW = 0, maxUpscaleH = 0;
     xess_context_handle_t xess = nullptr;
     // what the XeSS context was initialised for; a change sets it up again
     bool inited = false;
     uint32_t initFlags = 0, outW = 0, outH = 0;
-    xess_quality_settings_t quality = XESS_QUALITY_SETTING_AA;
     float velScaleX = 0, velScaleY = 0;
     float expMul = 0;   // the exposure multiplier set on the XeSS context (0: not set since the last init)
     uint64_t expChanges = 0;
@@ -321,7 +230,6 @@ static bool SetUp(UpCtx* c, uint32_t outW, uint32_t outH, uint32_t xflags)
     c->outW = outW;
     c->outH = outH;
     c->initFlags = xflags;
-    c->quality = ip.qualitySetting;
     c->velScaleX = c->velScaleY = 0;
     c->expMul = 0;
     return c->inited;
@@ -490,7 +398,6 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
     if (!dev)
         return FFX_API_RETURN_ERROR_PARAMETER;
     auto* c = new UpCtx();
-    c->device = dev;
     c->flags = d->flags;
     c->maxRenderW = d->maxRenderSize.width;
     c->maxRenderH = d->maxRenderSize.height;

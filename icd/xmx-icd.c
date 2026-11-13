@@ -1,5 +1,6 @@
-/* xmx-icd.c - lib/libvulkan_intel.so of the package: a Vulkan ICD that loads one of the package's patched drivers
- * (lib/mesa-<version>/libvulkan_intel.so) and hands the loader its three entry points.
+/* xmx-icd.c - lib/libvulkan_intel.so of the package: a Vulkan ICD that loads one of the package's drivers
+ * (lib/mesa-<version>/libvulkan_intel.so, patched, or unpatched in mesa-stock-<version>) and hands the loader its three
+ * entry points.
  * Which one: MESA=<version or prefix> in the process' environment (a game's launch options: MESA=26.1 %command%),
  * else the version named in lib/active (tools/switch-driver.sh), else any. A driver that does not load is skipped.
  * A prefix picks the exact version if there is one, else a final release before a release candidate, else the newest.

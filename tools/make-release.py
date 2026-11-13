@@ -16,15 +16,16 @@ files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration
          "ffxfg/LICENSE.FidelityFX-SDK.txt", "dx11bridge/libxess_dx11.dll", "vkwrap/vulkan-1.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "xmx-stock.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-# what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py)
-# stay in the repository
+# what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py,
+# fsr-trace.py) stay in the repository
 tools = ["cm-compile.sh", "cmk_pack.py", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh",
          "steam-libraries.sh", "session-check.sh", "rebuild-driver.sh", "switch-driver.sh", "xell-probe.sh"]
 files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):
     dn.sort()
     files += [os.path.relpath(os.path.join(dp, p), root).replace(os.sep, "/") for p in sorted(fn) if p.endswith(".patch")]
-# one driver per Mesa version in lib/mesa-<version>/, the active one copied to lib/libvulkan_intel.so (tools/switch-driver.sh)
+# one driver per Mesa version in lib/mesa-<version>/; lib/active names the default (tools/switch-driver.sh), and
+# lib/libvulkan_intel.so, the forwarding ICD (icd/xmx-icd.c), loads it
 libdir = os.path.join(root, "lib")
 drivers = ["lib/%s/libvulkan_intel.so" % d for d in sorted(os.listdir(libdir))
            if d.startswith("mesa-") and os.path.isfile(os.path.join(libdir, d, "libvulkan_intel.so"))]

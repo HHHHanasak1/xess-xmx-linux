@@ -5,7 +5,8 @@ rem (FSR_FG=inject, OFLOW_FG=1) with the Visual Studio 2022 Build Tools.
 rem Run get-headers.sh first (bash), it puts the AMD and Intel headers into inc\; build-ffxsdk.bat (run from here when
 rem needed) builds the FidelityFX SDK 1.1.4 optical flow libraries.
 rem FFXFG_DEBUG=1 in the environment builds in the debug switches (FFX_XEFG_DUMP, ORDER, CAMERA, JITTER, RENDERTIME,
-rem RENDERSCALE, TRACE, FFX_XESS_JITTER); the release build leaves them out.
+rem RENDERSCALE, TRACE, SLEEP, OWNWAIT, PACE, AB, AB_OLD, HOLD, VALIDITY, MVNDC, FFX_XESS_JITTER); the release build
+rem leaves them out.
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 cd /d "%~dp0"
 if not exist inc\ffx\upscalers\include\ffx_upscale.h (echo run get-headers.sh first & exit /b 1)

@@ -160,8 +160,13 @@ HRESULT D3D12GetSupportedVersions2(
         return E_INVALIDARG;
     }
 
-    // D3D12 extensions are not implemented in this repo - always report zero
-    // supported versions, matching _INTC_D3D12_GetSupportedVersions above.
+    // XeSS, XeSS-FG and XeLL ask through _INTC_D3D12_GetSupportedVersions
+    // above, which returns the real list. This older entry point reports no
+    // version on purpose, so that a caller does not go on to the "2" way of
+    // creating a context (D3D12CreateDeviceExtensionContext2 with a function
+    // table, which this shim does not fill in). A caller would show in
+    // igdext_trace.log.
+    TraceF("D3D12GetSupportedVersions2(device=%p): no version reported (the older entry point)", pDevice);
     *pSupportedExtVersionsCount = 0;
 
     return S_OK;

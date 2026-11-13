@@ -191,17 +191,9 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XEFG_XEFGLOG=0..3` | `amd_fidelityfx_framegeneration_dx12.dll` | `libxess_fg.dll`'s own log level: `0` debug, `1` info, `2` warnings (default), `3` errors. |
 | `FFX_XEFG_HUDLESS=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Ignores the game's HUD-less color texture and leaves XeSS-FG UI composition off. |
 | `FFX_XEFG_HDR10=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Tells XeSS-FG when the game's back buffer is HDR10 (PQ); by default it is not told ([how-it-works.md](how-it-works.md#frame-generation-ffxfgffx_xefgcpp-amd_fidelityfx_framegeneration_dx12dll)). |
-| `FFX_XEFG_HDR10_AB=<s>` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (the log says when). |
-| `FFX_XEFG_SLEEP=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Skips calling `xellSleep` (XeLL stays enabled, as XeSS-FG requires it). |
-| `FFX_XEFG_OWNWAIT=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Hands the game the XeSS-FG proxy swap chain's own frame-latency waitable object instead of the DLL's semaphore (deadlocks CONTROL Resonant). |
-| `FFX_XEFG_PACE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Releases the DLL's waitable semaphore when a GPU fence signaled after `Present` completes (with a 200 ms watchdog), instead of when `Present` returns. |
 | `IGDEXT_XELL_CAP`, `IGDEXT_XELL_CHECK`, `IGDEXT_XELL_POLLS` | `amd_fidelityfx_framegeneration_dx12.dll` | The low latency's switches. This DLL reads them as the shim does (see the shim's table above). |
-| `FFX_XEFG_AB=<s>` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: the low latency's wait is off and on in turns of `<s>` seconds (the log says when). With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait. |
-| `FFX_XEFG_HOLD=<ms>` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: a fixed wait in `Present` instead of the one the low latency works out. It is not checked (`IGDEXT_XELL_CHECK`). |
-| `FFX_XEFG_VALIDITY=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Measuring aid: tags depth and motion vectors `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids the copy at prepare to measure its cost; can flicker if the game overwrites them before present). |
 | `FFX_XEFG_EXCLUSIVE=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Lets exclusive fullscreen requests through instead of keeping the swap chain windowed (XeSS-FG then refuses to interpolate). |
 | `FFX_XEFG_VENDOR=0` | `amd_fidelityfx_framegeneration_dx12.dll` | Disables the `IDXGIAdapter::GetDesc*` hook that reports `0x8086` to `libxess_fg.dll` and `libxell.dll` when DXVK spoofs another vendor ID. |
-| `FFX_XEFG_MVNDC=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Sets `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scales motion vectors to NDC (`2 / width`, `-2 / height`). |
 | `FFX_XEFG_OFLOW=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Computes motion vectors from FidelityFX optical flow on the final backbuffer (`OFLOW_FG=1` sets this). |
 | `FFX_XEFG_OFLOW_DIV=1..4` | `amd_fidelityfx_framegeneration_dx12.dll` | Runs optical flow at `1/n` of the display size (default `1`). |
 | `FFX_XEFG_OFLOW_DEPTH=<d>` | `amd_fidelityfx_framegeneration_dx12.dll` | Constant depth value written by `oflow_expand.hlsl` (default `1.0`). |
@@ -212,7 +204,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 
 #### `FFXFG_DEBUG=1` Build-Only Switches (`ffxfg/build.bat` with `FFXFG_DEBUG=1`)
 
-Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](building.md)):
+Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](building.md)). A release build does not read them: its code for them is left out by the compiler. `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB` / `FFX_XEFG_AB_OLD`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY` and `FFX_XEFG_MVNDC` were read by every build in releases up to 20261113:
 * `FFX_XESS_JITTER=<f>`: multiplies upscaler jitter offsets by `<f>` (`-1` negates jitter).
 * `FFX_XEFG_CAMERA=0..6`: `0` identity view and projection matrices; `1` normal (default); `2` transposed; `3` projection not depth-inverted; `4` both transposed and not inverted; `5` all zero; `6` ignores camera vectors (fixed view, real projection).
 * `FFX_XEFG_JITTER=<n>`: multiplies frame generation jitter offsets by the integer `<n>` (`0` disables, `-1` negates).
@@ -221,6 +213,14 @@ Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](bui
 * `FFX_XEFG_DUMP=<n>`: dumps depth and motion vectors of two consecutive frames every `<n>` frames to `ffx_xefg_<frame>_depth.bin` and `ffx_xefg_<frame>_mv.bin` (up to 16 dumps total, 8 pairs).
 * `FFX_XEFG_ORDER=1`: logs the order of `prepare`, `configure`, and `present` calls with their frame IDs for the first 300 calls after interpolation starts.
 * `FFX_XEFG_TRACE=1`: writes the time line of every frame to `ffx_xefg_trace.txt` next to the DLL (`ffxfg/ffx_trace.h`). `tools/fsr-trace.py` reads it.
+* `FFX_XEFG_SLEEP=0`: skips calling `xellSleep` (XeLL stays enabled, as XeSS-FG requires it).
+* `FFX_XEFG_OWNWAIT=0`: hands the game the XeSS-FG proxy swap chain's own frame-latency waitable object instead of the DLL's semaphore (a game that waits on it before each frame can deadlock, for example CONTROL Resonant).
+* `FFX_XEFG_PACE=1`: releases the DLL's waitable semaphore when a GPU fence signaled after `Present` completes (with a 200 ms watchdog), instead of when `Present` returns. It showed no gain where it was measured (CONTROL Resonant at 6x).
+* `FFX_XEFG_AB=<s>`: measuring aid: the low latency's wait is off and on in turns of `<s>` seconds (the log says when). With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait.
+* `FFX_XEFG_HOLD=<ms>`: measuring aid: a fixed wait in `Present` instead of the one the low latency works out. It is not checked (`IGDEXT_XELL_CHECK`).
+* `FFX_XEFG_VALIDITY=0`: measuring aid: tags depth and motion vectors `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids the copy at prepare to measure its cost; can flicker if the game overwrites them before present).
+* `FFX_XEFG_HDR10_AB=<s>`: measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (`ffx_xefg.log` has the time of each change).
+* `FFX_XEFG_MVNDC=1`: sets `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scales motion vectors to NDC (`2 / width`, `-2 / height`).
 * `FFX_XEFG_TRACE_SUBS=1` (with `FFX_XEFG_TRACE=1`): also notes when the GPU finished each submission to a D3D12 queue. It signals a fence after every `ExecuteCommandLists`, so it is a little slower. `tools/fsr-trace.py --subs` lists them.
 
 ### Scripts (Shell Environment When Running Them)

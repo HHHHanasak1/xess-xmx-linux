@@ -13,16 +13,21 @@ bool TraceOn()
     return on == 1;
 }
 
+void AppendLogLine(const char* path, const char* fmt, va_list ap)
+{
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "ab") != 0 || !f) return;
+    SYSTEMTIME st; GetLocalTime(&st);
+    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
+    vfprintf(f, fmt, ap);
+    fputc('\n', f); fclose(f);
+}
+
 void TraceF(const char* fmt, ...)
 {
     if (!TraceOn()) return;
     std::lock_guard<std::mutex> g(g_lock);
-    FILE* f = nullptr;
-    if (fopen_s(&f, "C:\\igdext_trace.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    va_list ap; va_start(ap, fmt); AppendLogLine("C:\\igdext_trace.log", fmt, ap); va_end(ap);
 }
 
 void TraceCallers(const char* tag)
