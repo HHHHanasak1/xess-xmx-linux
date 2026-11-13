@@ -369,3 +369,7 @@ EOF
     || echo "!! the package's driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
 fi
 echo "done. Reboot (or log out and in) once so Steam picks up the environment; then any game with XeSS runs on XMX."
+if [ "$MANUAL" = 1 ]; then
+  echo "   Most games need no launch option. Where XeSS is missing from a game's menu or runs on DP4a: XESS=auto %command%"
+  echo "   More than 2x frame generation: add XESS_FG=3 (docs/launch-options.md)"
+fi
