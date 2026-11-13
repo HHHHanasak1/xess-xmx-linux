@@ -5,6 +5,7 @@ set -eu
 T="$(cd "$(dirname "$0")" && pwd)"
 O="${1:-$T/out}"
 mkdir -p "$O"
+CC=(gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation)   # every test is built with these
 spv() { # <name> <defines...>
   local n=$1; shift
   glslangValidator -V --target-env vulkan1.1 -S comp "$@" "$T/ph.comp" -o "$O/$n.spv" >/dev/null
@@ -17,20 +18,20 @@ spv canary_legacy  -DWX=1 -DWY=1 -DWZ=17 -DA=0u -DB=0u
 spv legacy         -DWX=3 -DWY=2 -DWZ=11 -DA=0u -DB=0u
 spv plain          -DWX=8 -DWY=8 -DWZ=1 -DA=0u -DB=0u -DPLAIN
 spv other          -DWX=8 -DWY=8 -DWZ=1 -DA=0u -DB=0u
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_placeholder" "$T/test_placeholder.c" "$T/../src/placeholder.c"
+"${CC[@]}" -o "$O/test_placeholder" "$T/test_placeholder.c" "$T/../src/placeholder.c"
 "$O/test_placeholder" "$O"
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_cmk" "$T/test_cmk.c" "$T/../src/cmk.c"
+"${CC[@]}" -o "$O/test_cmk" "$T/test_cmk.c" "$T/../src/cmk.c"
 # the offline kernel set (zebins with the cmk_pack.py image of each), if present
 CMK_SET="${CMK_SET:-$HOME/decouple-exp/out/nlpi}"
 if [ -d "$CMK_SET" ]; then "$O/test_cmk" "$CMK_SET"; else echo "test_cmk: skipped, no $CMK_SET"; fi
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile" "$T/test_compile.c" "$T/../src/compile.c" "$T/../src/cmk.c" \
+"${CC[@]}" -o "$O/test_compile" "$T/test_compile.c" "$T/../src/compile.c" "$T/../src/cmk.c" \
   "$T/../src/placeholder.c"
 # a helper that hangs: killed after ANV_CM_COMPILE_TIMEOUT with its child, the kernel marked failed
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile_timeout" \
+"${CC[@]}" -o "$O/test_compile_timeout" \
   "$T/test_compile_timeout.c" "$T/../src/compile.c" "$T/../src/cmk.c"
 "$O/test_compile_timeout" "$O"
 # compile jobs: failing compiles at most XMX_LAYER_COMPILE_JOBS at a time; only the needed kernel marked failed
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile_parallel" \
+"${CC[@]}" -o "$O/test_compile_parallel" \
   "$T/test_compile_parallel.c" "$T/../src/compile.c" "$T/../src/cmk.c" -lpthread
 "$O/test_compile_parallel" fail "$O"
 # end to end with ocloc: needs a kernel folder (dyn_N.spv/.opt + map.txt), the -noLoadPayload reference set and an IGC
@@ -60,7 +61,7 @@ else
   echo "test_compile: skipped (KSET, CMK_SET or XMX_IGC_DIR missing)"
 fi
 # prologue: the C tables against the assembler, for every kernel of the set and each platform (needs IGC for libiga64)
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_prologue" "$T/test_prologue.c" \
+"${CC[@]}" -o "$O/test_prologue" "$T/test_prologue.c" \
   "$T/../src/prologue.c" "$T/../src/cmk.c"
 pro_check() { # <set root with N/k_*.bin> <platform> <label>: prologue of every kernel, C table vs assembler
   local root=$1 plat=$2 P="$O/pro-$3" same=0 diff=0 none=0 n=0 d i z
@@ -111,7 +112,7 @@ fi
 B3="$T/../third_party/blake3"
 B3SRC=("$B3/blake3.c" "$B3/blake3_dispatch.c" "$B3/blake3_portable.c")
 B3DEF=(-DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0)
-gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation "${B3DEF[@]}" -o "$O/test_anvbin" "$T/test_anvbin.c" \
+"${CC[@]}" "${B3DEF[@]}" -o "$O/test_anvbin" "$T/test_anvbin.c" \
   "$T/../src/anvbin.c" "${B3SRC[@]}"
 if [ -n "${TEMPLATES:-}" ] && ls "$TEMPLATES"/*.blob >/dev/null 2>&1; then
   "$O/test_anvbin" "$TEMPLATES"/*.blob
