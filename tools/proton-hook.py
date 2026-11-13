@@ -88,11 +88,14 @@ _log = None   # the hook's own log: opened by the first line of a run (hook_log)
 
 
 def hook_log():
-    """The log of this script, ~/.cache/xess-xmx/hook-<Steam app id, else the executable's name>.log: the runs of one
-    game one after another (emptied when it has passed 200 KB), each starting with what it was started with"""
+    """The log of this script, ~/.cache/xess-xmx/hook-<Steam's id of the game, else the executable's name>.log: the
+    runs of one game one after another (emptied when it has passed 200 KB), each starting with what it was started
+    with. Steam starts Proton for its install-script helper before a game, with the game's id in STEAM_COMPAT_APP_ID
+    only: that run is the one that puts back what a killed run left, and its lines belong into the game's log too"""
     exe = sys.argv[2] if len(sys.argv) > 2 else ""
-    name = os.environ.get("SteamGameId") or os.environ.get("SteamAppId") or ""
-    if not name.isdigit() or name == "0":
+    name = next((v for v in (os.environ.get(k, "") for k in ("SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"))
+                 if v.isdigit() and v != "0"), "")
+    if not name:
         name = "".join(c if c.isalnum() or c in "._-" else "_" for c in os.path.basename(exe)) or "unknown"
     path = os.path.join(os.path.dirname(LOCKS), "hook-%s.log" % name)
     os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -77,7 +77,7 @@ The Proton hook keeps a log of its own without any of these options: `~/.cache/x
 
 * **Game prefix (`C:\` drive):** `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/` (if the game is installed on an SD card or secondary drive, check the `steamapps/compatdata/<appid>/pfx/drive_c/` folder of that Steam library).
 * **Proton log:** `~/steam-<appid>.log` in your home directory.
-* **The Proton hook's log:** `~/.cache/xess-xmx/hook-<appid>.log` (for a non-Steam game, the name of its executable takes the place of the app id).
+* **The Proton hook's log:** `~/.cache/xess-xmx/hook-<appid>.log`, with the same number as `~/steam-<appid>.log` (the name of the executable instead, for a game that Proton starts without a number from Steam).
 * **The Vulkan layer's log (`XESS_LOG=2`):** `~/.cache/xess-xmx/layer.log`.
 * **Kernel compiler log:** `~/.cache/xess-xmx/compile.log` (override with `CM_LOG`).
 * **Session driver check status:** `~/.cache/xess-xmx/driver-status` and `journalctl --user -u xess-xmx-check`.

@@ -390,6 +390,14 @@ def main():
        "| XESS=auto XESS_FG=3 XESS_LL=auto:2\n" in text and "XESS=auto: no XeSS frame generation in the game" in text
        and "the game's own files are back" in text, text[-400:])
 
+    cache = os.path.join(sb, "home", ".cache", "xess-xmx")
+    run("neither", "SteamGameId= STEAM_COMPAT_APP_ID=4343 XESS_LOG=1")
+    ok("the hook's own log: named after STEAM_COMPAT_APP_ID where Steam gives no other id (its install-script helper)",
+       os.path.isfile(os.path.join(cache, "hook-4343.log")), " ".join(sorted(os.listdir(cache))))
+    run("neither", "SteamGameId= XESS_LOG=1")
+    ok("the hook's own log: named after the executable where there is no id at all",
+       os.path.isfile(os.path.join(cache, "hook-game.exe.log")), " ".join(sorted(os.listdir(cache))))
+
     # ---- 4. a run that is killed outright leaves its links; the next start of any game puts the files back
     top = os.path.join(sb, "games", "old-xess+fsr")
     before = state(top)
