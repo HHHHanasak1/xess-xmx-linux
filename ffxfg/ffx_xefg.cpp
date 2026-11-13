@@ -432,17 +432,6 @@ static void XefgLogCallback(const char* message, xefg_swapchain_logging_level_t 
 // ---------------------------------------------------------------------------------------------------------------
 // Helpers
 
-static void Mul4(const float* a, const float* b, float* out)
-{
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++) {
-            float s = 0;
-            for (int k = 0; k < 4; k++)
-                s += a[r * 4 + k] * b[k * 4 + c];
-            out[r * 4 + c] = s;
-        }
-}
-
 // Row-vector (DirectX) view matrix from camera position and basis.
 static void BuildView(const float* pos, const float* right, const float* up, const float* fwd, float* m)
 {
@@ -2497,12 +2486,11 @@ struct ScRef {
     ~ScRef() { if (st) ScRelease(st); }
 };
 
-static ScState* ScFromSwapChain(void* p)
+// whether a swap chain context is alive (there is one swap chain at a time)
+static bool HaveSwapChain()
 {
     std::lock_guard<std::mutex> lk(g_globalLock);
-    if (g_currentSc && g_currentSc->wrapper && (void*)static_cast<IDXGISwapChain4*>(g_currentSc->wrapper) == p)
-        return g_currentSc;
-    return g_currentSc;  // single swap chain: fall back to the current one
+    return g_currentSc != nullptr;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -3270,7 +3258,7 @@ extern "C" __declspec(dllexport) ffxReturnCode_t ffxCreateContext(ffxContext* co
         uint32_t saved;
         if (!LoadFlags(&saved) || (saved & kXefgFfxFlags) != (d->flags & kXefgFfxFlags))
             SaveFlags(d->flags & kXefgFfxFlags);
-        if (ScFromSwapChain(nullptr) && g_initFfxFlags != (d->flags & kXefgFfxFlags))
+        if (HaveSwapChain() && g_initFfxFlags != (d->flags & kXefgFfxFlags))
             Log("!! XeSS-FG was set up for flags 0x%x, the game uses 0x%x (depth direction, motion vectors): wrong until "
                 "the game starts again, which then uses the game's",
                 g_initFfxFlags, d->flags & kXefgFfxFlags);
