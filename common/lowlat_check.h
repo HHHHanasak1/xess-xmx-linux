@@ -1,6 +1,6 @@
 // lowlat_check.h - the check of the low latency's wait, shared by the three frame generation paths:
 //   shim/src/dll/XellHook.cpp   a game's own XeSS-FG (AutoPaceWait: the wait is in xellSleep)
-//   ffxfg/ffx_xefg.cpp          the FSR routes and OFLOW_FG (LatHold: the wait is in Present)
+//   ffxfg/ffx_xefg_lowlat.cpp   the FSR routes and OFLOW_FG (LatHold: the wait is in Present)
 // Header only; needs <algorithm>, <cmath> and a printf-like log function.
 //
 // Both pacers hold the game back where a frame starts, by what their measurements say the frame is early. Those

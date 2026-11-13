@@ -22,8 +22,10 @@ ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR up
                               amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
                               dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject, and
                               for any DX12 game from optical flow, OFLOW_FG=1); ffx_common.h: the log and settings
-                              code of the first two; get-headers.sh fetches the AMD / Intel headers they are built
-                              against, build-ffxsdk.bat the FidelityFX SDK 1.1.4 optical flow libraries
+                              code of the first two; ffx_xefg.h: what the frame generation DLL's source files
+                              (ffx_xefg*.cpp) share, and which file holds what; get-headers.sh fetches the AMD /
+                              Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
+                              optical flow libraries
 dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
 vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interfaces for Vulkan games
 icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
@@ -132,7 +134,7 @@ Then, on Windows with the Visual Studio 2022 Build Tools:
 ffxfg\build.bat
 ```
 
-`ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and `ffx_xefg.cpp` into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
+`ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and the `ffx_xefg*.cpp` files (`ffx_xefg.h` says what each one holds; a build with `FFXFG_DEBUG=1` adds `ffx_trace.cpp`) into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
 
 To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XEFG_TRACE`, `FFX_XESS_JITTER`, and the measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, `FFX_XEFG_MVNDC`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
 
