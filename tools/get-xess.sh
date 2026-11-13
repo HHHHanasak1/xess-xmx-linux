@@ -1,7 +1,7 @@
 #!/bin/bash
 # get-xess.sh [package dir]  - fetch Intel's XeSS SDK release from github.com/intel/xess into <package>/xess: the four
 # runtime libraries (libxess.dll, libxess_dx11.dll, libxess_fg.dll, libxell.dll) and Intel's license. One copy for all
-# games; tools/proton-hook.py puts them into a game's folder while it runs when its launch options ask for it (XESS=latest,
+# games; tools/proton-hook.py puts them into a game's folder while it runs when its launch options ask for it (XESS=auto,
 # see docs/launch-options.md). SDK 3.0.2: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10. About 77 MB download.
 # Needs curl and unzip (or python3). XESS_TAG / XESS_SHA256 select another release.
 set -eu
