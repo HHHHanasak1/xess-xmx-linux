@@ -13,11 +13,13 @@
 #   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply
 #   for that long (a new prefix gets its driver store folder a few seconds after it appears, Steam may still be
 #   writing a Proton update), nothing else touched.
-#   The session's driver: on Xe3 (Panther Lake, Wildcat Lake) the package's unpatched Mesa 26.3 ANV
-#   (lib/mesa-stock-<version>/, picked with MESA=stock-<version>) with the Vulkan layer VK_LAYER_XESS_xmx (layer/) for
-#   the XMX kernels ("stock"); on every other GPU (Xe-HPG, Xe2: the layer does not serve them, and their 256-register
-#   kernels need patches/0003) the patched driver lib/active names ("patched"). XMX_DRIVER=stock or XMX_DRIVER=patched
-#   chooses instead and is kept in run/driver-mode for later runs; XMX_DRIVER=auto goes back to the choice by GPU.
+#   The session's driver: on Xe3 (Panther Lake, Wildcat Lake) and Xe2 (Lunar Lake, Battlemage) the package's
+#   unpatched Mesa 26.3 ANV (lib/mesa-stock-<version>/, picked with MESA=stock-<version>) with the Vulkan layer
+#   VK_LAYER_XESS_xmx (layer/) for the XMX kernels ("stock"; on Xe2 the layer compiles every kernel for 128 GRF, the
+#   register count an unpatched driver gives its threads there); on every other GPU (Xe-HPG: the layer does not serve
+#   it, its kernels need patches/0003's Large GRF mode) the patched driver lib/active names ("patched").
+#   XMX_DRIVER=stock or XMX_DRIVER=patched chooses instead and is kept in run/driver-mode for later runs (patched on
+#   Xe2: the kernels run at their own 256 GRF); XMX_DRIVER=auto goes back to the choice by GPU.
 set -u
 PKG="$(cd "$(dirname "$0")" && pwd)"
 . "$PKG/tools/steam-libraries.sh"
@@ -46,13 +48,18 @@ for d in "$PKG"/lib/mesa-stock-*/; do
 %s
 ' "$STOCKV" "$v" | sort -V | tail -1)" = "$v" ]; } && STOCKV=$v
 done
-# Xe3: the GPUs the layer serves (layer.c, self_test: device id & 0xfff0 = 0xb080 or 0xfd80)
-xe3=0
+# the GPUs the layer serves (layer/src/gens.h): Xe3 (device id & 0xfff0 = 0xb080 or 0xfd80) and Xe2 (Lunar Lake,
+# Battlemage: the ids of Mesa 26.3; the layer compiles every kernel for 128 GRF there)
+served=""
 for dev in /sys/bus/pci/devices/*; do
   [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] || continue
   case "$(cat "$dev/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
-  id=$(( $(cat "$dev/device" 2>/dev/null || echo 0) & 0xfff0 ))
-  { [ "$id" = $((0xb080)) ] || [ "$id" = $((0xfd80)) ]; } && xe3=1
+  id=$(cat "$dev/device" 2>/dev/null || echo 0)
+  case $(( id & 0xfff0 )) in $((0xb080))|$((0xfd80))) served="$served xe3"; continue ;; esac
+  case "$id" in
+    0x6420|0x64a0|0x64b0|0xe202|0xe209|0xe20b|0xe20c|0xe20d|0xe210|0xe211|0xe212|0xe215|0xe216|0xe220|0xe221|0xe222|0xe223)
+      served="$served xe2" ;;
+  esac
 done
 case "${XMX_DRIVER:-}" in
   "") MODE=$(cat "$MODEF" 2>/dev/null) ;;
@@ -62,7 +69,7 @@ case "${XMX_DRIVER:-}" in
 esac
 if [ -z "$MODE" ]; then
   MODE=patched
-  [ "$xe3" = 1 ] && [ -n "$STOCKV" ] && [ -f "$PKG/layer/libVkLayer_xess_xmx.so" ] && MODE=stock
+  [ -n "$served" ] && [ -n "$STOCKV" ] && [ -f "$PKG/layer/libVkLayer_xess_xmx.so" ] && MODE=stock
 fi
 if [ "$MODE" = stock ]; then
   [ -n "$STOCKV" ] || { echo "XMX_DRIVER=stock needs an unpatched driver in $PKG/lib/mesa-stock-<version>/"; exit 1; }
@@ -119,7 +126,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "# Protons without Intel's driver store (Proton 11.0) never load the shim from the prefix; XeSS looks here first"
     echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$ALT_EXT'"
     if [ "$MODE" = stock ]; then
-      echo "# stock mode (the default on Xe3; XMX_DRIVER=patched ./install.sh for the patched driver): the package's"
+      echo "# stock mode (the default on Xe3 and Xe2; XMX_DRIVER=patched ./install.sh for the patched driver): the package's"
       echo "# unpatched Mesa, the XMX kernels from VK_LAYER_XESS_xmx"
       echo "MESA=$STOCKV"
       echo "VK_ADD_LAYER_PATH=$PKG/layer"
@@ -140,7 +147,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
   if [ "$MODE" = stock ]; then
-    echo "   driver: Mesa ${STOCKV#stock-} unpatched ($PKG/lib/mesa-$STOCKV) + VK_LAYER_XESS_xmx (stock mode)"
+    echo "   driver: Mesa ${STOCKV#stock-} unpatched ($PKG/lib/mesa-$STOCKV) + VK_LAYER_XESS_xmx (stock mode$(case "$served" in *xe2*) echo ", kernels at 128 GRF on Xe2" ;; esac))"
   else
     echo "   driver: the patched Mesa $(cat "$PKG/lib/active" 2>/dev/null) (patched mode)"
   fi
