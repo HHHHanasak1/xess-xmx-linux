@@ -144,7 +144,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `ANV_CM_HELPER` | Compiler helper script (default `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
 | `ANV_CM_SPV_DIR` | Directory where the shim's `.spv` and `.opt` files live (default `$WINEPREFIX/drive_c/igdext_kernels`). |
 | `ANV_CM_COMPILE_JOBS=<n>` | Maximum number of detached background worker threads started on a cache miss to prefetch and compile uncached `.spv` kernels in `ANV_CM_SPV_DIR` (default: `min(online_cpus - 1, 8)`, max `32`; `0` turns background prefetching off). |
-| `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). |
+| `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). The layer (`VK_LAYER_XESS_xmx`) applies the same limit. |
 | `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1](#1-logs)). |
 
 #### Driver Debug Tools (`0002-anv-cm-debug-tools.patch`, included in release drivers)

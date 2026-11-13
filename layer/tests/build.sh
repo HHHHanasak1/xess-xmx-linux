@@ -25,6 +25,10 @@ CMK_SET="${CMK_SET:-$HOME/decouple-exp/out/nlpi}"
 if [ -d "$CMK_SET" ]; then "$O/test_cmk" "$CMK_SET"; else echo "test_cmk: skipped, no $CMK_SET"; fi
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile" "$T/test_compile.c" "$T/../src/compile.c" "$T/../src/cmk.c" \
   "$T/../src/placeholder.c"
+# a helper that hangs: killed after ANV_CM_COMPILE_TIMEOUT with its child, the kernel marked failed
+gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_compile_timeout" \
+  "$T/test_compile_timeout.c" "$T/../src/compile.c" "$T/../src/cmk.c"
+"$O/test_compile_timeout" "$O"
 # end to end with ocloc: needs a kernel folder (dyn_N.spv/.opt + map.txt), the -noLoadPayload reference set and an IGC
 KSET="${KSET:-$HOME/decouple-exp/kernels/igdext_kernels}"
 if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${XMX_IGC_DIR:-}" ]; then
