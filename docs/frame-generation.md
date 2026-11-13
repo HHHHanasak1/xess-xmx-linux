@@ -333,6 +333,6 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_CAP=auto\|<us>\|0` | Rendered frame interval in microseconds via XeLL: `auto` (default with `OFLOW_FG=1`), `<us>` fixed interval per rendered frame, or `0` (off) |
 | `FFX_XEFG_CAP_PAD=<ms>` | Initial guess in milliseconds of the per-frame time beyond the measured GPU time (interpolation and present) for `FFX_XEFG_CAP=auto` (default `1.5`, then learned) |
 | `FFX_XEFG_REFRESH=<Hz>` | Override the display refresh rate for `FFX_XEFG_CAP=auto` when Windows/Wine reports a wrong one (default from `EnumDisplaySettingsA`, or `144` Hz) |
-| `FFX_XEFG_TIMES=1` | Log frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow GPU time every 300 runs |
+| `FFX_XEFG_TIMES=1` | Log frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow GPU time every 300 runs, and the gaps between the shown frames' `Present` calls (`shown frames over ...`) |
 
 *(Debug switches that alter or dump individual inputs are compiled in only when building `ffxfg/` with `FFXFG_DEBUG=1`; see [dev/building.md](dev/building.md) and [dev/debugging.md](dev/debugging.md). This covers `FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, and `FFX_XEFG_RENDERSCALE`. It also covers `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, and `FFX_XESS_JITTER`, and the frame time line `FFX_XEFG_TRACE=1`.)*

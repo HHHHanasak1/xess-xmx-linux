@@ -283,7 +283,7 @@ static HRESULT STDMETHODCALLTYPE H_SetEvent(ID3D12Fence* f, UINT64 v, HANDLE ev)
 }
 
 // The real swap chain under XeSS-FG (its Present, the DXGI factory it is made through) is hooked by ffx_xefg.cpp
-// itself ("The shown frames"), which paces the shown frames there and puts RP_CALL / RP_RET.
+// itself ("The shown frames"), which measures the shown frames there and puts RP_CALL / RP_RET.
 
 // ---- when the GPU reaches a point of the game's queue ----------------------------------------------------------
 

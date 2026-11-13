@@ -1963,6 +1963,10 @@ static float LatHold(ScState* st, uint64_t tEnd, float blockMs, uint64_t first, 
 // and the presentation thread images 1 and 2; at 2x the game's thread presents both, 0.05 ms apart. With
 // FFX_XEFG_TIMES=1 the log has the gaps between those Present calls every 300 rendered frames, and the longest over
 // the shortest gap of each rendered frame. FFX_XEFG_TRACE puts every call into the time line (RP_CALL / RP_RET).
+// Spacing the images cannot be done here (tried 2026-11-13: the calls came out evenly spaced, the display's gaps did
+// not change): vkd3d-proton orders a Present on the game's queue when it is called, and a frame's images become ready
+// together when the GPU has finished the frame and its interpolations. It has to come after that point, at
+// vkQueuePresentKHR on vkd3d-proton's present thread or in gamescope.
 
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ScPresent)(IDXGISwapChain*, UINT, UINT);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_ScPresent1)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
