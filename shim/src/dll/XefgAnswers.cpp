@@ -9,7 +9,7 @@
 // XeSS-FG's proxy swap chain passes IDXGISwapChain::GetFrameStatistics and IDXGISwapChain3::CheckColorSpaceSupport on
 // to the real swap chain. DXVK's swap chain holds its lock for the whole of a Present, and XeSS-FG's presentation
 // thread is inside one for most of a frame: a game that asks every frame starts its next frame only when that
-// Present returns, and the GPU idles meanwhile (ffxfg/ffx_xefg.cpp, "Low latency", has the time lines of three games
+// Present returns, and the GPU idles meanwhile (ffxfg/ffx_xefg*.cpp, "Low latency", has the time lines of three games
 // on the FSR routes: Resident Evil Requiem with its HDR output on, CONTROL Resonant, Forza Horizon 6).
 // So, while the low latency is on and frame generation runs, a game that asks gets the answers as of its last
 // Present. They are taken right before the proxy's Present, where the proxy waits for that thread anyway. Only what
@@ -254,7 +254,7 @@ void ProxyHook(IUnknown* unk)
     sc->Release();
 }
 
-// The package's own frame generation DLL (ffxfg/ffx_xefg.cpp) wraps XeSS-FG's swap chain and answers its game itself:
+// The package's own frame generation DLL (ffxfg/ffx_xefg*.cpp) wraps XeSS-FG's swap chain and answers its game itself:
 // the hooks above pass every call of such a swap chain on unchanged.
 extern "C" void IgdextXefgProxyOwned(void* swapChain, int on)
 {

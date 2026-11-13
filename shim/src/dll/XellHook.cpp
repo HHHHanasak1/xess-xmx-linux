@@ -8,7 +8,7 @@
 //   IGDEXT_XELL_FIXCAP=1    apply the fix in any game;  IGDEXT_XELL_KEEPCAP=1   turn it off everywhere
 // Low latency, on by default in every game with XeSS frame generation: each frame starts its CPU time before the GPU is free,
 // so no frame waits in a queue (AutoPaceWait). It does nothing while frame generation is off. As on the FSR routes
-// (ffxfg/ffx_xefg.cpp, "Low latency"), the wait is checked against the frame time and the latency
+// (ffxfg/ffx_xefg*.cpp, "Low latency"), the wait is checked against the frame time and the latency
 // (common/lowlat_check.h), and a game's questions to XeSS-FG's swap chain are answered as of its last Present
 // (XefgAnswers.cpp).
 //   IGDEXT_XELL_CAP=off     no low latency;  IGDEXT_XELL_CAP=auto:<ms>  start each frame <ms> earlier (later if negative)
@@ -19,7 +19,7 @@
 //   IGDEXT_XELL_LOG=1       append the parameters the game passes and xellSleep timing (real frame rate) to C:\igdext_xell.log;
 //                           with it, XInputGetState is watched too, for a second latency figure: from where the game
 //                           reads its input to the end of the frame's present (InputWatch below)
-// The package's own frame generation DLL (ffxfg/ffx_xefg.cpp, the FSR routes) sets the game's frame start itself, by
+// The package's own frame generation DLL (ffxfg/ffx_xefg*.cpp, the FSR routes) sets the game's frame start itself, by
 // keeping the game in Present ("Low latency" there), and registers its XeLL context with IgdextXellExternalPacing:
 // xellSleep of such a context gets no AutoPaceWait.
 // The hooks on libxess_fg.dll are in XefgHook.cpp; XellHook.h says what else is where.
@@ -69,7 +69,7 @@ static void XellLogCb(const char* msg, uint32_t level)
 // (the first XInputGetState from 1 ms before its simulation start on) to the end of its present, and how long after the
 // simulation start that read came. It is the check that such a read marks the start of a frame, for the routes where a
 // game sends XeLL no markers (the FSR routes time their frames from where Present returns to the game, see
-// ffxfg/ffx_xefg.cpp).
+// ffxfg/ffx_xefg*.cpp).
 namespace
 {
 struct InputRead { uint64_t ns; uint32_t tid; };
