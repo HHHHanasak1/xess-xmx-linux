@@ -59,8 +59,8 @@ read_file(const char *path, size_t *size)
    return buf;
 }
 
-static void
-mkdirs(const char *path)
+void
+xmx_mkdirs(const char *path)
 {
    char tmp[512];
    snprintf(tmp, sizeof(tmp), "%s", path);
@@ -276,7 +276,7 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
       xmx_compile_log("cm-compile FAILED (layer): %s: no compile script (set ANV_CM_HELPER or ANV_CM_KERNEL_DIR)\n", spv);
       return false;
    }
-   mkdirs(cdir);
+   xmx_mkdirs(cdir);
    char outdir[600];
    const char *tmpdir = getenv("TMPDIR");
    snprintf(outdir, sizeof(outdir), "%s/cml.XXXXXX", tmpdir && tmpdir[0] ? tmpdir : "/tmp");

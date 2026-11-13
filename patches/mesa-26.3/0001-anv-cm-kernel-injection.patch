@@ -1667,8 +1667,8 @@ index 0000000..d685456
 +
 +/* The self-test placeholder's pipeline layout, as a kernel needs it below: vkd3d-proton's classic descriptor heap (a
 + * MUTABLE binding with a huge array) and the push constants for its one descriptor table (the shim's test root
-+ * signature: one table of one UAV; vkwrap's driver mode builds the same). vkd3d-proton on VK_EXT_descriptor_buffer or
-+ * VK_EXT_descriptor_heap has neither, and its kernels could not be bound: the shim then gets no answer and XeSS
++ * signature: one table of one UAV; vkwrap's driver mode builds the same). vkd3d-proton on VK_EXT_descriptor_buffer (its
++ * set layouts carry DESCRIPTOR_BUFFER_BIT) or VK_EXT_descriptor_heap has neither, and its kernels could not be bound: the shim then gets no answer and XeSS
 + * uses its DP4a path instead of producing noise. */
 +static bool
 +anv_cm_canary_layout_ok(const struct vk_shader_compile_info *ci)
@@ -1680,7 +1680,7 @@ index 0000000..d685456
 +      return false;
 +   for (uint32_t i = 0; i < ci->set_layout_count; i++) {
 +      const struct anv_descriptor_set_layout *l = (const struct anv_descriptor_set_layout *)ci->set_layouts[i];
-+      for (uint32_t b = 0; l && b < l->binding_count; b++)
++      for (uint32_t b = 0; l && !(l->vk.flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) && b < l->binding_count; b++)
 +         if (l->binding[b].type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT && l->binding[b].array_size >= 1000)
 +            return true;
 +   }

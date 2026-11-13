@@ -696,7 +696,8 @@ kernel_of(VkPipeline p)
 /* The self-test placeholder's pipeline layout, as replace() needs it for a kernel: 2 = vkd3d-proton's classic heap (a
  * MUTABLE binding of >= 1000 descriptors) and its one descriptor table in the push constants (the shim's test root
  * signature: one table of one UAV); 1 = no sets and no push constants (vkwrap's test: XeSS' Vulkan push); 0 = neither,
- * e.g. vkd3d-proton on VK_EXT_descriptor_buffer or VK_EXT_descriptor_heap, whose kernels the layer could not bind. */
+ * e.g. vkd3d-proton on VK_EXT_descriptor_buffer (its heap layout carries DESCRIPTOR_BUFFER_BIT) or VK_EXT_descriptor_heap,
+ * whose kernels the layer could not bind. */
 static int
 canary_layout(const VkComputePipelineCreateInfo *ci)
 {
@@ -707,7 +708,7 @@ canary_layout(const VkComputePipelineCreateInfo *ci)
       return pl->push_size == 0 ? 1 : 0;
    for (uint32_t s = 0; s < pl->nsets; s++) {
       const struct xsetlayout *l = xmap_get(&set_layouts, HKEY(pl->sets[s]));
-      if (l && l->heap_binding != ~0u)
+      if (l && l->heap_binding != ~0u && !(l->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT))
          return pl->push_size >= 4 ? 2 : 0;
    }
    return 0;
@@ -729,6 +730,7 @@ answer_canary(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const st
    }
    char mark[600];
    FILE *f;
+   xmx_mkdirs(d->dir);   /* a new prefix has no C:\igdext_kernels yet: the shim makes it only after the self-test */
    if (lay == 2) {   /* the shim (D3D12) reads this one; vkwrap's Vulkan test only gets the layer's own mark */
       snprintf(mark, sizeof(mark), "%s/anv_canary", d->dir);
       f = fopen(mark, "w");
