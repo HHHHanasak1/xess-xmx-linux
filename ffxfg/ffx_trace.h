@@ -5,7 +5,7 @@
 // XeSS-FG (the frames as they go to the display, generated ones included), every ExecuteCommandLists and Signal on a
 // D3D12 queue, fence waits, the FFX prepare / configure calls, when the GPU reached the frame's Present (a fence of
 // ours), and the first call of each message / input API per thread after each Present call and return (where the game
-// reads its input). tools/fsr-latency-trace.py reads the file.
+// reads its input). tools/fsr-trace.py reads the file.
 // Included once, by ffx_xefg.cpp, after its Log() and Qpc helpers.
 #pragma once
 

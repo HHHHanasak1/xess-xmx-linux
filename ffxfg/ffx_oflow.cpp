@@ -219,7 +219,7 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
     if (!o->vec || !o->scd || !o->mv || !o->depth || (o->div > 1 && !o->lowres))
         return fail("CreateCommittedResource", 0);
 
-    // root signature: t0 = block vectors, u0 = motion vectors, u1 = depth (one table), b0 = 4 constants
+    // root signature: t0 = block vectors, u0 = motion vectors, u1 = depth (one table), b0 = the constants
     D3D12_DESCRIPTOR_RANGE rg[2] = {};
     rg[0] = {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
     rg[1] = {D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, 1};
