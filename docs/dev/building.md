@@ -101,7 +101,7 @@ python tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch   
 python tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
 ```
 
-`tools/check_placeholders.py` checks that the template shapes, magic value (`0x584d5843`), self-test canary constants (`0x00414e43` and `0x7fa15952`), byte offsets (`kPlaceholderKernelHashAt` and `kPlaceholderCanaryHashAt`), and custom DXBC MD5 checksums (`shim/src/dll/DxbcChecksum.h`) match the driver patches.
+`tools/check_placeholders.py` checks that the template shapes, magic value (`0x584d5843`), self-test canary constants (`0x00414e43` and `0x7fa15952`), byte offsets (`kPlaceholderKernelHashAt` and `kPlaceholderCanaryHashAt`), and custom DXBC MD5 checksums (`shim/src/dll/DxbcChecksum.h`) match the driver patches. It also checks the copies of those constants that the layer and `vulkan-1.dll` keep in their own sources, `layer/src/placeholder.h` and `vkwrap/vkwrap.c` (the magic value, the two work-group sizes, the self-test values and, for the layer, the older shim's self-test size), and that `vkwrap.c` has the layer's set number for XeSS's descriptor push (`XMX_VK_PUSH_SET` in `layer/src/layer.c`).
 
 #### Building `ControlLib.dll`
 

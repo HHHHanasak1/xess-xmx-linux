@@ -31,7 +31,7 @@ jobs:
         run: for f in *.sh tools/*.sh tools/tests/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
         run: python3 -m py_compile tools/*.py
-      - name: placeholder templates match the driver (shapes, magic, self-test values, DXBC checksums)
+      - name: placeholder templates match the driver (shapes, magic, self-test values, DXBC checksums), and so do the layer's and vkwrap's constants
         run: |
           python3 tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch
           python3 tools/check_placeholders.py patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
