@@ -135,7 +135,7 @@ The game keeps its FSR integration and its menu; nothing hooks into the game.
 
 ### Tested Games
 
-* **CONTROL Resonant:** XeSS SR and 2x to 6x (`FSR=xess`). With HDR10 (PQ) on, bright sunlit clouds flicker at 3x and higher while the camera turns; with HDR off, or at 2x, they do not.
+* **CONTROL Resonant:** XeSS SR and 2x to 6x (`FSR=xess`). With HDR10 (PQ) on, bright sunlit clouds stuttered at 3x and higher while the camera turned, while XeSS-FG was told about HDR10 (now only with `FFX_XEFG_HDR10=1`).
 * **Resident Evil Requiem:** 4x and 5x (`FSR=xess` / `FSR_FG=xess`). The game ships XeSS frame generation as well, but does not offer it under Proton, so its FSR frame generation is the way to run XeSS-FG there.
 * **Cyberpunk 2077:** The "FSR 4" upscaling option (XeSS SR) and 5x (`FSR=xess`). The game's own XeSS (`XESS=latest`) is better there.
 * **Wuthering Waves** (FSR 3.1.1 in one DLL): XeSS SR and 5x (`FSR=xess FSR_VENDOR=amd`). The game's own XeSS is the one to use.
@@ -185,7 +185,7 @@ FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
 
 ### Known Limits of `FSR=xess` / `FSR_FG=xess`
 
-* **CONTROL Resonant with HDR:** Sunlit clouds flicker at 3x and higher with HDR10 on (see [Tested Games](#tested-games)). Other tested games did not show this with HDR on.
+* **HDR10 and XeSS-FG (`FFX_XEFG_HDR10=1`):** Told that the back buffer is HDR10, XeSS-FG's network works on images in which 350 nits is white, and everything brighter is one flat white. In CONTROL Resonant (up to about 1500 nits), sunlit clouds then stuttered at 3x and higher while the camera turned. So by default XeSS-FG is not told and interpolates the PQ values as they are; the display still gets HDR10. Games with their own XeSS-FG tell it, as on Windows.
 * **HUD ghosting (`FFX_XEFG_HUDLESS=0`):** When a game passes FSR a HUD-less image, the DLL enables XeSS-FG's UI composition from it. Setting `FFX_XEFG_HUDLESS=0` leaves UI composition off so XeSS-FG interpolates the whole image, UI included; in Cyberpunk 2077 that leaves less ghosting on dialog text.
 
 ---
@@ -318,6 +318,8 @@ You can pass these variables in the game's Steam launch options, or put `KEY=VAL
 | `FFX_XEFG_LOG=<path>\|0` | Frame generation log file path (default `ffx_xefg.log` next to the DLL); `0` turns it off |
 | `FFX_XEFG_XEFGLOG=0..3` | XeSS-FG's own messages forwarded to `ffx_xefg.log`: `0` debug, `1` info, `2` warnings (default), `3` errors |
 | `FFX_XEFG_HUDLESS=0` | Ignore the game's HUD-less image and leave XeSS-FG UI composition off |
+| `FFX_XEFG_HDR10=1` | Tell XeSS-FG when the game's back buffer is HDR10 (PQ). By default it is not told and interpolates the PQ values as they are. Told, its network works on images in which 350 nits is white and everything brighter is one flat white |
+| `FFX_XEFG_HDR10_AB=<s>` | Measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (`ffx_xefg.log` has the time of each change) |
 | `FFX_XEFG_SLEEP=0` | Skip calling `xellSleep` after each present (XeLL stays on, as XeSS-FG requires it) |
 | `FFX_XEFG_OWNWAIT=0` | Hand the game the XeSS-FG proxy's own frame-latency waitable object instead of the DLL's semaphore (deadlocks CONTROL Resonant) |
 | `FFX_XEFG_PACE=1` | Release the DLL's waitable object when a GPU fence after the present finishes (with a 200 ms watchdog), instead of when `Present` returns (off by default; CONTROL Resonant at 6x showed no gain) |
