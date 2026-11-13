@@ -57,9 +57,10 @@ LIBS = ("libxess.dll", "libxess_dx11.dll", "libxess_fg.dll", "libxell.dll")
 # the prefix folder that holds the shim, as XeSS sees it (install.sh: ALT_EXT)
 ALT_EXT = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
 FFX_DLLS = (FG_DLL, UPSCALER_DLL, SINGLE_DLL)
-# vkd3d-proton extensions the package turns off (install.sh's VKD3D_DISABLE_EXTENSIONS): the descriptor buffer, as the
-# kernel binding code needs vkd3d-proton's classic descriptor heap, and present wait 2 (it crashed frame generation)
-VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_KHR_present_wait2")
+# vkd3d-proton extensions the package turns off (install.sh's VKD3D_DISABLE_EXTENSIONS): the descriptor buffer and the
+# descriptor heap (vkd3d-proton 3.1+), as the kernel binding code needs vkd3d-proton's classic descriptor heap, and
+# present wait 2 (it crashed frame generation)
+VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_EXT_descriptor_heap", "VK_KHR_present_wait2")
 # one lock file per run that swapped: its links, one path per line; the run holds an exclusive lock on it until it ends
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
 # variables for the game: user_settings.py passes its dict in; Proton applies them unless the launch options set them

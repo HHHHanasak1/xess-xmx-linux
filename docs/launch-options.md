@@ -20,7 +20,7 @@ The following options need the system-wide install ([install.md](install.md)):
 
 The hook swaps files in the game's folder, which Steam gives it (`STEAM_COMPAT_INSTALL_PATH`). For a non-Steam game added as a shortcut, Steam may give none; the hook then uses the folder of the `.exe` the shortcut starts (and everything below it), so point the shortcut at the game's own executable. It refuses a folder that is too wide to touch (`/`, your home folder or one above it, the prefix's `windows` folder) and starts the game with its own libraries.
 
-If you set `VKD3D_DISABLE_EXTENSIONS` in the launch options (it replaces the system-wide value), the hook adds the extensions the XMX kernels need (`VK_EXT_descriptor_buffer`, `VK_KHR_present_wait2`) to your list while the package's driver or layer is active; your own entries stay.
+If you set `VKD3D_DISABLE_EXTENSIONS` in the launch options (it replaces the system-wide value), the hook adds the extensions the XMX kernels need (`VK_EXT_descriptor_buffer`, `VK_EXT_descriptor_heap`, `VK_KHR_present_wait2`) to your list while the package's driver or layer is active; your own entries stay.
 
 With the per-game install (`enable.sh`, [install.md](install.md)), put the wrapper last, after your variables:
 
