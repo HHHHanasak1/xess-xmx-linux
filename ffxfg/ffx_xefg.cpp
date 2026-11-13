@@ -1103,16 +1103,9 @@ static uint32_t BeforePresent(ScState* st)
     return id;
 }
 
-// FFX_XEFG_CAP=auto, every 30 real frames with st->lock held. The real frame interval = the 90th percentile of the GPU
-// time of a frame (or, without the optical flow's timer, of the frame without XeLL's sleep) + FFX_XEFG_CAP_PAD ms (the
-// interpolation and the present, default 3) + 3 %. Frames over 3x the median are left out (a paused game). If XeLL hardly
-// slept while frames took longer than the interval, the GPU could not keep up: the interval becomes that frame time.
-// Longer at once; shorter after 2 windows in a row, 2 % a step at most and not below the last GPU-bound interval, which
-// is forgotten at 0.1 % a window (back up to it + 1 %); at least one frame of the display per frame shown.
 // The GPU's actual frequency (MHz, 0 while idle) from the xe driver, or from i915 (its per-GT file, else the older
-// one on the card), read through Wine's Z: drive. A capped frame
-// lets the GPU idle, its governor lowers the clock and the same work takes longer: without this the cap would chase its
-// own tail down (2026-11-06 RE4: 49 -> 35 fps).
+// one on the card), read through Wine's Z: drive. A capped frame lets the GPU idle, its governor lowers the clock and
+// the same work takes longer: without this the cap would chase its own tail down (2026-11-06 RE4: 49 -> 35 fps).
 static int GpuFreqMhz()
 {
     static HANDLE h = INVALID_HANDLE_VALUE;
@@ -1174,6 +1167,13 @@ static double DisplayHz()
     return hz;
 }
 
+// FFX_XEFG_CAP=auto, every 30 real frames with st->lock held. The real frame interval = the 90th percentile of the GPU
+// time of a frame (or, without the optical flow's timer, of the frame without XeLL's sleep) + what a frame needs
+// beyond that (the interpolation and the present: FFX_XEFG_CAP_PAD ms, default 1.5, then learned) + 3 %. Frames over
+// 3x the median are left out (a paused game). If XeLL hardly slept while frames took longer than the interval, the GPU
+// could not keep up: the interval becomes that frame time. Longer at once; shorter after 2 windows in a row, 2 % a
+// step at most and not below the last GPU-bound interval, which is forgotten at 0.1 % a window (back up to it + 1 %);
+// at least one frame of the display per frame shown.
 static void CapAdjust(ScState* st)
 {
     auto med = [](std::vector<float> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
