@@ -305,16 +305,16 @@ class Run:
         env.update(dict(o.split("=", 1) for o in line.split()))
         return env
 
-    def cmd(self, game, *more):
+    def cmd(self, game, *more, exe=None):
         top = os.path.join(self.sb, "games", game)
         return [sys.executable, os.path.abspath(__file__), "--child", os.path.join(self.pkg, "tools", "proton-hook.py"),
-                top, os.path.join(top, "b", "game.exe")] + list(more)
+                top, exe or os.path.join(top, "b", "game.exe")] + list(more)
 
-    def __call__(self, game, line, *more):
+    def __call__(self, game, line, *more, exe=None):
         """the hook's run for a launch line -> its outcome, its lines, and whether the game folder is as before"""
         top = os.path.join(self.sb, "games", game)
         before = state(top)
-        r = subprocess.run(self.cmd(game, *more), env=self.env(game, line), capture_output=True, text=True)
+        r = subprocess.run(self.cmd(game, *more, exe=exe), env=self.env(game, line), capture_output=True, text=True)
         if not r.stdout.strip():
             return {"out": "ERROR " + r.stderr[-600:], "log": [], "restored": False}
         res = json.loads(r.stdout.strip().splitlines()[-1])
@@ -404,6 +404,10 @@ def main():
     run("neither", "SteamGameId= XESS_LOG=1")
     ok("the hook's own log: named after the executable where there is no id at all",
        os.path.isfile(os.path.join(cache, "hook-game.exe.log")), " ".join(sorted(os.listdir(cache))))
+
+    # Steam's install-script helper runs before a game with the game's folder and the session's options
+    r = run("old-xess+fsr", "XESS=auto XESS_FG=3", exe=os.path.join(sb, "steam", "legacycompat", "iscriptevaluator.exe"))
+    ok("Steam's install-script helper: nothing is swapped in its run", r["out"] == "", r["out"] + " " + "; ".join(r["log"]))
 
     # ---- 4. a run that is killed outright leaves its links; the next start of any game puts the files back
     top = os.path.join(sb, "games", "old-xess+fsr")

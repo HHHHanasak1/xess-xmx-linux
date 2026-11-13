@@ -816,6 +816,11 @@ def main():
         oflow = False
     if want not in ("latest", "auto") and fg != "xess" and not sr and not oflow:
         return
+    if os.path.basename(sys.argv[2] if len(sys.argv) > 2 else "").lower() == "iscriptevaluator.exe":
+        # Steam's install-script helper, which Proton runs before a game. It has the game's folder and the options
+        # of the whole session (environment.d), not the game's launch options: the game's own run follows, and
+        # setting the folder up for these few seconds would only copy the libraries twice
+        return
     game = game_folder()
     if not game or not os.path.isdir(game):
         say("XESS / FSR: no game folder (STEAM_COMPAT_INSTALL_PATH, or the executable's for a non-Steam game); the "
