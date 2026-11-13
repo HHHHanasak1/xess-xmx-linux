@@ -54,10 +54,10 @@ SINGLE_DLL = "amd_fidelityfx_dx12.dll"   # FSR 3.1.0-3.1.3: upscaler and frame g
 LOADER_DLL = "amd_fidelityfx_loader_dx12.dll"
 UPSCALER_DLL = "amd_fidelityfx_upscaler_dx12.dll"
 LIBS = ("libxess.dll", "libxess_dx11.dll", "libxess_fg.dll", "libxell.dll")
-# the prefix folder that holds the shim, as XeSS sees it (install.sh: ALT_EXT)
+# the prefix folder that holds the shim, as XeSS sees it (tools/steam-libraries.sh: XMX_ALT_EXT)
 ALT_EXT = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
 FFX_DLLS = (FG_DLL, UPSCALER_DLL, SINGLE_DLL)
-# vkd3d-proton extensions the package turns off (install.sh's VKD3D_DISABLE_EXTENSIONS): the descriptor buffer and the
+# vkd3d-proton extensions the package turns off (tools/steam-libraries.sh: XMX_VKD3D_OFF): the descriptor buffer and the
 # descriptor heap (vkd3d-proton 3.1+), as the kernel binding code needs vkd3d-proton's classic descriptor heap, and
 # present wait 2 (it crashed frame generation)
 VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_EXT_descriptor_heap", "VK_KHR_present_wait2")

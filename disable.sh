@@ -15,12 +15,12 @@ while IFS= read -r PFX; do
   [ -n "$PFX" ] || continue
   if [ -f "$PFX/igdext64.dll.stock" ]; then
     cp "$PFX/igdext64.dll.stock" "$PFX/igdext64.dll" && echo "stock igdext64.dll restored in $PFX"
-  elif [ -f "$PFX/igdext64.dll" ] && grep -aq 'IGDEXT_' "$PFX/igdext64.dll"; then
-    rm -f "$PFX/igdext64.dll" && echo "igdext64.dll removed from $PFX"   # a prefix without a stock one (every build of the shim names its IGDEXT_* switches)
+  elif [ -f "$PFX/igdext64.dll" ] && xmx_is_shim "$PFX/igdext64.dll"; then
+    rm -f "$PFX/igdext64.dll" && echo "igdext64.dll removed from $PFX"   # a prefix without a stock one
   fi
 done <<< "$(prefix_shim_dirs "$PFXROOT")"
 C="$PFXROOT/drive_c/windows/system32/ControlLib.dll"
-[ -f "$C" ] && grep -aq 'XESS_FG' "$C" && rm -f "$C" && echo "ControlLib.dll removed"
+[ -f "$C" ] && xmx_is_controllib "$C" && rm -f "$C" && echo "ControlLib.dll removed"
 [ -f "$CONF" ] && sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF" && echo "launcher config block removed from $CONF"
 rm -rf "$PFXROOT/drive_c/igdext_kernels"
 echo "XeSS XMX disabled."

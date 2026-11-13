@@ -25,7 +25,7 @@ GAME="${XMX_GAME:-}"
 for f in "$ROOT/igdext64.dll" "$ROOT/lib/libvulkan_intel.so" "$ROOT/tools/cm-compile.sh"; do
   [ -f "$f" ] || { echo "missing $f - this is the source tree; download the release archive or build the binaries first (see README)"; exit 1; }
 done
-[ -x "$(ls "$ROOT"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ] || echo "note: no compiler bundle yet - run $ROOT/tools/get-igc.sh (kernels are compiled at run time)"
+xmx_have_compiler "$ROOT" || echo "note: no compiler bundle yet - run $ROOT/tools/get-igc.sh (kernels are compiled at run time)"
 if [ -n "$GAME" ] && pgrep -i "^${GAME:0:15}" >/dev/null; then echo "The game is running - close it first."; exit 1; fi
 # the driver store folder in every case it exists in (proton-cachyos: "DriverStore" next to "driverstore"), else new
 DIRS="$(prefix_shim_dirs "$PFXROOT")"
@@ -38,7 +38,7 @@ while IFS= read -r PFX; do
 done <<< "$DIRS"
 # ControlLib.dll: the stand-in for Intel's Control Library, for XESS_FG (frame generation override)
 S32="$PFXROOT/drive_c/windows/system32"
-if [ -f "$ROOT/ControlLib.dll" ] && { [ ! -f "$S32/ControlLib.dll" ] || grep -aq 'XESS_FG' "$S32/ControlLib.dll"; }; then
+if [ -f "$ROOT/ControlLib.dll" ] && { [ ! -f "$S32/ControlLib.dll" ] || xmx_is_controllib "$S32/ControlLib.dll"; }; then
   cp "$ROOT/ControlLib.dll" "$S32/ControlLib.dll"
 fi
 rm -f "$PFXROOT/drive_c/igdext_kernels/compile_failed.txt"
@@ -53,11 +53,11 @@ sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF"
 {
   echo "# >>> XESS-XMX >>>"
   printf 'export VK_DRIVER_FILES=%q\n' "$drivers"
-  echo "export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2"
+  echo "export VKD3D_DISABLE_EXTENSIONS=$XMX_VKD3D_OFF"
   printf 'export ANV_CM_KERNEL_DIR=%q\n' "$ROOT/kernels"
   printf 'export ANV_CM_HELPER=%q\n' "$ROOT/tools/cm-compile.sh"
   echo "export force_vk_vendor=0"
-  echo "export INTC_ALT_DRIVER_EXTENSIONS_PATH='C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1'"
+  echo "export INTC_ALT_DRIVER_EXTENSIONS_PATH='$XMX_ALT_EXT'"
   echo "# <<< XESS-XMX <<<"
 } >> "$CONF"
 

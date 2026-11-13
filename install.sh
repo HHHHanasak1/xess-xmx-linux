@@ -25,11 +25,7 @@ PKG="$(cd "$(dirname "$0")" && pwd)"
 . "$PKG/tools/steam-libraries.sh"
 STEAM="$(steam_root)"
 LIBS=$(steam_libraries "$STEAM")   # every library root (SD card, second disk): Protons and prefixes live under each steamapps/
-# Protons installed by a distribution package (CachyOS: proton-cachyos) - usually only root can write there
-SYSTOOLS="/usr/share/steam/compatibilitytools.d /usr/local/share/steam/compatibilitytools.d"
 ENVD="$HOME/.config/environment.d"
-# the prefix folder that holds the shim (shim_pass below), as XeSS sees it
-ALT_EXT='C:\windows\system32\driverstore\filerepository\igd_faux.inf_1'
 UNITD="$HOME/.config/systemd/user"
 CFGD="$HOME/.config/xess-xmx"   # the session check's copy (step 5)
 SHIM="$PKG/igdext64.dll"
@@ -88,7 +84,7 @@ if [ "$MANUAL" = 1 ] && systemctl --user stop xess-xmx-shim.path 2>/dev/null; th
 fi
 
 # 1. compiler bundle (the watcher, which runs this script in the background, downloads nothing)
-if [ "$MANUAL" = 1 ] && [ ! -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+if [ "$MANUAL" = 1 ] && ! xmx_have_compiler "$PKG"; then
   echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~95 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
 fi
@@ -115,14 +111,14 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "VK_DRIVER_FILES=$drivers"
     echo "# vkd3d-proton: the classic descriptor heap (the kernel binding code needs it) and present wait 1 (with present wait 2,"
     echo "# frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes)"
-    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2"
+    echo "VKD3D_DISABLE_EXTENSIONS=$XMX_VKD3D_OFF"
     echo "ANV_CM_KERNEL_DIR=$PKG/kernels"
     echo "ANV_CM_HELPER=$PKG/tools/cm-compile.sh"
     echo "# Mesa hides the Intel vendor id from some games (force_vk_vendor=-1 profiles), which keeps XeSS on DP4a there;"
     echo "# an option set in the environment overrides the profile. One game back to Mesa's default: force_vk_vendor=-1 %command%"
     echo "force_vk_vendor=0"
     echo "# Protons without Intel's driver store (Proton 11.0) never load the shim from the prefix; XeSS looks here first"
-    echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$ALT_EXT'"
+    echo "INTC_ALT_DRIVER_EXTENSIONS_PATH='$XMX_ALT_EXT'"
     if [ "$MODE" = stock ]; then
       echo "# stock mode (the default on Xe3 and Xe2; XMX_DRIVER=patched ./install.sh for the patched driver): the package's"
       echo "# unpatched Mesa, the XMX kernels from VK_LAYER_XESS_xmx"
@@ -134,8 +130,8 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     fi
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
-    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
-    "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$ALT_EXT" 2>/dev/null
+    "VKD3D_DISABLE_EXTENSIONS=$XMX_VKD3D_OFF" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
+    "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$XMX_ALT_EXT" 2>/dev/null
   if [ "$MODE" = stock ]; then
     systemctl --user set-environment "MESA=$STOCKV" "VK_ADD_LAYER_PATH=$PKG/layer" \
       "VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx" "XMX_LAYER_HELPER=$PKG/tools/cm-compile.sh" "XMX_IGC_DIR=$PKG/igc" 2>/dev/null
@@ -153,7 +149,7 @@ fi
 mkdir -p "$PKG/kernels" "${XDG_CACHE_HOME:-$HOME/.cache}/xess-xmx/kernels"
 # a failed run-time compile makes the shim fall back to DP4a in that prefix; with a compiler present, a manual run
 # tries again (not the watcher: it would retry a compile that keeps failing at every Proton update)
-if [ "$MANUAL" = 1 ] && [ -x "$(ls "$PKG"/igc/neo/bin/ocloc* 2>/dev/null | head -1)" ]; then
+if [ "$MANUAL" = 1 ] && xmx_have_compiler "$PKG"; then
   while IFS= read -r lib; do rm -f "$lib"/steamapps/compatdata/*/pfx/drive_c/igdext_kernels/compile_failed.txt; done <<< "$LIBS"
 fi
 if [ -d "$HOME/.var/app/com.valvesoftware.Steam" ]; then
@@ -186,9 +182,9 @@ install_shim() { # <igdext64.dll path>
 $f";; esac
     return
   fi
-  # keep the original as .stock. Every build of the shim names its IGDEXT_* switches; a file without them is a stock one,
-  # also a newer one that a Proton update just brought (then the old .stock is out of date and is replaced)
-  if ! grep -aq 'IGDEXT_' "$f"; then
+  # keep the original as .stock. A file that is not the package's shim (xmx_is_shim) is a stock one, also a newer one
+  # that a Proton update just brought (then the old .stock is out of date and is replaced)
+  if ! xmx_is_shim "$f"; then
     if [ ! -f "$f.stock" ] || ! cmp -s "$f" "$f.stock"; then
       chmod u+w "$f.stock" 2>/dev/null
       cp -p "$f" "$f.stock"
@@ -229,7 +225,7 @@ EOF
 install_controllib() { # <prefix system32>: ControlLib.dll, the stand-in for Intel's Control Library (XESS_FG)
   local s="$1/ControlLib.dll"
   [ -f "$PKG/ControlLib.dll" ] || return
-  [ -f "$s" ] && ! grep -aq 'XESS_FG' "$s" && return   # a ControlLib.dll that is not ours stays
+  [ -f "$s" ] && ! xmx_is_controllib "$s" && return   # a ControlLib.dll that is not ours stays
   cmp -s "$PKG/ControlLib.dll" "$s" && return
   cp "$PKG/ControlLib.dll" "$s" && n=$((n + 1)) && echo "   ControlLib.dll -> $s"
 }
@@ -237,7 +233,7 @@ shim_pass() { # every Proton that bundles the library, and every prefix that has
   # With "poll": the same places, but each file is read (cmp) or written only when a bash test says it must be - the
   # watcher's loop below asks this every few seconds, and a full pass forks several times per Proton and prefix
   local poll=${1:-} f d lib s
-  # Protons: Valve's in every library, the user's own (compatibilitytools.d), a distribution's (SYSTOOLS). The hook goes
+  # Protons: Valve's in every library, the user's own (compatibilitytools.d), a distribution's (XMX_SYSTOOLS). The hook goes
   # into every Proton, also one without its own igdext (Proton 11.0): the launch options work the same there
   while IFS= read -r lib; do
     for f in "$lib"/steamapps/common/Proton*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
@@ -247,7 +243,7 @@ shim_pass() { # every Proton that bundles the library, and every prefix that has
       [ -z "$poll" ] || [ ! -f "$d/user_settings.py" ] && install_hook "${d%/}"   # a new Proton (hook not yet there)
     done
   done <<< "$LIBS"
-  for s in "$STEAM/compatibilitytools.d" $SYSTOOLS; do
+  for s in "$STEAM/compatibilitytools.d" $XMX_SYSTOOLS; do
     for f in "$s"/*/files/lib/wine/igdext/x86_64-windows/igdext64.dll; do
       [ -z "$poll" ] || changed "$f" && install_shim "$f"
     done
