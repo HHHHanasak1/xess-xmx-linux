@@ -693,19 +693,50 @@ kernel_of(VkPipeline p)
    pipe_cache[s].epoch = e;
    return k;
 }
+/* The self-test placeholder's pipeline layout, as replace() needs it for a kernel: 2 = vkd3d-proton's classic heap (a
+ * MUTABLE binding of >= 1000 descriptors) and its one descriptor table in the push constants (the shim's test root
+ * signature: one table of one UAV); 1 = no sets and no push constants (vkwrap's test: XeSS' Vulkan push); 0 = neither,
+ * e.g. vkd3d-proton on VK_EXT_descriptor_buffer or VK_EXT_descriptor_heap, whose kernels the layer could not bind. */
+static int
+canary_layout(const VkComputePipelineCreateInfo *ci)
+{
+   const struct xpipelayout *pl = xmap_get(&pipe_layouts, HKEY(ci->layout));
+   if (!pl)
+      return 0;
+   if (pl->nsets == 0)
+      return pl->push_size == 0 ? 1 : 0;
+   for (uint32_t s = 0; s < pl->nsets; s++) {
+      const struct xsetlayout *l = xmap_get(&set_layouts, HKEY(pl->sets[s]));
+      if (l && l->heap_binding != ~0u)
+         return pl->push_size >= 4 ? 2 : 0;
+   }
+   return 0;
+}
+
 static void
-answer_canary(struct xdevice *d, const struct xmx_placeholder *ph)
+answer_canary(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct xmx_placeholder *ph)
 {
    self_test(d);
    if (!d->ok || !d->dir[0] || (ph->kind == XMX_PH_CANARY && !ph->canary_ok))
       return;
+   const int lay = canary_layout(ci);
+   if (!lay) {
+      const struct xpipelayout *pl = xmap_get(&pipe_layouts, HKEY(ci->layout));
+      xlog("self-test placeholder NOT answered: its pipeline layout (%d sets, %u bytes of push constants) has no "
+           "vkd3d-style descriptor heap - VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap "
+           "set? XeSS uses its DP4a path", pl ? (int)pl->nsets : -1, pl ? pl->push_size : 0);
+      return;
+   }
    char mark[600];
-   snprintf(mark, sizeof(mark), "%s/anv_canary", d->dir);
-   FILE *f = fopen(mark, "w");
-   if (f) {
-      fprintf(f, "xess-xmx layer recognised the self-test placeholder (unpatched driver)\n");
-      fclose(f);
-      xlog("self-test placeholder answered (%s)", mark);
+   FILE *f;
+   if (lay == 2) {   /* the shim (D3D12) reads this one; vkwrap's Vulkan test only gets the layer's own mark */
+      snprintf(mark, sizeof(mark), "%s/anv_canary", d->dir);
+      f = fopen(mark, "w");
+      if (f) {
+         fprintf(f, "xess-xmx layer recognised the self-test placeholder (unpatched driver)\n");
+         fclose(f);
+         xlog("self-test placeholder answered (%s)", mark);
+      }
    }
    /* the layer's own mark: vkwrap (Vulkan games) needs the layer, whose descriptor push the patched driver lacks */
    snprintf(mark, sizeof(mark), "%s/layer_canary", d->dir);
@@ -836,7 +867,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    }
    if (!vkpush && nsurf && (!heap || base == ~0u || nsurf > 24)) {
       xlog("kernel %s: no vkd3d-style descriptor heap in the layout (%u sets) - VKD3D_DISABLE_EXTENSIONS="
-           "VK_EXT_descriptor_buffer set?", ph->hash, pl->nsets);
+           "VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap set?", ph->hash, pl->nsets);
       mark_failed(d, ph);
       free(kr);
       free(img);
@@ -975,7 +1006,7 @@ x_CreateComputePipelines(VkDevice device, VkPipelineCache cache, uint32_t n, con
    for (uint32_t i = 0; i < n; i++) {
       out[i] = VK_NULL_HANDLE;
       if (ph[i].kind == XMX_PH_CANARY || ph[i].kind == XMX_PH_LEGACY_CANARY)
-         answer_canary(d, &ph[i]);
+         answer_canary(d, &cis[i], &ph[i]);
       if (ph[i].kind == XMX_PH_KERNEL || ph[i].kind == XMX_PH_LEGACY_KERNEL)
          out[i] = replace(d, &cis[i], &ph[i]);
       if (!out[i]) {

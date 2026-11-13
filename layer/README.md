@@ -7,6 +7,7 @@
 * **Xe3 only:** The layer serves Xe3 GPUs whose PCI device ID has `(deviceID & 0xfff0) == 0xb080` or `0xfd80` (`0xB080`–`0xB08F` and `0xFD80`–`0xFD8F`, Panther Lake and Wildcat Lake). On those GPUs, `install.sh` runs the whole user session on the package's unpatched Mesa 26.3 (`lib/mesa-stock-<version>/`) with this layer by default.
 * **System driver per game:** `xmx-stock.sh` runs a single game on your distribution's own unpatched ANV with this layer.
 * **Supported Mesa versions:** The layer has serialized-shader layout tables (`src/layouts.h`) for Mesa 26.1, 26.3, and 27.0. With an unknown driver version, the layer leaves the shim's self-test (`anv_canary`) unanswered and XeSS falls back to DP4a (4-element dot-product instructions).
+* **vkd3d-proton descriptor model:** The layer answers the self-test only when the test pipeline's layout has vkd3d-proton's classic descriptor heap (a `MUTABLE` binding of at least 1000 descriptors plus push constants for the descriptor table). With `VK_EXT_descriptor_buffer` or the `VK_EXT_descriptor_heap` path of vkd3d-proton 3.1 and newer, it logs `self-test placeholder NOT answered` and XeSS falls back to DP4a. A kernel it cannot bind is listed in `compile_failed.txt`, so the shim falls back from the next launch on.
 * **Vulkan XeSS games:** On this project's patched drivers (on Xe3 `0xB080`–`0xB08F` / `0xFD80`–`0xFD8F` with `XMX_DRIVER=patched` or `MESA=`; on other GPUs the layer declines), the layer detects the patched driver's longer `prog_data` (`src/layouts.h`, `pd_size_patched`) and only serves XeSS's Vulkan path (`vkwrap/`); the patched driver injects D3D12 (Direct3D 12) games' kernels itself.
 
 For how the layer works internally (SPIR-V placeholder scanning, `-noLoadPayload` compilation into `~/.cache/xess-xmx/kernels/*.cml`, the machine-code prologue from `src/prologue_table.inc` and `tools/gen_prologue_table.py`, template shader binary rewriting via `VK_KHR_pipeline_binary` in `src/anvbin.c` and `src/template.comp`, and descriptor set copying), see [../docs/dev/how-it-works.md](../docs/dev/how-it-works.md).
@@ -29,7 +30,7 @@ To run a game with the layer by hand outside Steam's container:
 VK_DRIVER_FILES=<the distribution's intel_icd.*.json and other drivers, not the package's run/intel_icd.json> \
 VK_ADD_LAYER_PATH=<package>/layer VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx \
 XMX_LAYER_HELPER=<package>/tools/cm-compile.sh XMX_IGC_DIR=<package>/igc \
-VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2 <game>
+VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2 <game>
 ```
 
 The Vulkan driver must be an unpatched ANV (or this project's patched one, for the Vulkan path only), and only one Intel ICD (Installable Client Driver) may be in `VK_DRIVER_FILES`. Changing `VK_DRIVER_FILES` inside the container (such as in Proton's `user_settings.py`) loads the container's copy of the patched ICD alongside the stock one, which caused games to recreate their swap chain thousands of times a minute.
