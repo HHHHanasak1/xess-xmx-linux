@@ -68,8 +68,8 @@ jobs:
       VULKAN_HEADERS_TAG: vulkan-sdk-1.4.350.1
       VULKAN_HEADERS_COMMIT: 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: KhronosGroup/Vulkan-Headers
           ref: ${{ env.VULKAN_HEADERS_TAG }}
@@ -87,7 +87,7 @@ jobs:
           nm -D --defined-only out/libVkLayer_xess_xmx.so | grep -q ' xmx_NegotiateLoaderLayerInterfaceVersion$'
           v=$(objdump -T out/libVkLayer_xess_xmx.so | grep -o 'GLIBC_2\.[0-9]*' | sort -t. -k2 -n -u | tail -1 | cut -d. -f2)
           echo "GLIBC_2.$v"; [ "$v" -le 38 ]
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xmx-layer
           path: |
