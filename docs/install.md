@@ -16,7 +16,7 @@ This guide covers how to install `xess-xmx-linux` system-wide for your user sess
 
 Every Direct3D 12 (DX12) game you start from Steam afterwards uses the package's driver automatically without any Steam launch options. In the game's graphics settings, select the **DX12** renderer and enable **XeSS** (and **XeSS Frame Generation** if offered).
 
-For Direct3D 11 (DX11) or Vulkan games with XeSS, or games that ship an older XeSS version, add `XESS=latest %command%` to the game's launch options ([games.md](games.md), [launch-options.md](launch-options.md)).
+For Direct3D 11 (DX11) or Vulkan games with XeSS, games that ship an older XeSS version, and games with FSR 3.1+ and no XeSS frame generation, add `XESS=auto %command%` to the game's launch options ([games.md](games.md), [launch-options.md](launch-options.md)).
 
 The first time you launch a game with XeSS enabled, the driver (or the Vulkan layer) compiles that game's C-for-Metal (CM, Intel's GPU kernel language) kernels into `~/.cache/xess-xmx/kernels`. Startup can pause for a minute or two once; after that, the compiled kernels load from the cache.
 
@@ -81,8 +81,8 @@ Then reboot or log out and back in so Steam drops the session environment variab
 
 1. **Fetches runtime bundles (if not already present):**
    - `igc/` (~95 MB via `tools/get-igc.sh`): Intel Graphics Compiler `v2.10.10` and `ocloc` `25.18.33578.6` for runtime CM kernel compilation.
-   - `xess/` (~77 MB via `tools/get-xess.sh`): Intel's XeSS SDK `v3.0.2` runtime DLLs. They are used when a game's launch options include `XESS=latest`, `FSR=xess`, `FSR_FG=xess`, or `OFLOW_FG=1`. The DLLs are `libxess.dll` 2.0.2.68, `libxess_dx11.dll`, `libxess_fg.dll` 1.3.1.78, and `libxell.dll` 1.3.2.10.
-   - `ffx/` (~87 MB via `tools/get-ffx.sh`): AMD's signed FidelityFX SDK `v2.4.0` loader (`amd_fidelityfx_loader_dx12.dll`), upscaler, and frame generation DLLs, used when `FSR=xess` or `FSR_FG=xess` is set on a game with FSR 3.1.0–3.1.3 (which ships a single `amd_fidelityfx_dx12.dll`).
+   - `xess/` (~77 MB via `tools/get-xess.sh`): Intel's XeSS SDK `v3.0.2` runtime DLLs. They are used when a game's launch options include `XESS=auto`, `XESS=latest`, `FSR=xess`, `FSR_FG=xess`, or `OFLOW_FG=1`. The DLLs are `libxess.dll` 2.0.2.68, `libxess_dx11.dll`, `libxess_fg.dll` 1.3.1.78, and `libxell.dll` 1.3.2.10.
+   - `ffx/` (~87 MB via `tools/get-ffx.sh`): AMD's signed FidelityFX SDK `v2.4.0` loader (`amd_fidelityfx_loader_dx12.dll`), upscaler, and frame generation DLLs, used when FSR runs on XeSS (`XESS=auto`, `FSR=xess`, or `FSR_FG=xess`) in a game with FSR 3.1.0–3.1.3 (which ships a single `amd_fidelityfx_dx12.dll`).
 2. **Writes `~/.config/environment.d/50-xess-xmx.conf`** (and applies the variables to the current user `systemd` manager):
    - `VK_DRIVER_FILES`: puts the package's 64-bit Intel Vulkan ICD (`run/intel_icd.json`) first while keeping every other GPU's Vulkan driver (for hybrid laptops, eGPUs, or `lavapipe`) and the 32-bit Intel driver (`intel_icd.i686.json` / `intel_icd.i386.json`) in the list.
    - `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2`: the kernel binding code requires `vkd3d-proton`'s classic descriptor heap rather than `VK_EXT_descriptor_buffer` or the `VK_EXT_descriptor_heap` path of vkd3d-proton 3.1 and newer, and disabling `VK_KHR_present_wait2` prevents crashes in `vkWaitForPresent2KHR` under frame generation's high present rate. This applies to every D3D12 game in the session.
@@ -94,8 +94,8 @@ Then reboot or log out and back in so Steam drops the session environment variab
    - Finds your main Steam installation and every secondary Steam library in `steamapps/libraryfolders.vdf` (SD cards, second disks). The main installation is `$STEAM_DIR`, or the first existing folder among `~/.local/share/Steam`, `~/.steam/steam`, `~/.steam/root`, and `~/.steam/debian-installation`.
    - Replaces `igdext64.dll` in every Proton that bundles one and in every existing game prefix that already has the `igd_faux.inf_1` folder, backing up the original file as `igdext64.dll.stock`. In a Proton, the file is `files/lib/wine/igdext/x86_64-windows/igdext64.dll`. In a prefix, the folder is `drive_c/windows/system32/driverstore/filerepository/igd_faux.inf_1` (matching both `driverstore` and `DriverStore` casing).
    - In every prefix that already has that `igd_faux.inf_1` folder, copies `ControlLib.dll` into its `drive_c/windows/system32/` for `XESS_FG`. It leaves any existing `ControlLib.dll` that is not this package's alone (see [frame-generation.md](frame-generation.md)). On a manual run with the `igc/` compiler bundle present, it also removes any `drive_c/igdext_kernels/compile_failed.txt` markers so previously failed compiles are retried.
-   - Places a small `user_settings.py` into every Proton folder (keeping any existing `user_settings.py` of your own as `user_settings.user.py`). At game start, this `user_settings.py` runs `tools/proton-hook.py`. The hook handles the `XESS=`, `XESS_LOG=`, and `FSR=` launch options. It also handles `FSR_FG=` and `OFLOW_FG=` ([launch-options.md](launch-options.md)).
-   - **Protons installed by a distribution package:** A Proton in `/usr/share/steam/compatibilitytools.d` or `/usr/local/share/steam/compatibilitytools.d` (such as CachyOS's `proton-cachyos`) is owned by `root`. As your user, `install.sh` cannot write to it; it lists those Proton paths and prints the `sudo cp` commands to install `igdext64.dll` into them. Until you run those commands (or use a Proton in `~/.local/share/Steam/compatibilitytools.d`), games using that system Proton run on DP4a. The `user_settings.py` hook options (`XESS=latest`, `FSR=xess`, `OFLOW_FG=1`) will not run on it either.
+   - Places a small `user_settings.py` into every Proton folder (keeping any existing `user_settings.py` of your own as `user_settings.user.py`). At game start, this `user_settings.py` runs `tools/proton-hook.py`. The hook handles the `XESS=`, `XESS_LL=`, and `XESS_LOG=` launch options. It also handles `FSR=`, `FSR_FG=`, and `OFLOW_FG=` ([launch-options.md](launch-options.md#how-the-options-are-applied)).
+   - **Protons installed by a distribution package:** A Proton in `/usr/share/steam/compatibilitytools.d` or `/usr/local/share/steam/compatibilitytools.d` (such as CachyOS's `proton-cachyos`) is owned by `root`. As your user, `install.sh` cannot write to it; it lists those Proton paths and prints the `sudo cp` commands to install `igdext64.dll` into them. Until you run those commands (or use a Proton in `~/.local/share/Steam/compatibilitytools.d`), games using that system Proton run on DP4a. The `user_settings.py` hook options (`XESS=auto`, `FSR=xess`, `OFLOW_FG=1`, and the others) will not run on it either.
 4. **Enables the shim watcher (`xess-xmx-shim.path` and `xess-xmx-shim.service`):**
    - Watches your Proton and `compatdata` folders across all Steam libraries and automatically re-installs `igdext64.dll`, `ControlLib.dll`, and `user_settings.py` whenever a Proton updates or a newly launched game creates a prefix.
 5. **Enables the pre-session driver check (`xess-xmx-check.service`):**
@@ -143,12 +143,14 @@ Optional variables for `enable.sh`, `disable.sh`, and `xmx-launch.sh`:
 * `XMX_GAME=<process name>`: if set, `enable.sh` and `disable.sh` refuse to run while a process matching that name (first 15 characters, case-insensitive) is running.
 
 Note: Without `install.sh`, Proton's `user_settings.py` hook is not installed, so the hook shorthands are not available. These shorthands are:
-* `XESS=latest`, `XESS=dp4a`, and `XESS_LOG=1`
+* `XESS=auto`, `XESS=latest`, and `XESS=dp4a`
+* `XESS_LL` and `XESS_LOG`
 * `FSR=xess`, `FSR_FG=xess`, and `FSR_FG=inject`
 * `OFLOW_FG=1`
 
 Use these instead ([frame-generation.md](frame-generation.md), [launch-options.md](launch-options.md)):
 * `IGDEXT_FORCE_FALLBACK=1` instead of `XESS=dp4a`
+* `IGDEXT_XELL_CAP=off` or `IGDEXT_XELL_CAP=auto:<ms>` instead of `XESS_LL`
 * the `IGDEXT_*` log variables instead of `XESS_LOG=1`
 * `tools/fsr-fg.sh` for games that have FSR 3.1+ frame generation
 
@@ -165,7 +167,7 @@ If you want a single game to run on your Linux distribution's own unpatched Mesa
 Put any launch option variables before the wrapper:
 
 ```text
-XESS=latest /path/to/package/xmx-stock.sh %command%
+XESS=auto /path/to/package/xmx-stock.sh %command%
 ```
 
 `xmx-stock.sh` installs nothing and changes nothing outside that game's process environment:

@@ -31,9 +31,10 @@ vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interface
 icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
 tools/cm-compile.sh           run-time compiler helper called by the driver
 tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
-tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=latest)
+tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=auto, XESS=latest)
 tools/get-ffx.sh              fetches AMD's FidelityFX loader and providers into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
-tools/proton-hook.py          XESS / XESS_LOG / FSR / FSR_FG / OFLOW_FG launch options, run by Proton through user_settings.py
+tools/proton-hook.py          XESS / XESS_LL / XESS_LOG / FSR / FSR_FG / OFLOW_FG launch options, run by Proton through
+                              user_settings.py (tools/tests/hook-sandbox.py tests it)
 tools/fsr-fg.sh               FSR on XeSS for one game, for Protons without the hook
 tools/steam-libraries.sh      every Steam library (libraryfolders.vdf), for the scripts
 tools/rebuild-driver.sh       rebuilds the patched driver for the system's Mesa version
@@ -337,6 +338,14 @@ bash tools/tests/install-sandbox.sh        # KEEP=1 keeps the sandbox and prints
 ```
 
 The test runs `install.sh` (patched mode, stock mode, a second time, and as the watcher does after a Proton update), `tools/switch-driver.sh`, `tools/session-check.sh` (with a driver that stops loading, and its copy in `~/.config/xess-xmx` with the package folder gone), `enable.sh` / `xmx-launch.sh` / `disable.sh`, `xmx-stock.sh`, `tools/fsr-fg.sh` and `uninstall.sh` in a temporary folder: a made-up `HOME` with a Steam tree (two libraries, three Protons, four prefixes, two games, one of them in a folder with `[`, `*` and a space in its name) and a package made of the tree's scripts plus stand-ins for the binaries, in a folder with a space in its name. `systemctl`, `vulkaninfo`, `pgrep` and `curl` are stubs that log their calls, so nothing outside the folder changes and no network, GPU or root is needed; a C compiler is, because the stand-in drivers are real (empty) shared objects that the driver check loads. It checks the files each step writes (the session environment, the systemd units, the shim and its `.stock` backups, the Proton hook) and, at the end, that both Steam libraries are file for file what they would be had the package never been installed. CI runs it as the job `install-scripts`.
+
+## Testing the Proton Hook (`tools/tests/hook-sandbox.py`)
+
+```bash
+python3 tools/tests/hook-sandbox.py        # KEEP=1 keeps the sandbox and prints its path
+```
+
+The test runs `tools/proton-hook.py` the way Proton does (through `user_settings.py`'s `exec`, as `proton waitforexitandrun <exe>`) on made-up game folders, one per kind of game the launch options are about: old XeSS next to FSR, current XeSS, FSR 3.1+ with and without frame generation, XeSS-FG next to FSR frame generation, neither, a D3D11 game, a Vulkan game. For every launch line that existed before `XESS=auto`, it compares the links the hook makes and the variables it gives the game with a table of what the hook did before; a change there changes what a launch line in somebody's Steam does. `XESS=auto` must make the links of the old line for that kind of game. It also covers `XESS_LL`, `XESS_LOG`, the hook's own log, a run that is killed outright, and a second run of a game whose first run is still alive. Nothing outside a temporary folder is touched, and no Proton, Steam, GPU, or network is needed. CI runs it in the `install-scripts` job.
 
 ---
 

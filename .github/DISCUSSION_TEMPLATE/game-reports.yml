@@ -34,7 +34,7 @@ body:
       label: Driver
       description: The first line of ~/.cache/xess-xmx/driver-status names the driver your session loaded; a per-game MESA= option overrides it.
       options:
-        - Unpatched 26.3.0 + layer (Xe3 default)
+        - Unpatched 26.3.0 + layer (Xe3 and Xe2 default)
         - Patched 26.3.0
         - Patched 26.1.2
         - System Mesa + layer (xmx-stock.sh)
@@ -45,7 +45,7 @@ body:
     id: options
     attributes:
       label: Launch options
-      placeholder: "XESS=latest XESS_FG=3 %command%"
+      placeholder: "XESS=auto XESS_FG=3 %command%"
   - type: dropdown
     id: sr
     attributes:
@@ -53,7 +53,7 @@ body:
       options:
         - XeSS on XMX
         - XeSS on DP4a
-        - FSR on XeSS (FSR=xess)
+        - FSR on XeSS (XESS=auto or FSR=xess)
         - Not used / not available
         - Does not work
     validations:
@@ -64,8 +64,8 @@ body:
       label: Frame generation
       options:
         - XeSS-FG works
-        - From FSR (FSR=xess / FSR_FG=xess)
-        - Injected (FSR_FG=inject)
+        - From FSR (XESS=auto, FSR=xess or FSR_FG=xess)
+        - Injected (XESS=auto with XESS_FG, or FSR_FG=inject)
         - Optical flow (OFLOW_FG=1)
         - Not used / not available
         - Does not work
