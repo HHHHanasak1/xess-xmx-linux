@@ -43,10 +43,10 @@ target_include_directories(igdext PRIVATE
 target_compile_definitions(igdext PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
-    # Only D3D11 is unlocked in the vendored igdext.h: the D3D12 section it
-    # gates behind INTC_IGDEXT_D3D12 references D3D12_STATE_OBJECT_DESC and
-    # other raytracing types mingw-w64's d3d12.h doesn't define, and D3D12
-    # support in this repo is stub-only anyway (see src/Stdafx.h).
+    # Both halves of the vendored igdext.h. The D3D12 section (behind
+    # INTC_IGDEXT_D3D12) has the types of the _INTC_D3D12_* functions in
+    # src/dll/D3D12Api.cpp; it references D3D12_STATE_OBJECT_DESC and other
+    # raytracing types, which an old mingw-w64 d3d12.h does not define.
     INTC_IGDEXT_D3D11
     INTC_IGDEXT_D3D12
 )

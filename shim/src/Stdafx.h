@@ -31,12 +31,12 @@ Notes:      Central include hub: pulls in the D3D11/D3D12 headers and the
 // Intel Extensions API header files - vendored from the real public SDK
 // (d3dext-sdk, see d3dext-sdk/VERSION).
 //
-// INTC_IGDEXT_D3D12 is deliberately NOT defined: it unlocks igdext.h's D3D12
-// raytracing section, which references D3D12_STATE_OBJECT_DESC and friends -
-// types mingw-w64's bundled d3d12.h doesn't have. D3D12 support in this repo
-// is a stub only, so INTC_D3D12_API_CALLBACKS (only ever used as an
-// unused, never-dereferenced pointer parameter) is forward-declared here
-// instead of pulled in from that gated section.
+// The build defines both INTC_IGDEXT_D3D11 and INTC_IGDEXT_D3D12
+// (CMakeLists.txt): igdext.h's D3D12 section has the types of the
+// _INTC_D3D12_* functions this project implements in dll/D3D12Api.cpp.
+// (Upstream dxvk-igdext leaves that section out and forward-declares
+// INTC_D3D12_API_CALLBACKS itself; the declaration below is kept from it
+// and harmless.)
 #include "igdext.h"
 
 struct INTC_D3D12_API_CALLBACKS;

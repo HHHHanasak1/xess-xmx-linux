@@ -160,8 +160,9 @@ HRESULT D3D12GetSupportedVersions2(
         return E_INVALIDARG;
     }
 
-    // D3D12 extensions are not implemented in this repo - always report zero
-    // supported versions, matching _INTC_D3D12_GetSupportedVersions above.
+    // This older entry point reports zero supported versions, as upstream
+    // dxvk-igdext wrote it. _INTC_D3D12_GetSupportedVersions above no longer
+    // does: it lists the versions of this project's D3D12 extensions.
     *pSupportedExtVersionsCount = 0;
 
     return S_OK;

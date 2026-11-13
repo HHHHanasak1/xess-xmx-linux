@@ -719,11 +719,11 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
     if (w != p)
     {
         const unsigned sh = (unsigned) (r & 7) * 8;
-        const uint64_t mask = 0xFFFFFFFFull << sh, rel = (uint64_t) (uint32_t) (int32_t) d << sh;
+        const uint64_t mask = 0xFFFFFFFFull << sh, newRel = (uint64_t) (uint32_t) (int32_t) d << sh;
         uint64_t cur = *(volatile uint64_t*) w;
         for (;;)
         {
-            const uint64_t prev = (uint64_t) InterlockedCompareExchange64((volatile LONG64*) w, (LONG64) ((cur & ~mask) | rel), (LONG64) cur);
+            const uint64_t prev = (uint64_t) InterlockedCompareExchange64((volatile LONG64*) w, (LONG64) ((cur & ~mask) | newRel), (LONG64) cur);
             if (prev == cur) break;
             cur = prev;
         }
