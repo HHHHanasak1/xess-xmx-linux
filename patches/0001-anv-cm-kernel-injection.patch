@@ -6,7 +6,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
 
 ---
  src/intel/compiler/brw/brw_compiler.h |   21 +
- src/intel/vulkan/anv_cm.c             | 1821 +++++++++++++++++++++++++
+ src/intel/vulkan/anv_cm.c             | 1826 +++++++++++++++++++++++++
  src/intel/vulkan/anv_cm.h             |   69 +
  src/intel/vulkan/anv_device.c         |    4 +
  src/intel/vulkan/anv_private.h        |    9 +
@@ -61,7 +61,7 @@ new file mode 100644
 index 0000000..d685456
 --- /dev/null
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -0,0 +1,1821 @@
+@@ -0,0 +1,1826 @@
 +/*
 + * Copyright © 2026 xess-xmx-linux contributors
 + * SPDX-License-Identifier: MIT
@@ -1562,6 +1562,11 @@ index 0000000..d685456
 +      /* only lines as anv_cm_kernel_path writes them: the hash builds file names */
 +      if (line[0] == '#' || sscanf(line, "%d %31s", &id, hash) != 2 || id < -1 || !anv_cm_hash_ok(hash))
 +         continue;
++      if (strstr(line, " layer")) {   /* the layer could not bind it (layout, not compile): no retry, line kept */
++         if (nkeep < 64)
++            snprintf(keep[nkeep++], sizeof(keep[0]), "%s", line);
++         continue;
++      }
 +      char cdir[512], path[700];
 +      const bool cache = anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, sizeof(path));
 +      bool done = false;

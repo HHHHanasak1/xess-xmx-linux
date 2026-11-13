@@ -748,7 +748,8 @@ answer_canary(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const st
 }
 
 /* a kernel the layer cannot serve: as with a failed compile, compile_failed.txt makes the shim use XeSS' generic
- * paths from its next launch on (once per kernel and process) */
+ * paths from its next launch on (once per kernel and process). The line ends in " layer": recompiling would not help,
+ * so the patched driver's retry (anv_cm_retry_failed) keeps it instead of compiling it again and lifting the marker. */
 static mtx_t failed_mtx;
 static once_flag failed_once = ONCE_FLAG_INIT;
 static void failed_init(void) { mtx_init(&failed_mtx, mtx_plain); }
@@ -772,7 +773,7 @@ mark_failed(struct xdevice *d, const struct xmx_placeholder *ph)
    snprintf(mark, sizeof(mark), "%s/compile_failed.txt", d->dir);
    FILE *f = fopen(mark, "a");
    if (f) {
-      fprintf(f, "%d %s\n", ph->kind == XMX_PH_LEGACY_KERNEL ? ph->dyn_id : -1, ph->hash);
+      fprintf(f, "%d %s layer\n", ph->kind == XMX_PH_LEGACY_KERNEL ? ph->dyn_id : -1, ph->hash);
       fclose(f);
    }
 }
