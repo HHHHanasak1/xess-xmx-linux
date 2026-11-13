@@ -123,11 +123,22 @@ static HRESULT STDMETHODCALLTYPE HookCreate(IDXGIFactory* f, IUnknown* dev, DXGI
     return g_origCreate(f, dev, o, out);
 }
 
-// the factories of one DXGI share a vtable: CreateSwapChain is slot 10, CreateSwapChainForHwnd slot 15
+// the factories of one DXGI share a vtable: CreateSwapChain is slot 10, CreateSwapChainForHwnd slot 15. A patched slot
+// jumps into this module from then on, so it is pinned first (never unmapped); if that fails, nothing is patched.
 static void Patch(void** vt, int slot, void* hook, void** orig)
 {
+    static bool pinned;
     if (vt[slot] == hook)
         return;
+    if (!pinned) {
+        HMODULE m = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                (LPCWSTR)&Patch, &m) || !m) {
+            Log("could not pin dxgi.dll (%lu): swap chains are not wrapped", GetLastError());
+            return;
+        }
+        pinned = true;
+    }
     DWORD old;
     if (!VirtualProtect(&vt[slot], sizeof(void*), PAGE_READWRITE, &old))
         return;

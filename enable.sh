@@ -53,7 +53,7 @@ sed -i '/# >>> XESS-XMX >>>/,/# <<< XESS-XMX <<</d' "$CONF"
 {
   echo "# >>> XESS-XMX >>>"
   printf 'export VK_DRIVER_FILES=%q\n' "$drivers"
-  echo "export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
+  echo "export VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2"
   printf 'export ANV_CM_KERNEL_DIR=%q\n' "$ROOT/kernels"
   printf 'export ANV_CM_HELPER=%q\n' "$ROOT/tools/cm-compile.sh"
   echo "export force_vk_vendor=0"

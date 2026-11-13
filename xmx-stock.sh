@@ -11,8 +11,9 @@
 #                     every ICD of the system
 #   VK_ADD_LAYER_PATH, VK_LOADER_LAYERS_ENABLE   the layer, in front of / added to the values already set
 #   XMX_LAYER_HELPER, XMX_IGC_DIR   the compile script and the compiler bundle; a value set before the wrapper is kept
-#   VKD3D_DISABLE_EXTENSIONS   VK_EXT_descriptor_buffer and VK_KHR_present_wait2 added if missing (the layer needs
-#                     vkd3d-proton's classic descriptor heap; present wait 2 crashed games with frame generation)
+#   VKD3D_DISABLE_EXTENSIONS   VK_EXT_descriptor_buffer, VK_EXT_descriptor_heap and VK_KHR_present_wait2 added if
+#                     missing (the layer needs vkd3d-proton's classic descriptor heap, not its descriptor buffer or
+#                     the descriptor heap of vkd3d-proton 3.1+; present wait 2 crashed games with frame generation)
 #   force_vk_vendor, INTC_ALT_DRIVER_EXTENSIONS_PATH   install.sh's values, unless already set
 #   ANV_CM_KERNEL_DIR, ANV_CM_HELPER   left as they are: only the patched driver reads them, and the layer prefers
 #                     XMX_LAYER_HELPER
@@ -84,7 +85,7 @@ esac
 export XMX_LAYER_HELPER="${XMX_LAYER_HELPER:-$PKG/tools/cm-compile.sh}"
 export XMX_IGC_DIR="${XMX_IGC_DIR:-$PKG/igc}"
 ext="${VKD3D_DISABLE_EXTENSIONS:-}"
-for e in VK_EXT_descriptor_buffer VK_KHR_present_wait2; do
+for e in VK_EXT_descriptor_buffer VK_EXT_descriptor_heap VK_KHR_present_wait2; do
   case ",$ext," in *",$e,"*) ;; *) ext="${ext:+$ext,}$e" ;; esac
 done
 export VKD3D_DISABLE_EXTENSIONS="$ext"

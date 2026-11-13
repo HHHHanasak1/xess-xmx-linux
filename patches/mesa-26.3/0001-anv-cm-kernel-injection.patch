@@ -6,7 +6,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
 
 ---
  src/intel/compiler/brw/brw_compiler.h   |   21 +
- src/intel/vulkan/anv_cm.c               | 1794 +++++++++++++++++++++++
+ src/intel/vulkan/anv_cm.c               | 1826 +++++++++++++++++++++++
  src/intel/vulkan/anv_cm.h               |   69 +
  src/intel/vulkan/anv_device.c           |   20 +-
  src/intel/vulkan/anv_private.h          |    9 +
@@ -20,7 +20,7 @@ Subject: [PATCH] anv: native C-for-Metal kernel injection for XeSS
  src/intel/vulkan/meson.build            |    3 +
  src/vulkan/runtime/vk_pipeline.c        |    2 +-
  src/vulkan/runtime/vk_shader.h          |    3 +
- 15 files changed, 2151 insertions(+), 11 deletions(-)
+ 15 files changed, 2178 insertions(+), 11 deletions(-)
  create mode 100644 src/intel/vulkan/anv_cm.c
  create mode 100644 src/intel/vulkan/anv_cm.h
  create mode 100644 src/intel/vulkan/genX_cm.c
@@ -62,7 +62,7 @@ new file mode 100644
 index 0000000..d685456
 --- /dev/null
 +++ b/src/intel/vulkan/anv_cm.c
-@@ -0,0 +1,1794 @@
+@@ -0,0 +1,1826 @@
 +/*
 + * Copyright © 2026 xess-xmx-linux contributors
 + * SPDX-License-Identifier: MIT
@@ -1563,6 +1563,11 @@ index 0000000..d685456
 +      /* only lines as anv_cm_kernel_path writes them: the hash builds file names */
 +      if (line[0] == '#' || sscanf(line, "%d %31s", &id, hash) != 2 || id < -1 || !anv_cm_hash_ok(hash))
 +         continue;
++      if (strstr(line, " layer")) {   /* the layer could not bind it (layout, not compile): no retry, line kept */
++         if (nkeep < 64)
++            snprintf(keep[nkeep++], sizeof(keep[0]), "%s", line);
++         continue;
++      }
 +      char cdir[512], path[700];
 +      const bool cache = anv_cm_cache_path(tgt.pci_id, hash, cdir, sizeof(cdir), path, sizeof(path));
 +      bool done = false;
@@ -1660,6 +1665,28 @@ index 0000000..d685456
 +   return count;
 +}
 +
++/* The self-test placeholder's pipeline layout, as a kernel needs it below: vkd3d-proton's classic descriptor heap (a
++ * MUTABLE binding with a huge array) and the push constants for its one descriptor table (the shim's test root
++ * signature: one table of one UAV; vkwrap's driver mode builds the same). vkd3d-proton on VK_EXT_descriptor_buffer (its
++ * set layouts carry DESCRIPTOR_BUFFER_BIT) or VK_EXT_descriptor_heap has neither, and its kernels could not be bound: the shim then gets no answer and XeSS
++ * uses its DP4a path instead of producing noise. */
++static bool
++anv_cm_canary_layout_ok(const struct vk_shader_compile_info *ci)
++{
++   uint32_t push_size = 0;
++   for (uint32_t r = 0; r < ci->push_constant_range_count; r++)
++      push_size = MAX2(push_size, ci->push_constant_ranges[r].offset + ci->push_constant_ranges[r].size);
++   if (push_size < 4)
++      return false;
++   for (uint32_t i = 0; i < ci->set_layout_count; i++) {
++      const struct anv_descriptor_set_layout *l = (const struct anv_descriptor_set_layout *)ci->set_layouts[i];
++      for (uint32_t b = 0; l && !(l->vk.flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) && b < l->binding_count; b++)
++         if (l->binding[b].type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT && l->binding[b].array_size >= 1000)
++            return true;
++   }
++   return false;
++}
++
 +enum anv_cm_result
 +anv_cm_kernel_replace(struct anv_device *device, void *mem_ctx,
 +                      struct anv_shader_data *shader_data, nir_shader *nir)
@@ -1677,6 +1704,10 @@ index 0000000..d685456
 +      if (wz == ANV_CM_CANARY_WG_Z && !anv_cm_canary_ok(nir)) {
 +         fprintf(stderr, "ANV CM: the self-test placeholder reached the driver without its test values: kernel "
 +                 "hashes would not either, so the shim gets no answer and XeSS uses its generic paths\n");
++      } else if (!anv_cm_canary_layout_ok(shader_data->info)) {
++         fprintf(stderr, "ANV CM: the self-test placeholder's pipeline layout has no vkd3d-style descriptor heap "
++                 "(%u sets) - is VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap set? The "
++                 "shim gets no answer and XeSS uses its generic paths\n", shader_data->info->set_layout_count);
 +      } else if (anv_cm_spv_dir(sdir, sizeof(sdir), true)) {
 +         anv_cm_mkdirs(sdir);
 +         snprintf(mark, sizeof(mark), "%s/anv_canary", sdir);
@@ -1815,7 +1846,8 @@ index 0000000..d685456
 +      }
 +      if (!l || h.heap_binding >= l->binding_count || h.nsurf > 24 || h.table_pc_base == ~0u) {
 +         fprintf(stderr, "ANV CM: %s: no vkd3d-style descriptor heap in the pipeline layout (%u sets) - "
-+                 "is VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer set?\n", path, ci->set_layout_count);
++                 "is VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap set?\n", path,
++                 ci->set_layout_count);
 +         *cs = saved;
 +         return ANV_CM_FAILED;
 +      }

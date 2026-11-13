@@ -1,5 +1,6 @@
 // oflow_down.hlsl - the final image at 1/g_div size (box filter) for the optical flow, FFX_XEFG_OFLOW_DIV (ffx_oflow.cpp).
-// The values stay in the swap chain's encoding (sRGB or PQ), which is what the optical flow expects.
+// The values stay in the swap chain's encoding (sRGB, PQ or linear scRGB), which is what the optical flow expects;
+// the target is a float texture so scRGB values above 1 survive.
 Texture2D<float4> g_color : register(t0);
 RWTexture2D<float4> g_small : register(u0);
 cbuffer C : register(b0) { uint2 g_size; uint g_div; uint g_pad; uint2 g_src; };

@@ -80,7 +80,7 @@ Written by `./install.sh` to `~/.config/environment.d/50-xess-xmx.conf` or by `.
 | Variable | Effect |
 |---|---|
 | `VK_DRIVER_FILES` | Puts the package's driver (`run/intel_icd.json`) first as the 64-bit Intel Vulkan driver; every other driver on the system (other GPUs and the 32-bit Intel ICD) stays in the list. |
-| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2` | `VK_EXT_descriptor_buffer` keeps vkd3d-proton on its classic `MUTABLE` descriptor heap, which the kernel binding code needs. `VK_KHR_present_wait2` keeps vkd3d-proton on present wait 1: with present wait 2, Cyberpunk 2077 with frame generation (several presents per frame) crashed within minutes in `vkWaitForPresent2KHR`. |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2` | `VK_EXT_descriptor_buffer` and `VK_EXT_descriptor_heap` (vkd3d-proton 3.1 and newer) keep vkd3d-proton on its classic `MUTABLE` descriptor heap, which the kernel binding code needs. `VK_KHR_present_wait2` keeps vkd3d-proton on present wait 1: with present wait 2, Cyberpunk 2077 with frame generation (several presents per frame) crashed within minutes in `vkWaitForPresent2KHR`. |
 | `force_vk_vendor=0` | Overrides Mesa's `force_vk_vendor=-1` game profiles ([../troubleshooting.md](../troubleshooting.md)); `force_vk_vendor=-1` in one game's launch options restores Mesa's behavior. |
 | `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | The patched driver's kernel folder (`<package>/kernels`) and compiler helper (`<package>/tools/cm-compile.sh`). |
 | `INTC_ALT_DRIVER_EXTENSIONS_PATH` | Points XeSS at the prefix folder containing the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`). Proton Experimental exposes a driver store in the registry and needs no help; Proton 11.0 has none, and without this variable XeSS never loads the shim there (no XMX, frame generation capped at 2x). GE-Proton sets its own value (`C:\Windows\System32`) for every game. |
@@ -144,7 +144,7 @@ Run by Proton through the `user_settings.py` that `./install.sh` places into eve
 | `ANV_CM_HELPER` | Compiler helper script (default `$ANV_CM_KERNEL_DIR/../tools/cm-compile.sh`). |
 | `ANV_CM_SPV_DIR` | Directory where the shim's `.spv` and `.opt` files live (default `$WINEPREFIX/drive_c/igdext_kernels`). |
 | `ANV_CM_COMPILE_JOBS=<n>` | Maximum number of detached background worker threads started on a cache miss to prefetch and compile uncached `.spv` kernels in `ANV_CM_SPV_DIR` (default: `min(online_cpus - 1, 8)`, max `32`; `0` turns background prefetching off). |
-| `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). |
+| `ANV_CM_COMPILE_TIMEOUT=<s>` | Seconds a single `cm-compile.sh` run may take before its process group is killed with `SIGKILL` and marked failed (default `120`, max `86400`; `0` disables the timeout). The layer (`VK_LAYER_XESS_xmx`) applies the same limit. |
 | `ANV_CM_DEBUG=1`, `ANV_CM_TRACE=1\|2` | Driver debug and per-dispatch trace logs to `stderr` ([Section 1](#1-logs)). |
 
 #### Driver Debug Tools (`0002-anv-cm-debug-tools.patch`, included in release drivers)

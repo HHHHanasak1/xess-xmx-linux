@@ -25,3 +25,6 @@ uint32_t xmx_toolchain_gen(void);
 
 /* Appends a line to the compile log (CM_LOG, else ~/.cache/xess-xmx/compile.log), as the driver does. */
 void xmx_compile_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* mkdir -p */
+void xmx_mkdirs(const char *path);

@@ -243,11 +243,13 @@ static BOOL write_once(const char *path, const void *data, size_t n)
 {
    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
       return TRUE;
+   /* XeSS creates the same module from several threads at once: one temporary file per thread, and whoever renames
+    * second finds the file in place */
    char tmp[MAX_PATH];
-   snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, GetCurrentProcessId());
+   snprintf(tmp, sizeof(tmp), "%s.%lu.%lu.tmp", path, GetCurrentProcessId(), GetCurrentThreadId());
    FILE *f = fopen(tmp, "wb");
    if (!f)
-      return FALSE;
+      return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
    const BOOL ok = fwrite(data, 1, n, f) == n;
    fclose(f);
    if (!ok || !MoveFileExA(tmp, path, 0)) {

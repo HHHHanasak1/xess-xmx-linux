@@ -7,7 +7,9 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
 #include <stdarg.h>
@@ -57,8 +59,8 @@ read_file(const char *path, size_t *size)
    return buf;
 }
 
-static void
-mkdirs(const char *path)
+void
+xmx_mkdirs(const char *path)
 {
    char tmp[512];
    snprintf(tmp, sizeof(tmp), "%s", path);
@@ -214,6 +216,51 @@ find_zebin(const char *outdir, char *bin, size_t len)
    return true;
 }
 
+/* Seconds one run of the helper may take, as in the driver: ANV_CM_COMPILE_TIMEOUT, default 120, 0 = no limit. A
+ * helper past it is killed with its process group (the ocloc it started) and counts as a failed compile. */
+static unsigned
+compile_timeout(void)
+{
+   const char *t = getenv("ANV_CM_COMPILE_TIMEOUT");
+   if (!t || !t[0])
+      return 120;
+   char *end;
+   const unsigned long v = strtoul(t, &end, 10);
+   return *end ? 120 : (unsigned)(v < 86400ul ? v : 86400ul);
+}
+
+/* Waits for the helper, which leads its own process group. Its exit code, -1 if a signal ended it, -2 if the deadline
+ * passed (the group is killed then). A helper reaped by someone else (SIGCHLD ignored by the game) counts as exit
+ * code 0: packing then shows whether it worked. */
+static int
+wait_helper(pid_t pid, unsigned timeout_s)
+{
+   struct timespec t0, now;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   for (;;) {
+      int status = 0;
+      const pid_t r = waitpid(pid, &status, timeout_s ? WNOHANG : 0);
+      if (r == pid)
+         return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+      if (r < 0) {
+         if (errno == EINTR)
+            continue;
+         return 0;
+      }
+      if (r != 0)
+         continue;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      if ((now.tv_sec - t0.tv_sec) + (now.tv_nsec - t0.tv_nsec) / 1e9 >= timeout_s) {
+         kill(-pid, SIGKILL);   /* the group of this helper only (posix_spawn made it its leader) */
+         while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+            ;
+         return -2;
+      }
+      const struct timespec nap = { 0, 5 * 1000 * 1000 };
+      nanosleep(&nap, NULL);
+   }
+}
+
 /* runs the helper for <sdir>/<name>.spv and writes the CML1 image to path */
 static bool
 compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, const char *hash, const char *cdir,
@@ -229,7 +276,7 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
       xmx_compile_log("cm-compile FAILED (layer): %s: no compile script (set ANV_CM_HELPER or ANV_CM_KERNEL_DIR)\n", spv);
       return false;
    }
-   mkdirs(cdir);
+   xmx_mkdirs(cdir);
    char outdir[600];
    const char *tmpdir = getenv("TMPDIR");
    snprintf(outdir, sizeof(outdir), "%s/cml.XXXXXX", tmpdir && tmpdir[0] ? tmpdir : "/tmp");
@@ -261,21 +308,38 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
    char *argv[] = { (char *)"/bin/sh", helper, spv, opt, ignored, NULL };
    struct timespec t0, t1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
+   /* as in the driver: the helper leads its own process group (so one past its deadline is killed together with its
+    * ocloc), no signal blocked, SIGCHLD/SIGPIPE at their defaults, stdin /dev/null */
+   posix_spawnattr_t attr;
+   posix_spawn_file_actions_t fa;
+   sigset_t none, dfl;
+   sigemptyset(&none);
+   sigemptyset(&dfl);
+   sigaddset(&dfl, SIGCHLD);
+   sigaddset(&dfl, SIGPIPE);
+   posix_spawnattr_init(&attr);
+   posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+   posix_spawnattr_setpgroup(&attr, 0);
+   posix_spawnattr_setsigmask(&attr, &none);
+   posix_spawnattr_setsigdefault(&attr, &dfl);
+   posix_spawn_file_actions_init(&fa);
+   posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
    pid_t pid;
-   int rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, envp);
+   int rc = posix_spawn(&pid, "/bin/sh", &fa, &attr, argv, envp);
+   posix_spawn_file_actions_destroy(&fa);
+   posix_spawnattr_destroy(&attr);
    free(envp);
-   if (rc == 0) {
-      int status = 0;
-      while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-         ;
-      rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-   }
+   const unsigned timeout_s = compile_timeout();
+   if (rc == 0)
+      rc = wait_helper(pid, timeout_s);
    bool ok = false;
    char err[300] = "", bin[900], infop[700];
    snprintf(infop, sizeof(infop), "%s/info", outdir);
    size_t infon = 0;
    uint8_t *info = read_file(infop, &infon);
-   if (rc != 0) {
+   if (rc == -2) {
+      snprintf(err, sizeof(err), "helper killed after %u s (ANV_CM_COMPILE_TIMEOUT)", timeout_s);
+   } else if (rc != 0) {
       snprintf(err, sizeof(err), "helper exit %d", rc);
    } else if (!info || !strstr((char *)info, "-noLoadPayload")) {
       snprintf(err, sizeof(err), "the compile script does not support CM_NO_LOAD_PAYLOAD (older package?)");

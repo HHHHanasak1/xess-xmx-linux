@@ -225,8 +225,8 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
     o->mv = Tex(dev, w, h, DXGI_FORMAT_R16G16_FLOAT, kOflowOutState, L"oflow_mv");
     o->depth = Tex(dev, w, h, DXGI_FORMAT_R32_FLOAT, kOflowOutState, L"oflow_depth");
     if (o->div > 1)
-        o->lowres = Tex(dev, o->sw, o->sh, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                       L"oflow_small");
+        o->lowres = Tex(dev, o->sw, o->sh, DXGI_FORMAT_R16G16B16A16_FLOAT,   // float: scRGB values above 1 stay
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"oflow_small");
     if (!o->vec || !o->scd || !o->mv || !o->depth || (o->div > 1 && !o->lowres))
         return fail("CreateCommittedResource", 0);
 
@@ -279,7 +279,7 @@ Oflow* OflowCreate(ID3D12Device* dev, uint32_t w, uint32_t h, float depthValue)
     uv.Format = DXGI_FORMAT_R32_FLOAT;
     h0.ptr += o->inc;
     dev->CreateUnorderedAccessView(o->depth, nullptr, &uv, h0);
-    uv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     for (UINT i = 0; o->lowres && i < kRing; ++i) {
         D3D12_CPU_DESCRIPTOR_HANDLE hs = o->heap->GetCPUDescriptorHandleForHeapStart();
         hs.ptr += (SIZE_T)(4 + 3 * i) * o->inc;
@@ -386,7 +386,7 @@ int OflowTakeGpuFrames(Oflow* o, float* ms, int max)
 ID3D12Resource* OflowMotionVectors(Oflow* o) { return o ? o->mv : nullptr; }
 ID3D12Resource* OflowDepth(Oflow* o) { return o ? o->depth : nullptr; }
 
-bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESOURCE_STATES colorState, bool hdr,
+bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESOURCE_STATES colorState, int transfer,
               bool reset)
 {
     if (!o || !color)
@@ -483,7 +483,7 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
     dd.opticalFlowSCD = ffxGetResourceDX12(o->scd, ffxGetResourceDescriptionDX12(o->scd, FFX_RESOURCE_USAGE_UAV),
                                            L"oflow_scd", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
     dd.reset = reset;
-    dd.backbufferTransferFunction = hdr ? FFX_BACKBUFFER_TRANSFER_FUNCTION_PQ : FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
+    dd.backbufferTransferFunction = transfer;   // 1000 nits = 1.0 for PQ and scRGB
     dd.minMaxLuminance = {0.0f, 1000.0f};
     FfxErrorCode e = ffxOpticalflowContextDispatch(&o->ctx, &dd);
 
@@ -536,7 +536,7 @@ bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESO
         o->tPending[tk] = true;
     }
     if (++o->runs <= 3 || o->runs % 600 == 0 || e != FFX_OK)
-        Log("oflow: run #%llu color %p state 0x%x -> dispatch %d", (unsigned long long)o->runs, (void*)color,
-            (unsigned)colorState, (int)e);
+        Log("oflow: run #%llu color %p state 0x%x transfer %d -> dispatch %d", (unsigned long long)o->runs,
+            (void*)color, (unsigned)colorState, transfer, (int)e);
     return e == FFX_OK;
 }

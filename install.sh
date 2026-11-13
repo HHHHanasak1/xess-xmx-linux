@@ -110,7 +110,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     echo "VK_DRIVER_FILES=$drivers"
     echo "# vkd3d-proton: the classic descriptor heap (the kernel binding code needs it) and present wait 1 (with present wait 2,"
     echo "# frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes)"
-    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
+    echo "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2"
     echo "ANV_CM_KERNEL_DIR=$PKG/kernels"
     echo "ANV_CM_HELPER=$PKG/tools/cm-compile.sh"
     echo "# Mesa hides the Intel vendor id from some games (force_vk_vendor=-1 profiles), which keeps XeSS on DP4a there;"
@@ -129,7 +129,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
     fi
   } > "$ENVD/50-xess-xmx.conf"
   systemctl --user set-environment "VK_DRIVER_FILES=$drivers" \
-    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
+    "VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2" "ANV_CM_KERNEL_DIR=$PKG/kernels" \
     "ANV_CM_HELPER=$PKG/tools/cm-compile.sh" "force_vk_vendor=0" "INTC_ALT_DRIVER_EXTENSIONS_PATH=$ALT_EXT" 2>/dev/null
   if [ "$MODE" = stock ]; then
     systemctl --user set-environment "MESA=$STOCKV" "VK_ADD_LAYER_PATH=$PKG/layer" \

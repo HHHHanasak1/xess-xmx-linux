@@ -57,6 +57,10 @@ LIBS = ("libxess.dll", "libxess_dx11.dll", "libxess_fg.dll", "libxell.dll")
 # the prefix folder that holds the shim, as XeSS sees it (install.sh: ALT_EXT)
 ALT_EXT = "C:\\windows\\system32\\driverstore\\filerepository\\igd_faux.inf_1"
 FFX_DLLS = (FG_DLL, UPSCALER_DLL, SINGLE_DLL)
+# vkd3d-proton extensions the package turns off (install.sh's VKD3D_DISABLE_EXTENSIONS): the descriptor buffer and the
+# descriptor heap (vkd3d-proton 3.1+), as the kernel binding code needs vkd3d-proton's classic descriptor heap, and
+# present wait 2 (it crashed frame generation)
+VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_EXT_descriptor_heap", "VK_KHR_present_wait2")
 # one lock file per run that swapped: its links, one path per line; the run holds an exclusive lock on it until it ends
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
 # variables for the game: user_settings.py passes its dict in; Proton applies them unless the launch options set them
@@ -409,7 +413,7 @@ def inject_fg(top, swaps, ours_fg):
         say("FSR_FG=inject: XeSS-FG swap chain through %s" % f)
 
 
-def oflow_fg(swaps):
+def oflow_fg(swaps, game):
     """OFLOW_FG=1: frame generation for any DX12 game, from optical flow on the final image. dxgi.dll and the frame
     generation DLL (as ffx_xefg_bridge.dll) with the SDK's libxess_fg.dll and libxell.dll go next to the executable
     Proton starts (its path is Proton's second argument). Returns True when it is set up."""
@@ -425,7 +429,7 @@ def oflow_fg(swaps):
         say("OFLOW_FG: Proton was not given a game executable (%s); no frame generation" % (exe or "nothing"))
         return False
     top = os.path.dirname(os.path.realpath(exe))
-    game = os.path.realpath(os.environ.get("STEAM_COMPAT_INSTALL_PATH", ""))
+    game = os.path.realpath(game)
     if not game or os.path.commonpath([top, game]) != game:
         say("OFLOW_FG: %s is not in the game folder; no frame generation" % exe)
         return False
@@ -564,6 +568,48 @@ def add_env(key, value, has):
         say("%s is set in the launch options, so it stays as it is; add %s there" % (key, value))
 
 
+def vkd3d_extensions(s):
+    """VKD3D_DISABLE_EXTENSIONS with VKD3D_OFF in it, while the package's driver or layer is on: a value of the user's
+    own (launch options), or install.sh's of an older version, keeps its entries and gets the missing ones added"""
+    env = s.env if s else os.environ
+    if not env.get("ANV_CM_KERNEL_DIR") and "VK_LAYER_XESS_xmx" not in env.get("VK_LOADER_LAYERS_ENABLE", ""):
+        return   # not installed, or session-check.sh switched to the stock drivers for this session
+    cur = env.get("VKD3D_DISABLE_EXTENSIONS", "")
+    have = [e.strip() for e in cur.replace(";", ",").split(",") if e.strip()]
+    missing = [e for e in VKD3D_OFF if e not in have]
+    if not missing:
+        return
+    if s:
+        s.env["VKD3D_DISABLE_EXTENSIONS"] = ",".join(have + missing)
+        if cur:
+            say("VKD3D_DISABLE_EXTENSIONS=%s: %s added (XeSS' XMX kernels need them)" % (cur, ",".join(missing)))
+    elif cur:
+        say("VKD3D_DISABLE_EXTENSIONS=%s lacks %s: XeSS falls back to DP4a; add them" % (cur, ",".join(missing)))
+    else:
+        SETTINGS["VKD3D_DISABLE_EXTENSIONS"] = ",".join(missing)
+
+
+def game_folder():
+    """the game's folder: Steam's STEAM_COMPAT_INSTALL_PATH, else (a non-Steam shortcut) the folder of the executable
+    Proton starts, unless that is too wide to walk and swap in: /, the home folder or one above it, Wine's windows
+    folder. "" when there is none"""
+    game = os.environ.get("STEAM_COMPAT_INSTALL_PATH", "")
+    if game:
+        return game
+    exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    if sys.argv[1] != "waitforexitandrun" or not exe.lower().endswith(".exe") or not os.path.isfile(exe):
+        return ""
+    top = os.path.dirname(os.path.realpath(exe))
+    home = os.path.realpath(os.path.expanduser("~"))
+    pfx = os.environ.get("STEAM_COMPAT_DATA_PATH", "")
+    win = os.path.realpath(os.path.join(pfx, "pfx", "drive_c", "windows")) if pfx else ""
+    if top == os.sep or os.path.commonpath([top, home]) == top or (win and os.path.commonpath([top, win]) == win):
+        say("XESS / FSR: no Steam game folder, and %s (the executable's) is too wide to use as one" % top)
+        return ""
+    say("XESS / FSR: no Steam game folder (a non-Steam game?): %s, the executable's folder, is used" % top)
+    return top
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in ("waitforexitandrun", "run"):
         return
@@ -571,13 +617,11 @@ def main():
     fg = os.environ.get("FSR_FG", "")
     sr = os.environ.get("FSR", "")
     oflow = os.environ.get("OFLOW_FG", "") not in ("", "0")
-    game = os.environ.get("STEAM_COMPAT_INSTALL_PATH", "")
     clean_left_over()
-    # a session started before install.sh disabled present wait 2 as well (frame generation crashed in
-    # vkWaitForPresent2KHR) still has the old value until the next login
+    # a session started before install.sh added an extension still has the old value until the next login, and a
+    # VKD3D_DISABLE_EXTENSIONS in the launch options replaces the session's
     s = proton_session()
-    if s and s.env.get("VKD3D_DISABLE_EXTENSIONS") == "VK_EXT_descriptor_buffer":
-        s.env["VKD3D_DISABLE_EXTENSIONS"] = "VK_EXT_descriptor_buffer,VK_KHR_present_wait2"
+    vkd3d_extensions(s)
     # SteamOS Game Mode hands the session's environment to Steam through a systemd EnvironmentFile
     # ($XDG_RUNTIME_DIR/gamescope-environment, written with `env`), which drops the backslashes of an unquoted value:
     # install.sh's path then arrives as C:windowssystem32... and XeSS never finds the shim under Proton 11.0
@@ -605,8 +649,10 @@ def main():
         oflow = False
     if want != "latest" and fg != "xess" and not sr and not oflow:
         return
+    game = game_folder()
     if not game or not os.path.isdir(game):
-        say("XESS / FSR: Steam gave no game folder (STEAM_COMPAT_INSTALL_PATH); the game's own libraries are used")
+        say("XESS / FSR: no game folder (STEAM_COMPAT_INSTALL_PATH, or the executable's for a non-Steam game); the "
+            "game's own libraries are used")
         return
     swaps = Swaps()
     # before the first swap: if one of them fails, the top level catches it and the game still starts, and what was
@@ -648,7 +694,7 @@ def main():
             say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
                 % (STORE, PKG))
     if oflow:
-        oflow_fg(swaps)
+        oflow_fg(swaps, game)
     if fsr(game, swaps, fg == "xess", sr, inject, found) and os.environ.get("FSR_VENDOR", "") == "amd":
         # debug, for a game that offers FSR only on AMD GPUs; XeSS still gets Intel's vendor id from the package's DLLs
         add_env("DXVK_CONFIG", "dxgi.customVendorId = 1002", "customVendorId")

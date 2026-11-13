@@ -104,6 +104,22 @@ static void Log(const char* fmt, ...)
     fflush(g_log);
 }
 
+// A patched vtable (vkd3d's queue, DXVK's adapter) jumps into this module from then on: it must never be unmapped
+// (games load, free and load the FidelityFX DLLs again). Pins once; false (logged once) = do not patch.
+static bool PinSelf()
+{
+    static std::atomic<int> pinned{0};   // 1 pinned, -1 failed
+    if (pinned.load() == 0) {
+        HMODULE m = nullptr;
+        bool ok = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                     (LPCWSTR)&PinSelf, &m) && m;
+        int expect = 0;
+        if (pinned.compare_exchange_strong(expect, ok ? 1 : -1) && !ok)
+            Log("could not pin this DLL (%lu): the vendor id and queue hooks stay off", GetLastError());
+    }
+    return pinned.load() > 0;
+}
+
 static int EnvInt(const char* name, int def)
 {
     char buf[32];
@@ -253,6 +269,11 @@ static void IntelVendorForXess(ID3D12Device* dev)
     if (SUCCEEDED(f->EnumAdapterByLuid(dev->GetAdapterLuid(), IID_PPV_ARGS(&a))) && SUCCEEDED(a->GetDesc1(&d)) &&
         d.VendorId != 0x8086 && wcsncmp(d.Description, L"Intel", 5) == 0) {
         done = true;
+        if (!PinSelf()) {
+            a->Release();
+            f->Release();
+            return;
+        }
         static void* const hooks[4] = {(void*)HookGetDesc<0>, (void*)HookGetDesc<1>, (void*)HookGetDesc<2>,
                                        (void*)HookGetDesc<3>};
         IDXGIAdapter4* a4 = nullptr;
@@ -576,6 +597,7 @@ struct ScState {
     Oflow* oflow = nullptr;             // FFX_XEFG_OFLOW
     uint64_t oflowLastQpc = 0;          // FFX_XEFG_OFLOW with FSR_FG=inject: the last present, for the frame time
     uint64_t oflowTags = 0;
+    std::atomic<int> colorSpace{-1};    // the last successful SetColorSpace1, -1 = none (FFX_XEFG_OFLOW's encoding)
     // FFX_XEFG_TIMES=1: frame times at the present, reported every 300 frames
     uint64_t tStart = 0, tLastEnd = 0;
     std::vector<float> tFrame, tPresent, tSleep;
@@ -590,6 +612,7 @@ struct ScState {
     uint32_t capUs = 0;       // per real frame, 0 = none
     uint64_t capLastEnd = 0;
     int capCalm = 0;          // windows in a row that would allow a shorter interval
+    int capRoom = 0;          // windows in a row with the GPU well below capFloor and XeLL sleeping
     uint32_t width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     uint32_t maxInterpolations = 1;
@@ -1044,7 +1067,7 @@ static bool HookEclVt(ID3D12CommandQueue* queue)
     if (!g_origEcl) {
         void** vt = *(void***)queue;
         DWORD old;
-        if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
+        if (!PinSelf() || !VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
             return false;
         g_origEcl = (PFN_ExecuteCommandLists)vt[10];
         vt[10] = (void*)HookEcl;
@@ -1083,6 +1106,24 @@ static void TimesReport(ScState* st)
     st->tFrame.clear(), st->tPresent.clear(), st->tSleep.clear();
 }
 
+// How the back buffer is encoded, for the optical flow (FFX_BACKBUFFER_TRANSFER_FUNCTION_*): the colour space the game
+// set, else DXGI's default for the format (FP16 = linear scRGB, everything else = sRGB).
+static int OflowTransfer(ScState* st, ID3D12Resource* bb)
+{
+    switch (st->colorSpace.load()) {
+    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        return 1;   // PQ (HDR10)
+    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+        return 2;   // scRGB
+    case -1:
+        break;
+    default:
+        return 0;
+    }
+    DXGI_FORMAT f = bb->GetDesc().Format;
+    return f == DXGI_FORMAT_R16G16B16A16_FLOAT || f == DXGI_FORMAT_R16G16B16A16_TYPELESS ? 2 : 0;
+}
+
 static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
@@ -1119,7 +1160,7 @@ static uint32_t BeforePresent(ScState* st)
         ID3D12Resource* bb = nullptr;
         if (SUCCEEDED(st->proxy->GetBuffer(bi, IID_PPV_ARGS(&bb)))) {
             t_ownSubmit = true;
-            OflowRun(st->oflow, st->queue, bb, D3D12_RESOURCE_STATE_PRESENT, false, false);
+            OflowRun(st->oflow, st->queue, bb, D3D12_RESOURCE_STATE_PRESENT, OflowTransfer(st, bb), false);
             t_ownSubmit = false;
             bb->Release();
         }
@@ -1148,7 +1189,8 @@ static uint32_t BeforePresent(ScState* st)
 // slept while frames took longer than the interval, the GPU could not keep up: the interval becomes that frame time.
 // Longer at once; shorter after 2 windows in a row, 2 % a step at most and not below the last GPU-bound interval, which
 // is forgotten at 0.1 % a window (back up to it + 1 %); at least one frame of the display per frame shown.
-// The GPU's actual frequency from the xe driver (MHz, 0 while idle), read through Wine's Z: drive. A capped frame
+// The GPU's actual frequency (MHz, 0 while idle) from the xe driver, or from i915 (its per-GT file, else the older
+// one on the card), read through Wine's Z: drive. A capped frame
 // lets the GPU idle, its governor lowers the clock and the same work takes longer: without this the cap would chase its
 // own tail down (2026-11-06 RE4: 49 -> 35 fps).
 static int GpuFreqMhz()
@@ -1157,15 +1199,22 @@ static int GpuFreqMhz()
     static bool tried = false;
     if (!tried) {
         tried = true;
-        for (int c = 0; c < 4 && h == INVALID_HANDLE_VALUE; ++c) {
-            char path[128];
-            snprintf(path, sizeof path, "Z:\\sys\\class\\drm\\card%d\\device\\tile0\\gt0\\freq0\\act_freq", c);
-            h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (h != INVALID_HANDLE_VALUE)
-                Log("cap auto: GPU frequency from %s", path);
-        }
+        static const char* const kFiles[] = {
+            "device\\tile0\\gt0\\freq0\\act_freq",   // xe
+            "gt\\gt0\\rps_act_freq_mhz",             // i915
+            "gt_act_freq_mhz",                       // i915, also on kernels before the per-GT files
+        };
+        for (int c = 0; c < 4 && h == INVALID_HANDLE_VALUE; ++c)
+            for (int k = 0; k < 3 && h == INVALID_HANDLE_VALUE; ++k) {
+                char path[128];
+                snprintf(path, sizeof path, "Z:\\sys\\class\\drm\\card%d\\%s", c, kFiles[k]);
+                h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0,
+                                nullptr);
+                if (h != INVALID_HANDLE_VALUE)
+                    Log("cap auto: GPU frequency from %s", path);
+            }
         if (h == INVALID_HANDLE_VALUE)
-            Log("cap auto: no GPU frequency (xe sysfs not readable), GPU times taken as they are");
+            Log("cap auto: no GPU frequency (xe/i915 sysfs not readable), GPU times taken as they are");
     }
     if (h == INVALID_HANDLE_VALUE)
         return -1;
@@ -1285,6 +1334,16 @@ static void CapAdjust(ScState* st)
         Log("cap auto: outside limiter at %.2f ms (in Present %.2f, GPU %.2f), cap off -> %d", frameMed, presentMed,
             needMs, (int)ro);
         return;
+    }
+    // The floor keeps the interval from swinging straight back into a GPU-bound stretch, and is forgotten slowly
+    // (0.999 a window, about 6 % a minute). Once XeLL has slept a quarter of the frame for 4 windows in a row while the
+    // GPU needs 10 % less than the floor (a lighter scene, the clock back up), it gives way 10 % a window: in Resident Evil
+    // 4 a heavy stretch at 1700 MHz left it at 30.8 ms for minutes while the GPU needed 21 ms (XeLL sleeping 22 ms).
+    if (st->capFloor > 0 && sleepMed > 0.25f * frameMed && (float)want < 0.9f * st->capFloor) {
+        if (++st->capRoom >= 4)
+            st->capFloor *= 0.9f;
+    } else {
+        st->capRoom = 0;
     }
     st->capFloor *= 0.999f;
     if (want < (uint32_t)st->capFloor)
@@ -2252,7 +2311,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
     HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override
     {
         PollForget();
-        return sc->SetColorSpace1(c);
+        const HRESULT hr = sc->SetColorSpace1(c);
+        if (SUCCEEDED(hr) && st->colorSpace.exchange((int)c) != (int)c)
+            Log("SetColorSpace1 %d", (int)c);   // FFX_XEFG_OFLOW reads the back buffer in this encoding
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
                                              IUnknown* const* queues) override
