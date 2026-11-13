@@ -1,6 +1,6 @@
 // LdrNotify.h - ntdll's LdrRegisterDllNotification: the loader calls a function for every DLL as it is mapped, before
 // the game can call into it. Not in the SDK headers; the structures are documented in the Windows SDK (ntddk) and
-// implemented by Wine. Used by XellDriver.cpp (the XeLL probe) and XellHook.cpp (the hook threads).
+// implemented by Wine. Used by XellDriver.cpp (the XeLL probe) and HookUtil.cpp (the hook threads' wait).
 #pragma once
 #include <windows.h>
 #include <winternl.h>   // UNICODE_STRING
