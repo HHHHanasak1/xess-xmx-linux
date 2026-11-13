@@ -21,7 +21,7 @@
 #pragma comment(linker, "/export:DXGIGetDebugInterface1=P_DXGIGetDebugInterface1")
 #pragma comment(linker, "/export:DXGIDeclareAdapterRemovalSupport=P_DXGIDeclareAdapterRemovalSupport")
 
-static HMODULE g_self, g_real;
+static HMODULE g_real;
 static FILE* g_log;
 static char g_dir[MAX_PATH];
 
@@ -198,7 +198,6 @@ extern "C" HRESULT WINAPI P_DXGIDeclareAdapterRemovalSupport()
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
-        g_self = inst;
         DisableThreadLibraryCalls(inst);
         GetModuleFileNameA(inst, g_dir, MAX_PATH);
         if (char* slash = strrchr(g_dir, '\\'))

@@ -42,7 +42,7 @@ static const char *const fwd_names[] = {
 #undef X
 };
 
-static HMODULE self, sys_vk;
+static HMODULE sys_vk;
 static PFN_gipa sys_gipa;
 static PFN_gdpa sys_gdpa;
 static FILE *g_log;
@@ -717,7 +717,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
    if (reason != DLL_PROCESS_ATTACH)
       return TRUE;
-   self = inst;
    DisableThreadLibraryCalls(inst);
    InitializeCriticalSection(&log_cs);
    InitializeCriticalSection(&heap_cs);
