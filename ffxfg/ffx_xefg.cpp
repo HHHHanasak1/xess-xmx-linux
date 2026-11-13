@@ -104,6 +104,22 @@ static void Log(const char* fmt, ...)
     fflush(g_log);
 }
 
+// A patched vtable (vkd3d's queue, DXVK's adapter) jumps into this module from then on: it must never be unmapped
+// (games load, free and load the FidelityFX DLLs again). Pins once; false (logged once) = do not patch.
+static bool PinSelf()
+{
+    static std::atomic<int> pinned{0};   // 1 pinned, -1 failed
+    if (pinned.load() == 0) {
+        HMODULE m = nullptr;
+        bool ok = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                     (LPCWSTR)&PinSelf, &m) && m;
+        int expect = 0;
+        if (pinned.compare_exchange_strong(expect, ok ? 1 : -1) && !ok)
+            Log("could not pin this DLL (%lu): the vendor id and queue hooks stay off", GetLastError());
+    }
+    return pinned.load() > 0;
+}
+
 static int EnvInt(const char* name, int def)
 {
     char buf[32];
@@ -253,6 +269,11 @@ static void IntelVendorForXess(ID3D12Device* dev)
     if (SUCCEEDED(f->EnumAdapterByLuid(dev->GetAdapterLuid(), IID_PPV_ARGS(&a))) && SUCCEEDED(a->GetDesc1(&d)) &&
         d.VendorId != 0x8086 && wcsncmp(d.Description, L"Intel", 5) == 0) {
         done = true;
+        if (!PinSelf()) {
+            a->Release();
+            f->Release();
+            return;
+        }
         static void* const hooks[4] = {(void*)HookGetDesc<0>, (void*)HookGetDesc<1>, (void*)HookGetDesc<2>,
                                        (void*)HookGetDesc<3>};
         IDXGIAdapter4* a4 = nullptr;
@@ -1045,7 +1066,7 @@ static bool HookEclVt(ID3D12CommandQueue* queue)
     if (!g_origEcl) {
         void** vt = *(void***)queue;
         DWORD old;
-        if (!VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
+        if (!PinSelf() || !VirtualProtect(&vt[10], sizeof(void*), PAGE_READWRITE, &old))   // a vtable is data
             return false;
         g_origEcl = (PFN_ExecuteCommandLists)vt[10];
         vt[10] = (void*)HookEcl;
