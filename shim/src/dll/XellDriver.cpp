@@ -33,12 +33,12 @@
 // here is active and every function answers "not supported", as before.
 #include "Stdafx.h"
 #include "Trace.h"
+#include "LdrNotify.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <intrin.h>
-#include <winternl.h>
 
 namespace
 {
@@ -175,17 +175,10 @@ void HideWineFrom(HMODULE libxell)
     else TraceF("XELLPROBE libxell.dll %p: GetProcAddress import not found, cannot hide wine_get_version", libxell);
 }
 
-// LdrRegisterDllNotification: called by the loader for every DLL as it is mapped, before the game can call into it.
-// Not in the SDK headers; the structures are documented in the Windows SDK (ntddk) and implemented by Wine.
-struct LDR_DLL_LOADED_NOTIFICATION_DATA_ { ULONG Flags; const UNICODE_STRING* FullDllName; const UNICODE_STRING* BaseDllName; PVOID DllBase; ULONG SizeOfImage; };
-typedef VOID (CALLBACK* PFN_LdrDllNotification)(ULONG reason, const LDR_DLL_LOADED_NOTIFICATION_DATA_* data, PVOID ctx);
-typedef NTSTATUS (NTAPI* PFN_LdrRegisterDllNotification)(ULONG flags, PFN_LdrDllNotification fn, PVOID ctx, PVOID* cookie);
-
-VOID CALLBACK OnDllLoaded(ULONG reason, const LDR_DLL_LOADED_NOTIFICATION_DATA_* data, PVOID)
+// the loader's notification (LdrNotify.h): libxell.dll is hooked as it is mapped
+VOID CALLBACK OnDllLoaded(ULONG reason, const LdrDllNotificationData* data, PVOID)
 {
-    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !data || !data->BaseDllName || !data->BaseDllName->Buffer) return;
-    if (_wcsnicmp(data->BaseDllName->Buffer, L"libxell.dll", data->BaseDllName->Length / sizeof(wchar_t)) == 0 &&
-        data->BaseDllName->Length == sizeof(L"libxell.dll") - sizeof(wchar_t))
+    if (reason == kLdrDllLoaded && data && LdrDllNameIs(data->BaseDllName, L"libxell.dll"))
         HideWineFrom((HMODULE)data->DllBase);
 }
 }

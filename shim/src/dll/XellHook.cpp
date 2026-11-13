@@ -24,13 +24,13 @@
 // xellSleep of such a context gets no AutoPaceWait.
 #include "Stdafx.h"
 #include "Trace.h"
+#include "LdrNotify.h"
 #include "../../../common/lowlat_check.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
-#include <winternl.h>   // UNICODE_STRING for the loader notification
 
 #pragma pack(push, 1)
 struct XellSleepParams { uint32_t minimumIntervalUs; uint32_t flags; }; // flags bit0 = bLowLatencyMode, bit1 = bLowLatencyBoost
@@ -746,19 +746,13 @@ static bool PatchThunk(void* thunk, void* hook, void** orig, const char* name)
 }
 
 // The threads below wait for a library the game loads later. The loader tells them when it is mapped
-// (LdrRegisterDllNotification, as XellDriver.cpp's probe uses it; not in the SDK headers, documented in the Windows SDK
-// and implemented by Wine): the callback runs under the loader lock and does nothing but signal the thread's event. The
-// install code (PatchThunk pins this module, XefgInstallHooks calls FreeLibrary) runs on the thread, never in the
-// callback. One registration serves both threads; the last one done removes it before its module reference goes, so the
-// callback is never called into an unmapped module. Without the notification (registration refused) the threads poll as
-// they used to.
+// (LdrRegisterDllNotification, LdrNotify.h): the callback runs under the loader lock and does nothing but signal the
+// thread's event. The install code (PatchThunk pins this module, XefgInstallHooks calls FreeLibrary) runs on the
+// thread, never in the callback. One registration serves both threads; the last one done removes it before its module
+// reference goes, so the callback is never called into an unmapped module. Without the notification (registration
+// refused) the threads poll as they used to.
 namespace
 {
-struct LdrDllNotificationData_ { ULONG Flags; const UNICODE_STRING* FullDllName; const UNICODE_STRING* BaseDllName; PVOID DllBase; ULONG SizeOfImage; };
-typedef VOID (CALLBACK* PFN_LdrDllNotification)(ULONG reason, const LdrDllNotificationData_* data, PVOID ctx);
-typedef NTSTATUS (NTAPI* PFN_LdrRegisterDllNotification)(ULONG flags, PFN_LdrDllNotification fn, PVOID ctx, PVOID* cookie);
-typedef NTSTATUS (NTAPI* PFN_LdrUnregisterDllNotification)(PVOID cookie);
-
 enum { WATCH_XELL = 0, WATCH_XEFG = 1, WATCH_COUNT = 2 };
 const wchar_t* const kWatchedDll[WATCH_COUNT] = { L"libxell.dll", L"libxess_fg.dll" };
 const DWORD kWatchTotalMs = 600000;   // 10 minutes, as the polling loops before (6000 x 100 ms, 60000 x 10 ms)
@@ -768,17 +762,11 @@ PVOID g_watchCookie = nullptr;
 int g_watchUsers = 0;
 PFN_LdrUnregisterDllNotification g_ldrUnregister = nullptr;
 
-bool DllNameIs(const UNICODE_STRING* s, const wchar_t* name)
+VOID CALLBACK OnWatchedDllLoaded(ULONG reason, const LdrDllNotificationData* data, PVOID)
 {
-    const size_t n = wcslen(name);
-    return s && s->Buffer && s->Length == n * sizeof(wchar_t) && _wcsnicmp(s->Buffer, name, n) == 0;
-}
-
-VOID CALLBACK OnWatchedDllLoaded(ULONG reason, const LdrDllNotificationData_* data, PVOID)
-{
-    if (reason != 1 /* LDR_DLL_NOTIFICATION_REASON_LOADED */ || !data) return;
+    if (reason != kLdrDllLoaded || !data) return;
     for (int i = 0; i < WATCH_COUNT; ++i)
-        if (DllNameIs(data->BaseDllName, kWatchedDll[i])) SetEvent(g_watchEvent[i]);
+        if (LdrDllNameIs(data->BaseDllName, kWatchedDll[i])) SetEvent(g_watchEvent[i]);
 }
 
 // the event the loader signals when the library is mapped; nullptr when there is no notification (the caller polls).
