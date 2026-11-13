@@ -27,14 +27,13 @@
 # The variables behind them go into Proton's user_settings, which never override one the launch options set themselves.
 # XESS=latest: while the game runs, each libxess.dll / libxess_fg.dll / libxell.dll in the game folder that is older
 # than the SDK's is renamed to <name>.xmx-orig and replaced by a link to the SDK's file; each libxess_dx11.dll by a link
-# to the package's (dx11bridge/, XeSS for D3D11 on D3D12). Every link points to a copy made for the run
-# (<lock file>.d/, removed with it), not into the package: Wuthering Waves' launcher 3.0 deleted package files through
-# the links, with the SDK's libxess.dll added next to it if the game has
-# none there. When Proton exits (the
-# game ended, or Steam stopped it) the originals are put back. A run that was killed outright leaves the links; the
-# next game start (with or without XESS) or uninstall.sh puts the originals back. Steam starts Proton more than once for
-# some games (a launcher, install scripts), so each run that swaps holds a lock file listing its links for as long as
-# it lives: links whose lock nobody holds any more are left over; links of a live run are not touched.
+# to the package's (dx11bridge/, XeSS for D3D11 on D3D12), with the SDK's libxess.dll added next to it if the game has
+# none there. Every link points to a copy made for the run (<lock file>.d/, removed with it), not into the package:
+# Wuthering Waves' launcher 3.0 deleted package files through the links. When Proton exits (the game ended, or Steam
+# stopped it) the originals are put back. A run that was killed outright leaves the links; the next game start (with or
+# without XESS) or uninstall.sh puts the originals back. Steam starts Proton more than once for some games (a launcher,
+# install scripts), so each run that swaps holds a lock file listing its links for as long as it lives: links whose
+# lock nobody holds any more are left over; links of a live run are not touched.
 # FSR / FSR_FG swap the same way; a file the game does not have (libxess_fg.dll, libxell.dll, the upscaler and frame
 # generation DLLs next to the loader) is added as a link (no .xmx-orig) and removed again.
 import atexit, fcntl, os, shutil, signal, sys
@@ -71,6 +70,15 @@ def say(msg):
     sys.stderr.write("xess-xmx: %s\n" % msg)
 
 
+def u16(b, o):
+    """little-endian fields of a PE image"""
+    return int.from_bytes(b[o:o + 2], "little")
+
+
+def u32(b, o):
+    return int.from_bytes(b[o:o + 4], "little")
+
+
 _versions = {}   # path -> version: the SDK's DLLs (libxess.dll is big) are asked once per run, not once per game file
 
 
@@ -79,8 +87,6 @@ def version(path):
     if path in _versions:
         return _versions[path]
     sig = b"\xbd\x04\xef\xfe"
-    u16 = lambda b, o: int.from_bytes(b[o:o + 2], "little")
-    u32 = lambda b, o: int.from_bytes(b[o:o + 4], "little")
 
     def resources(f):
         """the resource section's bytes (VS_FIXEDFILEINFO lives there; libxess.dll is tens of MB, its resources a few
@@ -303,8 +309,6 @@ def xess_dx11(game, f, swaps):
 
 def pe_imports(path):
     """the DLL names (lower case) a PE file imports, empty if it cannot be read"""
-    u16 = lambda b, o: int.from_bytes(b[o:o + 2], "little")
-    u32 = lambda b, o: int.from_bytes(b[o:o + 4], "little")
     try:
         with open(path, "rb") as f:
             d = f.read(64 << 20)   # the import directory is near the start; executables of any size are read in part

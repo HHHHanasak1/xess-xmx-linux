@@ -24,7 +24,8 @@ files += ["tools/" + t for t in tools]
 for dp, dn, fn in os.walk(os.path.join(root, "patches")):
     dn.sort()
     files += [os.path.relpath(os.path.join(dp, p), root).replace(os.sep, "/") for p in sorted(fn) if p.endswith(".patch")]
-# one driver per Mesa version in lib/mesa-<version>/, the active one copied to lib/libvulkan_intel.so (tools/switch-driver.sh)
+# one driver per Mesa version in lib/mesa-<version>/; lib/active names the default (tools/switch-driver.sh), and
+# lib/libvulkan_intel.so, the forwarding ICD (icd/xmx-icd.c), loads it
 libdir = os.path.join(root, "lib")
 drivers = ["lib/%s/libvulkan_intel.so" % d for d in sorted(os.listdir(libdir))
            if d.startswith("mesa-") and os.path.isfile(os.path.join(libdir, d, "libvulkan_intel.so"))]
