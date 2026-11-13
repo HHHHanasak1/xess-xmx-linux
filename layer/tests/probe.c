@@ -19,6 +19,7 @@
 #include "../src/anvbin.h"
 #include "../src/cmk.h"
 #include "../src/compile.h"
+#include "../src/gens.h"
 #include "../src/layouts.h"
 #include "../src/placeholder.h"
 #include "../src/prologue.h"
@@ -33,6 +34,7 @@ static PFN_vkGetInstanceProcAddr gipa;
 static VkInstance inst;
 static VkPhysicalDevice pd;
 static VkDevice dev;
+static uint32_t dev_id;   /* PCI device id: the generation (gens.h) decides the GRF cap and the prologue */
 #define FN(n) static PFN_##n n
 FN(vkCreateInstance); FN(vkEnumeratePhysicalDevices); FN(vkGetPhysicalDeviceProperties2); FN(vkGetDeviceProcAddr);
 FN(vkCreateDevice); FN(vkGetPhysicalDeviceFeatures2); FN(vkCreateDescriptorSetLayout); FN(vkCreatePipelineLayout);
@@ -83,6 +85,7 @@ init(void)
    vkGetPhysicalDeviceProperties2(pd, &p2);
    printf("device %s (0x%04x), driver %s %s\n", p2.properties.deviceName, p2.properties.deviceID, drv.driverName,
           drv.driverInfo);
+   dev_id = p2.properties.deviceID;
    LT = anv_layout_for(drv.driverInfo);
    printf("layout table: %s\n", LT ? LT->version : "none");
    VkPhysicalDevicePipelineBinaryFeaturesKHR pbf = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR };
@@ -426,7 +429,16 @@ main(int argc, char **argv)
    fails += r != 0;
 
    /* 3. kernels */
-   const struct xmx_dev_info di = { 0xb080, 64 };
+   /* the compile of the device's generation (gens.h); a GPU the layer does not serve compiles as the Xe3 B390 */
+   const struct xmx_gen *gen = xmx_gen_of(dev_id);
+   struct xmx_dev_info di = { gen ? dev_id : 0xb080, 64, 0, "xe3" };
+   if (!gen)
+      gen = xmx_gen_of(0xb080);
+   di.gen = gen->name;
+   di.max_grf = gen->max_grf;
+   if (getenv("XMX_LAYER_FORCE_GRF") && !strcmp(getenv("XMX_LAYER_FORCE_GRF"), "128"))
+      di.max_grf = 128;
+   printf("3. kernels for %s (0x%04x), %u GRF cap\n", gen->name, di.pci_id, di.max_grf);
    for (int i = 3; i < argc; i++) {
       const int id = atoi(argv[i]);
       char hash[17], name[32];
@@ -438,7 +450,7 @@ main(int argc, char **argv)
       struct xmx_cml k;
       xmx_cml_parse(img, in, &k);
       size_t cn;
-      uint8_t *code = xmx_full_code(&k, &cn);
+      uint8_t *code = xmx_full_code(&k, gen->isa, &cn);
       const bool smp = (xmx_rd32(k.hdr + XMX_H_BARRIERS) & 0x80000000u) != 0;
       struct anvbin_kernel kc = { &k, code, (uint32_t)cn, LAYER_SET, SAMPLER_BINDING, smp, 64 };
       struct anvbin kb;
@@ -451,8 +463,9 @@ main(int argc, char **argv)
       uint8_t *bd = anvbin_write(&kb, &bn);
       uint8_t *ed = so_export(VK_SHADER_CODE_TYPE_BINARY_EXT, bd, bn, &en, &r);
       const bool so_same = ed && en == bn && !memcmp(ed, bd, bn);
-      printf("3. dyn_%d (%s): code %zu B (prologue %zu), surfaces %u, sampler %u, group_count %s; shader object %d, "
-             "re-export %s", id, hash, cn, cn - k.code_size, xmx_rd32(k.hdr + XMX_H_NSURF), smp,
+      printf("3. dyn_%d (%s): code %zu B (prologue %zu), %u GRF, surfaces %u, sampler %u, group_count %s; shader "
+             "object %d, re-export %s", id, hash, cn, cn - k.code_size, xmx_rd32(k.hdr + XMX_H_GRF),
+             xmx_rd32(k.hdr + XMX_H_NSURF), smp,
              k.gc_off == XMX_NO_GC ? "no" : "yes", r, so_same ? "identical" : "DIFFERS");
       fails += r != 0 || !so_same;
       free(ed);

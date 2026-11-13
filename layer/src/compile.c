@@ -174,7 +174,14 @@ xmx_cache_path(const struct xmx_dev_info *dev, const char *hash, char *dir, size
       snprintf(dir, dirlen, "%s/xess-xmx/kernels", xdg);
    else
       snprintf(dir, dirlen, "%s/.cache/xess-xmx/kernels", getenv("HOME") ? getenv("HOME") : "/tmp");
-   snprintf(path, pathlen, "%s/%s_%04x_%08x.cml", dir, hash, dev->pci_id, xmx_toolchain_gen());
+   /* the GRF cap goes into the toolchain value as well as into the name */
+   uint32_t tc = xmx_toolchain_gen();
+   for (unsigned i = 0; i < 4; i++)
+      tc = (tc ^ (uint8_t)(dev->max_grf >> (8 * i))) * 16777619u;
+   char grf[16] = "";
+   if (dev->max_grf)
+      snprintf(grf, sizeof(grf), "-g%u", dev->max_grf);
+   snprintf(path, pathlen, "%s/%s_%04x_%s%s_%08x.cml", dir, hash, dev->pci_id, dev->gen ? dev->gen : "any", grf, tc);
 }
 
 static void
@@ -282,16 +289,17 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
    snprintf(outdir, sizeof(outdir), "%s/cml.XXXXXX", tmpdir && tmpdir[0] ? tmpdir : "/tmp");
    if (!mkdtemp(outdir))
       return false;
-   char pci[32], grf[32], out[640], ignored[700];
+   char pci[32], grf[32], maxgrf[32], out[640], ignored[700];
    snprintf(pci, sizeof(pci), "CM_PCI_ID=0x%04x", dev->pci_id);
    snprintf(grf, sizeof(grf), "CM_GRF_BYTES=%u", dev->grf_bytes);
+   snprintf(maxgrf, sizeof(maxgrf), "CM_MAX_GRF=%u", dev->max_grf);
    snprintf(out, sizeof(out), "CM_OUT_DIR=%s", outdir);
    snprintf(ignored, sizeof(ignored), "%s/helper-out.cmk", outdir);   /* never read: see the file comment */
    extern char **environ;
    unsigned nenv = 0;
    while (environ[nenv])
       nenv++;
-   char **envp = calloc(nenv + 5, sizeof(char *));
+   char **envp = calloc(nenv + 6, sizeof(char *));
    if (!envp) {
       rm_dir(outdir);
       return false;
@@ -299,12 +307,15 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
    unsigned ne = 0;
    for (unsigned e = 0; e < nenv; e++)
       if (strncmp(environ[e], "CM_PCI_ID=", 10) && strncmp(environ[e], "CM_GRF_BYTES=", 13) &&
-          strncmp(environ[e], "CM_OUT_DIR=", 11) && strncmp(environ[e], "CM_NO_LOAD_PAYLOAD=", 19))
+          strncmp(environ[e], "CM_OUT_DIR=", 11) && strncmp(environ[e], "CM_NO_LOAD_PAYLOAD=", 19) &&
+          strncmp(environ[e], "CM_MAX_GRF=", 11))
          envp[ne++] = environ[e];
    envp[ne++] = pci;
    envp[ne++] = grf;
    envp[ne++] = out;
    envp[ne++] = (char *)"CM_NO_LOAD_PAYLOAD=1";
+   if (dev->max_grf)
+      envp[ne++] = maxgrf;   /* Xe2: the script drops the kernel's 256-GRF options */
    char *argv[] = { (char *)"/bin/sh", helper, spv, opt, ignored, NULL };
    struct timespec t0, t1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -354,6 +365,13 @@ compile_one(const struct xmx_dev_info *dev, const char *sdir, const char *name, 
          size_t cn, mn;
          uint32_t gc;
          uint8_t *cmk = xmx_pack(z, zn, lws, dev->grf_bytes, &cn, &gc, err, sizeof(err));
+         if (cmk && dev->max_grf && xmx_rd32(cmk + XMX_H_GRF) > dev->max_grf) {
+            /* a script that ignores CM_MAX_GRF (older package): the driver would run it with too few registers */
+            snprintf(err, sizeof(err), "kernel compiled for %u GRF, more than the %u this GPU runs (compile script "
+                     "without CM_MAX_GRF?)", xmx_rd32(cmk + XMX_H_GRF), dev->max_grf);
+            free(cmk);
+            cmk = NULL;
+         }
          uint8_t *cml = cmk ? xmx_cml_from_cmk(cmk, cn, gc, XMX_CML_NO_LOAD_PAYLOAD, &mn) : NULL;
          if (cml) {
             static atomic_int seq;

@@ -1,7 +1,10 @@
 /* test_compile.c - the layer's run-time compile end to end, with the real compile script and ocloc.
  * test_compile <kernel folder with dyn_N.spv/.opt and map.txt> <reference root with N/k.cmk compiled -noLoadPayload>
  *              <old compile script without CM_NO_LOAD_PAYLOAD>
- * Environment: ANV_CM_HELPER (the script under test), XMX_IGC_DIR, CM_DEVICE, XDG_CACHE_HOME (a scratch folder). */
+ * Environment: ANV_CM_HELPER (the script under test), XMX_IGC_DIR, CM_DEVICE, XDG_CACHE_HOME (a scratch folder).
+ * TEST_GEN=xe2: as the layer compiles for a Battlemage B580 (0xe20b, every kernel at 128 GRF): the code is not
+ * compared with the reference root (an Xe3 set), but every kernel must come out at 128 GRF, in an "xe2-g128" cache
+ * file; and an Xe3 device compiling the same kernel must get its own cache file at its 256 GRF. */
 #define _GNU_SOURCE
 #include "../src/cmk.h"
 #include "../src/compile.h"
@@ -36,7 +39,9 @@ main(int argc, char **argv)
    if (argc < 4)
       return 2;
    const char *sdir = argv[1], *refroot = argv[2], *oldhelper = argv[3];
-   const struct xmx_dev_info dev = { 0xb080, 64 };
+   const bool xe2 = getenv("TEST_GEN") && !strcmp(getenv("TEST_GEN"), "xe2");
+   const struct xmx_dev_info dev = xe2 ? (struct xmx_dev_info){ 0xe20b, 64, 128, "xe2" }
+                                       : (struct xmx_dev_info){ 0xb080, 64, 0, "xe3" };
    const int ids[] = { 3, 1, 0 };   /* dyn_1 is the kernel with group_count */
    for (unsigned t = 0; t < 3; t++) {
       const int id = ids[t];
@@ -50,14 +55,34 @@ main(int argc, char **argv)
       CHECK(img && xmx_cml_parse(img, n, &m));
       CHECK(m.flags == XMX_CML_NO_LOAD_PAYLOAD);
       CHECK((m.gc_off != XMX_NO_GC) == (id == 1));
-      /* the code must be what the reference compile with -noLoadPayload produced */
-      snprintf(ref, sizeof(ref), "%s/%d/k.cmk", refroot, id);
-      size_t rn;
-      uint8_t *r = rd(ref, &rn);
-      CHECK(r && rn - XMX_CMK_HEADER == m.code_size && !memcmp(r + XMX_CMK_HEADER, m.code, m.code_size));
+      uint8_t *r = NULL;
+      if (xe2) {
+         /* every kernel of this set asks for 256 GRF (-doubleGRF): compiled at 128 here */
+         CHECK(xmx_rd32(m.hdr + XMX_H_GRF) == 128);
+      } else {
+         /* the code must be what the reference compile with -noLoadPayload produced */
+         snprintf(ref, sizeof(ref), "%s/%d/k.cmk", refroot, id);
+         size_t rn;
+         r = rd(ref, &rn);
+         CHECK(r && rn - XMX_CMK_HEADER == m.code_size && !memcmp(r + XMX_CMK_HEADER, m.code, m.code_size));
+      }
       /* cached now: the second call reads the file */
       xmx_cache_path(&dev, hash, cdir, sizeof(cdir), path, sizeof(path));
       CHECK(access(path, R_OK) == 0 && strstr(path, ".cml"));
+      CHECK(strstr(path, xe2 ? "_xe2-g128_" : "_xe3_"));
+      if (xe2 && t == 0) {
+         /* the same kernel for an Xe3 device on the same toolchain: its own file, at the kernel's 256 GRF */
+         const struct xmx_dev_info x3 = { 0xe20b, 64, 0, "xe3" };   /* same id on purpose: only the cap differs */
+         char p3[700], d3[512];
+         xmx_cache_path(&x3, hash, d3, sizeof(d3), p3, sizeof(p3));
+         CHECK(strcmp(p3, path) != 0);
+         uint8_t *i3;
+         size_t n3;
+         struct xmx_cml m3;
+         CHECK(xmx_kernel_get(&x3, sdir, id, name, hash, &i3, &n3) && xmx_cml_parse(i3, n3, &m3) &&
+               xmx_rd32(m3.hdr + XMX_H_GRF) == 256);
+         free(i3);
+      }
       free(img);
       CHECK(xmx_kernel_get(&dev, sdir, id, name, hash, &img, &n));
       free(img);

@@ -4,9 +4,10 @@
 A kernel compiled with -noLoadPayload expects its payload in registers instead of loading it: the cross-thread data
 in r2 (r3 when it is larger than 64 bytes) and the local ids in r1.0-2:uw. An unpatched ANV starts the thread with
 r0 (thread id in r0.2[7:0]) and, with inline data, num_workgroups in r1.0-2. The prologue builds the payload from
-those (Xe3, 64-byte GRF): the cross-thread data image of the .cmk header as immediates, group_count copied from the
-inline data, then the local ids from the thread id. r4 is scratch. Tested on the device in E3/E3b of the decoupling
-work.
+those (64-byte GRF, Xe2 and Xe3): the cross-thread data image of the .cmk header as immediates, group_count copied
+from the inline data, then the local ids from the thread id. r4 is scratch. Tested on an Xe3 device in E3/E3b of the
+decoupling work. Mesa 26.3 starts a compute thread the same way on Xe2 (brw_cs_thread_payload: r0, then the inline
+data, for every generation from 12.5 on); the encodings are assembled per platform (--gen).
 
 Used by gen_prologue_table.py (the C table of the layer) and by the layer's tests (reference prologues).
 Needs libiga64 of the IGC bundle: IGC=<bundle>/igc (the folder that holds igc/local/lib).
@@ -16,7 +17,10 @@ import os
 import struct
 import sys
 
+# IGA platform ids, as iga_platforms_list of libiga64 reports them (0x2000000 "xe2"/"lnl", 0x3000000 "xe3"/"ptl")
+IGA_XE2 = (2 << 24) | 0
 IGA_XE3 = (3 << 24) | 0
+PLATFORMS = {'xe2': IGA_XE2, 'xe3': IGA_XE3}
 
 
 class CtxOpts(C.Structure):
@@ -136,15 +140,21 @@ def prologue_lines(hdr, gc_off=None):
     return L
 
 
-def prologue_bytes(hdr, gc_off=None):
-    return assemble('\n'.join(prologue_lines(hdr, gc_off)) + '\n')
+def prologue_bytes(hdr, gc_off=None, gen=IGA_XE3):
+    return assemble('\n'.join(prologue_lines(hdr, gc_off)) + '\n', gen)
 
 
 if __name__ == '__main__':
-    # prologue_asm.py <.cmk or .cml> [GC_OFF] <out.bin>: the assembled prologue of that kernel
-    d = open(sys.argv[1], 'rb').read()
-    g = int(sys.argv[2], 0) if len(sys.argv) > 3 else None
+    # prologue_asm.py [--gen xe2|xe3] <.cmk or .cml> [GC_OFF] <out.bin>: the assembled prologue of that kernel
+    # (default platform xe3)
+    args = sys.argv[1:]
+    gen = IGA_XE3
+    if args[:1] == ['--gen']:
+        gen = PLATFORMS[args[1]]
+        args = args[2:]
+    d = open(args[0], 'rb').read()
+    g = int(args[1], 0) if len(args) > 2 else None
     if d[:4] == b'CML1':
         gv = struct.unpack_from('<I', d, 472)[0]
         g = None if gv == 0xffffffff else gv
-    open(sys.argv[-1], 'wb').write(prologue_bytes(d, g))
+    open(args[-1], 'wb').write(prologue_bytes(d, g, gen))

@@ -16,6 +16,8 @@
  *    on), surface k = the k-th pushed resource. The self-test also writes layer_canary, which vkwrap waits for.
  * On this project's patched driver (its prog_data is longer, layouts.h) the layer serves only the Vulkan path: the
  * driver injects a D3D12 game's kernels itself but has no use for XeSS' descriptor push.
+ * GPUs served: Xe3 and Xe2 (gens.h); on Xe2 every kernel is compiled for 128 GRF, the register count an unpatched
+ * driver gives its threads there. XMX_LAYER_FORCE_GRF=128 does the same on Xe3 (to compare both on one device).
  * Enabled with VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx (and VK_ADD_LAYER_PATH); log: XMX_LAYER_LOG=1 or a path. */
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -33,6 +35,7 @@
 #include "anvbin.h"
 #include "cmk.h"
 #include "compile.h"
+#include "gens.h"
 #include "layouts.h"
 #include "map.h"
 #include "placeholder.h"
@@ -136,7 +139,8 @@ struct xdevice {
    bool tested;
    mtx_t mtx;
    struct xmx_dev_info info;
-   VkSampler default_sampler;   /* XeSS' own: linear, clamp, normalised */
+   const struct xmx_gen *gen;   /* gens.h; NULL: a GPU the layer does not serve */
+   VkSampler default_sampler;  /* XeSS' own: linear, clamp, normalised */
    struct xlayer_set *lsets;    /* list */
    struct xtemplate *templates; /* list */
    char dir[512];               /* the prefix's kernel folder */
@@ -502,10 +506,10 @@ self_test(struct xdevice *d)
    d->inst->GetPhysicalDeviceProperties2(d->phys, &p2);
    d->L = drv.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ? anv_layout_for(drv.driverInfo) : NULL;
    const bool known = d->L != NULL;
-   const bool xe3 = (p2.properties.deviceID & 0xfff0) == 0xb080 || (p2.properties.deviceID & 0xfff0) == 0xfd80;
-   if (!d->binaries || !known || !xe3) {
-      xlog("self-test: not served (%s, %s 0x%04x, pipeline binaries %s)", drv.driverInfo,
-           p2.properties.deviceName, p2.properties.deviceID, d->binaries ? "on" : "off");
+   if (!d->binaries || !known || !d->gen) {
+      xlog("self-test: not served (%s, %s 0x%04x%s, pipeline binaries %s)", drv.driverInfo,
+           p2.properties.deviceName, p2.properties.deviceID, d->gen ? "" : ": not an Xe2 / Xe3 GPU",
+           d->binaries ? "on" : "off");
       mtx_unlock(&d->mtx);
       return;
    }
@@ -918,7 +922,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    VkPipeline p = VK_NULL_HANDLE;
    char err[256] = "";
    size_t cn = 0;
-   uint8_t *code = t ? xmx_full_code(&k, &cn) : NULL;
+   uint8_t *code = t ? xmx_full_code(&k, d->gen->isa, &cn) : NULL;
    if (code) {
       struct anvbin_kernel kc = { &k, code, (uint32_t)cn, pl->nsets, SAMPLER_BINDING, kr->sampler, 64 };
       struct anvbin b;
@@ -1699,6 +1703,17 @@ x_CreateDevice(VkPhysicalDevice phys, const VkDeviceCreateInfo *ci_in, const VkA
    in->GetPhysicalDeviceProperties2(phys, &p2);
    d->info.pci_id = p2.properties.deviceID;
    d->info.grf_bytes = ((d->info.pci_id & 0xff00) == 0x5600 || (d->info.pci_id & 0xff00) == 0x7d00) ? 32 : 64;
+   d->gen = xmx_gen_of(d->info.pci_id);
+   if (d->gen) {
+      d->info.gen = d->gen->name;
+      d->info.max_grf = d->gen->max_grf;
+      /* XMX_LAYER_FORCE_GRF=128: the Xe2 compile (128 GRF) on any served GPU, to compare it with 256 on Xe3 */
+      const char *fg = getenv("XMX_LAYER_FORCE_GRF");
+      if (fg && !strcmp(fg, "128"))
+         d->info.max_grf = 128;
+      else if (fg && fg[0])
+         xlog("XMX_LAYER_FORCE_GRF=%s ignored (only 128 is supported)", fg);
+   }
    d->prof = xprof_enabled() && d->CreateQueryPool && d->CmdWriteTimestamp && d->GetQueryPoolResults &&
              p2.properties.limits.timestampComputeAndGraphics;
    if (d->prof) {
@@ -1728,8 +1743,12 @@ x_CreateDevice(VkPhysicalDevice phys, const VkDeviceCreateInfo *ci_in, const VkA
                                0, 0, 1, 0, VK_COMPARE_OP_NEVER, 0, 14 };
    d->CreateSampler(*out, &sci, NULL, &d->default_sampler);
    xmap_put(&devices, DKEY(*out), d);
-   xlog("device %s (0x%04x), pipeline binaries %s, kernel folder %s", p2.properties.deviceName, d->info.pci_id,
-        want ? "on" : "unavailable", d->dir[0] ? d->dir : "unset");
+   char grf[32] = "kernels' own GRF";
+   if (d->info.max_grf)
+      snprintf(grf, sizeof(grf), "kernels at %u GRF", d->info.max_grf);
+   xlog("device %s (0x%04x, %s, %s), pipeline binaries %s, kernel folder %s", p2.properties.deviceName,
+        d->info.pci_id, d->gen ? d->gen->name : "not served", d->gen ? grf : "-", want ? "on" : "unavailable",
+        d->dir[0] ? d->dir : "unset");
    return VK_SUCCESS;
 }
 

@@ -39,27 +39,60 @@ if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${XMX_IGC_DIR:-}" ]; then
     "$T/../../tools/cm-compile.sh" > "$OLD"
   ANV_CM_HELPER="$T/../../tools/cm-compile.sh" CM_DEVICE=ptl XDG_CACHE_HOME="$O/cache" CM_LOG="$O/compile.log" \
     "$O/test_compile" "$K" "$CMK_SET" "$OLD"
+  # Xe2 (B580 id, no CM_DEVICE: the script's own target choice): every kernel at 128 GRF, its own cache files
+  rm -rf "$O/cache"
+  TEST_GEN=xe2 ANV_CM_HELPER="$T/../../tools/cm-compile.sh" XDG_CACHE_HOME="$O/cache" CM_LOG="$O/compile.log" \
+    "$O/test_compile" "$K" "$CMK_SET" "$OLD"
 else
   echo "test_compile: skipped (KSET, CMK_SET or XMX_IGC_DIR missing)"
 fi
-# prologue: the C table against the assembler, for every kernel of the set (needs IGC for libiga64)
+# prologue: the C tables against the assembler, for every kernel of the set and each platform (needs IGC for libiga64)
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-format-truncation -o "$O/test_prologue" "$T/test_prologue.c" \
   "$T/../src/prologue.c" "$T/../src/cmk.c"
-if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${IGC:-}" ]; then
-  P="$O/pro"; rm -rf "$P"; mkdir -p "$P"
-  same=0; diff=0; none=0; n=0
-  for d in "$CMK_SET"/*/; do
+pro_check() { # <set root with N/k_*.bin> <platform> <label>: prologue of every kernel, C table vs assembler
+  local root=$1 plat=$2 P="$O/pro-$3" same=0 diff=0 none=0 n=0 d i z
+  rm -rf "$P"; mkdir -p "$P"
+  for d in "$root"/*/; do
     i=$(basename "$d"); z=$(ls "$d"k_*.bin 2>/dev/null | head -1); [ -n "$z" ] && [ -f "$KSET/dyn_$i.opt" ] || continue
     n=$((n + 1))
     "$O/test_prologue" cml "$z" "$KSET/dyn_$i.opt" "$P/$i.cml" || { none=$((none + 1)); continue; }
-    if ! "$O/test_prologue" pro "$P/$i.cml" "$P/$i.c.bin"; then none=$((none + 1)); continue; fi
-    python3 "$T/../tools/prologue_asm.py" "$P/$i.cml" "$P/$i.py.bin"
+    if ! "$O/test_prologue" pro "$P/$i.cml" "$P/$i.c.bin" "$plat"; then none=$((none + 1)); continue; fi
+    python3 "$T/../tools/prologue_asm.py" --gen "$plat" "$P/$i.cml" "$P/$i.py.bin"
     if cmp -s "$P/$i.c.bin" "$P/$i.py.bin"; then same=$((same + 1)); else diff=$((diff + 1)); fi
   done
-  echo "test_prologue: $n kernels, $same identical to the assembler, $diff different, $none without a prologue"
+  echo "test_prologue ($3, $plat): $n kernels, $same identical to the assembler, $diff different, $none without a prologue"
   [ "$diff" = 0 ] && [ "$none" = 0 ] && [ "$n" -gt 0 ]
+}
+if [ -d "$KSET" ] && [ -d "$CMK_SET" ] && [ -n "${IGC:-}" ]; then
+  pro_check "$CMK_SET" xe3 ptl-set
+  pro_check "$CMK_SET" xe2 ptl-set
 else
   echo "test_prologue: skipped (KSET, CMK_SET or IGC missing)"
+fi
+# Xe2: the whole kernel folder compiled as the layer does on a B580 (CM_MAX_GRF=128, -noLoadPayload): each kernel at
+# 128 GRF with no scratch, then the Xe2 prologue of each against the assembler. XE2_SET=0 skips it (one ocloc run per
+# kernel).
+if [ "${XE2_SET:-1}" != 0 ] && [ -d "$KSET" ] && [ -n "${XMX_IGC_DIR:-}" ] && [ -n "${IGC:-}" ]; then
+  X="$O/xe2set"; rm -rf "$X"; mkdir -p "$X"
+  ok=0; bad=0; n=0
+  for s in "$KSET"/dyn_*.spv; do
+    i=${s##*/dyn_}; i=${i%.spv}; [ -f "$KSET/dyn_$i.opt" ] || continue
+    n=$((n + 1)); mkdir -p "$X/$i"
+    if CM_OUT_DIR="$X/$i" CM_NO_LOAD_PAYLOAD=1 CM_MAX_GRF=128 CM_PCI_ID=0xe20b CM_LOG="$O/compile.log" \
+         /bin/sh "$T/../../tools/cm-compile.sh" "$s" "$KSET/dyn_$i.opt" "$X/$i/ignored.cmk" &&
+       z=$(ls "$X/$i"/k_*.bin 2>/dev/null | head -1) && [ -n "$z" ] &&
+       grep -a -q -E 'grf_count:[[:space:]]+128$' "$z" && ! grep -a -q per_thread_memory_buffers "$z" &&
+       ! grep -q -e '-doubleGRF' -e 'register-file-size=256' "$X/$i/info"; then
+      ok=$((ok + 1))
+    else
+      bad=$((bad + 1)); echo "   xe2 compile: dyn_$i not at 128 GRF without scratch"
+    fi
+  done
+  echo "xe2 compile: $n kernels, $ok at 128 GRF without scratch, $bad not"
+  [ "$bad" = 0 ] && [ "$n" -gt 0 ]
+  pro_check "$X" xe2 bmg-set
+else
+  echo "xe2 compile: skipped (XE2_SET=0, or KSET, XMX_IGC_DIR or IGC missing)"
 fi
 # the driver's serialized shaders: round trip of exported blobs (TEMPLATES: a folder of *.blob from a Mesa 26.1.2 device)
 B3="$T/../third_party/blake3"
