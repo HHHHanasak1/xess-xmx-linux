@@ -287,6 +287,7 @@ Because generated frames sit between two rendered ones, an uneven rendered frame
 * **HUD smear:** Because there is no HUD-less image, the HUD is interpolated with the rest of the image; text and fast HUD elements can smear slightly.
 * **Disocclusion wobble:** Where something appears that was hidden in the previous frame, optical flow has nothing to follow, and with no depth buffer either, edges of moving objects can wobble.
 * **DX12 only:** XeSS-FG only supports D3D12 swap chains (no D3D11 or Vulkan swap chain).
+* **HDR:** HDR10 (PQ) and scRGB back buffers are read in their own encoding, from the colour space the game sets (`SetColorSpace1`, logged in `ffx_xefg.log`); without one, an FP16 back buffer counts as scRGB. The motion search takes 1000 nits as the top of the range.
 
 ---
 

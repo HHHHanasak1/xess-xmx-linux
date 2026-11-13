@@ -14,6 +14,7 @@ void OflowFrameStart(Oflow*, ID3D12CommandQueue*);
 int OflowTakeGpuFrames(Oflow*, float* ms, int max);
 ID3D12Resource* OflowMotionVectors(Oflow* o);   // display size, R16G16_FLOAT, pixels, current -> previous
 ID3D12Resource* OflowDepth(Oflow* o);           // display size, R32_FLOAT, constant
-// records and submits on `q`: optical flow of `color` against the previous run, then the expansion
-bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESOURCE_STATES colorState, bool hdr,
+// records and submits on `q`: optical flow of `color` against the previous run, then the expansion. `transfer` is how
+// `color` is encoded, as FFX_BACKBUFFER_TRANSFER_FUNCTION_*: 0 sRGB (SDR), 1 PQ (HDR10), 2 linear scRGB (FP16 HDR)
+bool OflowRun(Oflow* o, ID3D12CommandQueue* q, ID3D12Resource* color, D3D12_RESOURCE_STATES colorState, int transfer,
               bool reset);

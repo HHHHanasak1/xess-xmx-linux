@@ -576,6 +576,7 @@ struct ScState {
     Oflow* oflow = nullptr;             // FFX_XEFG_OFLOW
     uint64_t oflowLastQpc = 0;          // FFX_XEFG_OFLOW with FSR_FG=inject: the last present, for the frame time
     uint64_t oflowTags = 0;
+    std::atomic<int> colorSpace{-1};    // the last successful SetColorSpace1, -1 = none (FFX_XEFG_OFLOW's encoding)
     // FFX_XEFG_TIMES=1: frame times at the present, reported every 300 frames
     uint64_t tStart = 0, tLastEnd = 0;
     std::vector<float> tFrame, tPresent, tSleep;
@@ -1083,6 +1084,24 @@ static void TimesReport(ScState* st)
     st->tFrame.clear(), st->tPresent.clear(), st->tSleep.clear();
 }
 
+// How the back buffer is encoded, for the optical flow (FFX_BACKBUFFER_TRANSFER_FUNCTION_*): the colour space the game
+// set, else DXGI's default for the format (FP16 = linear scRGB, everything else = sRGB).
+static int OflowTransfer(ScState* st, ID3D12Resource* bb)
+{
+    switch (st->colorSpace.load()) {
+    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        return 1;   // PQ (HDR10)
+    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+        return 2;   // scRGB
+    case -1:
+        break;
+    default:
+        return 0;
+    }
+    DXGI_FORMAT f = bb->GetDesc().Format;
+    return f == DXGI_FORMAT_R16G16B16A16_FLOAT || f == DXGI_FORMAT_R16G16B16A16_TYPELESS ? 2 : 0;
+}
+
 static uint32_t BeforePresent(ScState* st)
 {
     std::lock_guard<std::mutex> lk(st->lock);
@@ -1119,7 +1138,7 @@ static uint32_t BeforePresent(ScState* st)
         ID3D12Resource* bb = nullptr;
         if (SUCCEEDED(st->proxy->GetBuffer(bi, IID_PPV_ARGS(&bb)))) {
             t_ownSubmit = true;
-            OflowRun(st->oflow, st->queue, bb, D3D12_RESOURCE_STATE_PRESENT, false, false);
+            OflowRun(st->oflow, st->queue, bb, D3D12_RESOURCE_STATE_PRESENT, OflowTransfer(st, bb), false);
             t_ownSubmit = false;
             bb->Release();
         }
@@ -2252,7 +2271,10 @@ struct FgSwapChain final : IDXGISwapChain4 {
     HRESULT STDMETHODCALLTYPE SetColorSpace1(DXGI_COLOR_SPACE_TYPE c) override
     {
         PollForget();
-        return sc->SetColorSpace1(c);
+        const HRESULT hr = sc->SetColorSpace1(c);
+        if (SUCCEEDED(hr) && st->colorSpace.exchange((int)c) != (int)c)
+            Log("SetColorSpace1 %d", (int)c);   // FFX_XEFG_OFLOW reads the back buffer in this encoding
+        return hr;
     }
     HRESULT STDMETHODCALLTYPE ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
                                              IUnknown* const* queues) override
