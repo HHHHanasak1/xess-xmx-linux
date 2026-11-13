@@ -720,7 +720,7 @@ def low_latency(s):
         say("XESS_LL=%s: IGDEXT_XELL_CAP=%s is set as well and decides" % (ll, cur))
 
 
-def logs():
+def logs(s):
     """XESS_LOG=1: the package's logs in the game's prefix. XESS_LOG=2, for a report: also Proton's log (the game's
     stderr goes there, and with it the patched driver's ANV_CM_DEBUG lines; the game runs slower), the layer's log as
     a file of its own, emptied here as the layer appends, and the Vulkan wrapper's and the D3D11 bridge's."""
@@ -732,15 +732,18 @@ def logs():
     if not level.isdigit() or int(level) < 2:
         return
     layer_log = os.path.join(os.path.dirname(LOCKS), "layer.log")
-    try:
-        os.makedirs(os.path.dirname(layer_log), exist_ok=True)
-        open(layer_log, "w").close()
-    except OSError:
-        pass
+    own = (s.env if s else os.environ).get("XMX_LAYER_LOG")   # one that is set stays, as with every shorthand
+    if own is None:
+        try:
+            os.makedirs(os.path.dirname(layer_log), exist_ok=True)
+            open(layer_log, "w").close()
+        except OSError:
+            pass
     SETTINGS.update({"PROTON_LOG": "1", "ANV_CM_DEBUG": "1", "XMX_LAYER_LOG": layer_log, "VKWRAP_LOG": "1",
                      "XESS_DX11_TRACE": "1"})
     say("XESS_LOG=2: also Proton's log (steam-<app id>.log in the home folder: the game's stderr, with the driver's "
-        "lines; the game runs slower) and the layer's, %s" % layer_log)
+        "lines; the game runs slower) and the layer's, %s"
+        % (layer_log if own is None else "where XMX_LAYER_LOG=%s puts it" % own))
 
 
 def proton_upgrades():
@@ -776,7 +779,7 @@ def main():
     # install.sh's path then arrives as C:windowssystem32... and XeSS never finds the shim under Proton 11.0
     if s and s.env.get("INTC_ALT_DRIVER_EXTENSIONS_PATH") == ALT_EXT.replace("\\", ""):
         s.env["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
-    logs()
+    logs(s)
     low_latency(s)
     if want == "dp4a":
         SETTINGS["IGDEXT_FORCE_FALLBACK"] = "1"

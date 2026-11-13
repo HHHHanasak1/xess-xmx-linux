@@ -378,6 +378,12 @@ def main():
        and os.path.isfile(layer_log), r["out"])
     r = run("neither", "XESS_LOG=2 PROTON_LOG=0")
     ok("XESS_LOG=2: a PROTON_LOG of the launch options stays", "PROTON_LOG" not in r["out"], r["out"])
+    with open(layer_log, "w") as f:
+        f.write("the lines of the run before\n")
+    r = run("neither", "XESS_LOG=2 XMX_LAYER_LOG=1")
+    ok("XESS_LOG=2: an XMX_LAYER_LOG of the launch options stays; the hook names it and leaves its own file alone",
+       "XMX_LAYER_LOG" not in r["out"] and any("XMX_LAYER_LOG=1 puts it" in l for l in r["log"])
+       and os.path.getsize(layer_log) > 0, r["out"] + " " + "; ".join(r["log"]))
     hooklog = os.path.join(sb, "home", ".cache", "xess-xmx", "hook-4242.log")
     text = open(hooklog).read() if os.path.isfile(hooklog) else ""
     ok("the hook's own log: a first line per run with its options, then the route and what became of the files",
