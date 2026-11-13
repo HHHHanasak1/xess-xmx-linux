@@ -22,7 +22,7 @@ gcc -std=c11 -O2 -g -fPIC -shared -fvisibility=hidden -Wall -Wextra -Werror -Wno
   -Wno-unused-parameter -Wno-missing-field-initializers "${INC[@]}" \
   -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0 \
   -o "$O/libVkLayer_xess_xmx.so" "$S/layer.c" "$S/placeholder.c" "$S/cmk.c" "$S/compile.c" "$S/prologue.c" \
-  "$S/anvbin.c" "$S/map.c" "$S/prof.c" "$B3/blake3.c" "$B3/blake3_dispatch.c" "$B3/blake3_portable.c" \
+  "$S/anvbin.c" "$S/map.c" "$S/pace.c" "$S/prof.c" "$B3/blake3.c" "$B3/blake3_dispatch.c" "$B3/blake3_portable.c" \
   -Wl,--no-undefined -lpthread
 cp "$L/VkLayer_xess_xmx.json" "$O/"
 echo "built $O/libVkLayer_xess_xmx.so"

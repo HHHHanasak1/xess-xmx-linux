@@ -45,3 +45,6 @@ The Vulkan driver must be an unpatched ANV (or this project's patched one, for t
 | `XMX_LAYER_PROF=1` | Measures the GPU time of every replaced dispatch and writes a per-kernel table to the log every 5 s |
 | `XMX_LAYER_PROF=2` | Records one timestamp pair per run of back-to-back replaced dispatches, reported as one row `runs` (XeSS's GPU time including the gaps between its dispatches) |
 | `XMX_LAYER_PROF_SEC` | Report period in seconds for `XMX_LAYER_PROF` (default `5.0`, must be `> 0.5`) |
+| `XMX_LAYER_PACE=1` | Experimental, off by default: spaces frame generation's images evenly (`src/pace.c`). `vkQueuePresentKHR` returns at once, and the layer's own thread presents each image when it is ready and at least `K * T / n` after the previous one (`T` = the rendered frame interval and `n` = the images per frame, both read from the images' ready times). It paces only while the images come in steady bursts. `XMX_LAYER_PACE=log` adds the layer's fence and present-side timing without moving the present |
+| `XMX_LAYER_PACE_K` | The spacing factor `K` for `XMX_LAYER_PACE` (default `0.97`) |
+| `XMX_LAYER_PACE_LOG=<file>` | The pacing log (a summary every 2 s); `XMX_LAYER_PACE_TRACE=1` adds one line per present |
