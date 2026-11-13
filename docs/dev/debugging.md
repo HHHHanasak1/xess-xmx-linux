@@ -212,7 +212,7 @@ Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](bui
 * `FFX_XEFG_RENDERSCALE=<f>`: multiplies the game's `frameTimeDelta` by `<f>` (`0.001` = seconds).
 * `FFX_XEFG_DUMP=<n>`: dumps depth and motion vectors of two consecutive frames every `<n>` frames to `ffx_xefg_<frame>_depth.bin` and `ffx_xefg_<frame>_mv.bin` (up to 16 dumps total, 8 pairs).
 * `FFX_XEFG_ORDER=1`: logs the order of `prepare`, `configure`, and `present` calls with their frame IDs for the first 300 calls after interpolation starts.
-* `FFX_XEFG_TRACE=1`: writes the time line of every frame to `ffx_xefg_trace.txt` next to the DLL (`ffxfg/ffx_trace.h`). `tools/fsr-trace.py` reads it.
+* `FFX_XEFG_TRACE=1`: writes the time line of every frame to `ffx_xefg_trace.txt` next to the DLL (`ffxfg/ffx_trace.h`, `ffx_trace.cpp`). `tools/fsr-trace.py` reads it.
 * `FFX_XEFG_SLEEP=0`: skips calling `xellSleep` (XeLL stays enabled, as XeSS-FG requires it).
 * `FFX_XEFG_OWNWAIT=0`: hands the game the XeSS-FG proxy swap chain's own frame-latency waitable object instead of the DLL's semaphore (a game that waits on it before each frame can deadlock, for example CONTROL Resonant).
 * `FFX_XEFG_PACE=1`: releases the DLL's waitable semaphore when a GPU fence signaled after `Present` completes (with a 200 ms watchdog), instead of when `Present` returns. It showed no gain where it was measured (CONTROL Resonant at 6x).

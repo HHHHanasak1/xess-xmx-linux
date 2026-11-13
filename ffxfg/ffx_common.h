@@ -1,7 +1,8 @@
 // ffx_common.h - what the two FidelityFX provider DLLs, amd_fidelityfx_upscaler_dx12.dll (ffx_xess.cpp) and
-// amd_fidelityfx_framegeneration_dx12.dll (ffx_xefg.cpp), have in common: the log, the settings (the environment and
-// <name>.env beside the DLL) and the FFX resource states. Included once by each, after <windows.h>, <d3d12.h> and the
-// FFX API headers; each DLL gets its own copy of the state below.
+// amd_fidelityfx_framegeneration_dx12.dll (ffx_xefg*.cpp, through ffx_xefg.h), have in common: the log, the settings
+// (the environment and <name>.env beside the DLL) and the FFX resource states. Included after <windows.h>, <d3d12.h>
+// and the FFX API headers. Each DLL gets its own copy of the state below; the source files of one DLL share it (the
+// variables and functions are inline).
 #pragma once
 #include <cstdarg>
 #include <cstdio>
@@ -9,13 +10,13 @@
 #include <cstring>
 #include <mutex>
 
-static HMODULE g_self;   // set in DllMain
-static FILE* g_log;
-static std::mutex g_logLock;
-static LARGE_INTEGER g_qpf, g_qp0;
+inline HMODULE g_self;   // set in DllMain
+inline FILE* g_log;
+inline std::mutex g_logLock;
+inline LARGE_INTEGER g_qpf, g_qp0;
 
 // a line "<ms since the DLL's start> t<thread id> <text>"
-static void Log(const char* fmt, ...)
+inline void Log(const char* fmt, ...)
 {
     if (!g_log)
         return;
@@ -32,7 +33,7 @@ static void Log(const char* fmt, ...)
     fflush(g_log);
 }
 
-static int EnvInt(const char* name, int def)
+inline int EnvInt(const char* name, int def)
 {
     char buf[32];
     if (!GetEnvironmentVariableA(name, buf, sizeof(buf)))
@@ -44,7 +45,7 @@ static int EnvInt(const char* name, int def)
 // its last backslash, into `dir`; sets the KEY=VALUE lines of <name>.env in that folder into the environment, unless
 // the variable is set already; opens the log: <logEnv>=<path> appends to that file, <logEnv>=0 is no log, and without
 // the variable it is <name>.log in the DLL's folder.
-static void InitLogAndEnv(const char* name, const char* logEnv, char dir[MAX_PATH])
+inline void InitLogAndEnv(const char* name, const char* logEnv, char dir[MAX_PATH])
 {
     QueryPerformanceFrequency(&g_qpf);
     QueryPerformanceCounter(&g_qp0);
@@ -81,7 +82,7 @@ static void InitLogAndEnv(const char* name, const char* logEnv, char dir[MAX_PAT
     }
 }
 
-static D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
+inline D3D12_RESOURCE_STATES ToD3D12State(uint32_t s)
 {
     D3D12_RESOURCE_STATES r = D3D12_RESOURCE_STATE_COMMON;
     if (s & FFX_API_RESOURCE_STATE_UNORDERED_ACCESS)

@@ -3,8 +3,8 @@
 // estimates per 8x8 block how the current backbuffer (or a 1/n copy of it, oflow_down.hlsl) moved from the previous
 // one; oflow_expand.hlsl expands that into a display-size R16G16_FLOAT motion vector texture (pixels, current ->
 // previous, the FFX convention) and writes a constant depth texture. It also times a frame on the GPU for
-// FFX_XEFG_CAP=auto (OflowFrameStart). Kept apart from ffx_xefg.cpp because the SDK 1.1 host headers and the FFX API
-// headers there must not meet in one translation unit.
+// FFX_XEFG_CAP=auto (OflowFrameStart). Kept apart from ffx_xefg*.cpp because the SDK 1.1 host headers and the FFX API
+// headers of ffx_xefg.h must not meet in one translation unit.
 #include <windows.h>
 #include <d3d12.h>
 #include <stdint.h>
