@@ -1,0 +1,30 @@
+# How this project's own code in shim/src/dll/ is written (D3D12Api.cpp, XellHook.cpp, XellDriver.cpp, GpuInfo.*,
+# DxbcChecksum.h, LdrNotify.h), for clang-format (checked with clang-format 19; the "Kind" of AlignTrailingComments
+# needs clang-format 16 or newer). IgdextApiDll*.cpp in this folder come from dxvk-igdext and are written as
+# shim/.clang-format says: for them, name that file (clang-format --style=file:<path to shim/.clang-format>).
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: about 12 % of the lines of those
+# files would change (2026-11). clang-format cannot keep two statements on one line, which this code has in many
+# places, and the files do not agree on a space after a cast (XellHook.cpp has it, the others do not).
+#
+# 4 spaces. Every brace on its own line; a short if, loop or block may stay on one line. "Type* name". No limit to
+# the length of a line: the lines stay as they were broken. { 1, 2 } with spaces inside. Trailing comments stay where
+# they were put. Comments are wrapped by hand, and the includes stay in the order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 0
+PointerAlignment: Left
+BreakBeforeBraces: Allman
+AccessModifierOffset: -4
+IndentExternBlock: NoIndent
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+AlwaysBreakTemplateDeclarations: No
+Cpp11BracedListStyle: false
+SpaceAfterCStyleCast: true
+AlignTrailingComments:
+  Kind: Leave
+MaxEmptyLinesToKeep: 2
+ReflowComments: false
+SortIncludes: false

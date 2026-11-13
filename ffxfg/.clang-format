@@ -1,0 +1,20 @@
+# How the code in ffxfg/ is written, for clang-format (checked with clang-format 19).
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: the lines were broken and the
+# comments aligned by hand, and about 4 % of the existing lines would change (2026-11).
+#
+# 4 spaces. The brace of a function on its own line, every other brace on the line that opens the block. "Type* name".
+# At most 120 columns. Trailing comments after three spaces, aligned within a block. Comments are wrapped by hand, and
+# the includes stay in the order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Left
+BreakBeforeBraces: WebKit
+AllowShortFunctionsOnASingleLine: All
+AccessModifierOffset: -4
+SpacesBeforeTrailingComments: 3
+AlignEscapedNewlines: Left
+BreakStringLiterals: false
+ReflowComments: false
+SortIncludes: false

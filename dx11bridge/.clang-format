@@ -1,0 +1,18 @@
+# How the code in dx11bridge/ is written, for clang-format (checked with clang-format 19). vkwrap/ and icd/ have
+# the same options.
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: the lines were broken by hand, and
+# about 2 % of the existing lines would change (2026-11).
+#
+# 3 spaces. The brace of a function on its own line, every other brace on the line that opens the block. "type *name".
+# At most 120 columns. "case X: return y;" may stay on one line. Comments are wrapped by hand, and the includes stay
+# in the order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 3
+ColumnLimit: 120
+PointerAlignment: Right
+BreakBeforeBraces: WebKit
+AllowShortCaseLabelsOnASingleLine: true
+MaxEmptyLinesToKeep: 2
+ReflowComments: false
+SortIncludes: false

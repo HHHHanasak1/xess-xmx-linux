@@ -1,0 +1,18 @@
+# How the code in common/ is written, for clang-format (checked with clang-format 19).
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: the lines were broken and the
+# comments aligned by hand, and about 6 % of the existing lines would change (2026-11).
+#
+# As ffxfg/, except that the brace of a namespace and of a structure is on its own line too: 4 spaces, "Type* name",
+# at most 120 columns, trailing comments after three spaces and aligned within a block. Comments are wrapped by hand,
+# and the includes stay in the order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Left
+BreakBeforeBraces: Linux
+AccessModifierOffset: -4
+SpacesBeforeTrailingComments: 3
+BreakStringLiterals: false
+ReflowComments: false
+SortIncludes: false

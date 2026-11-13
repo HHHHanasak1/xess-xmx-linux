@@ -1,0 +1,24 @@
+# How the files that the shim took over from dxvk-igdext are written (src/, src/legacy/, src/dll/IgdextApiDll*.cpp),
+# for clang-format (checked with clang-format 19; the "Kind" of AlignTrailingComments needs clang-format 16 or newer).
+# This project's own code (src/dll/, and src/Trace.cpp) is written another way: see src/dll/.clang-format.
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: about 2 % of the lines of those
+# files would change (2026-11).
+#
+# 4 spaces. Every brace on its own line. "Type* name". No limit to the length of a line: the lines stay as they were
+# broken. Declarations and assignments that follow each other are aligned in columns. Nothing is indented inside
+# extern "C". Trailing comments stay where they were put. Comments are wrapped by hand, and the includes stay in the
+# order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 0
+PointerAlignment: Left
+BreakBeforeBraces: Allman
+AccessModifierOffset: -4
+IndentExternBlock: NoIndent
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+AlignTrailingComments:
+  Kind: Leave
+ReflowComments: false
+SortIncludes: false

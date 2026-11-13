@@ -1,0 +1,20 @@
+# How the code in controllib/ is written, for clang-format (checked with clang-format 19).
+#
+# For new and changed lines only. Do not run clang-format over a whole file here: about 16 % of the existing lines
+# would change (2026-11; most of them are ControlLib.c's declarations of Intel's structures, which have several
+# members on a line).
+#
+# 4 spaces. Every brace on its own line; a short if or loop may stay on one line. "Type* name". At most 120 columns.
+# { 1, 2 } with spaces inside. The values of #defines that follow each other are aligned in a column. Comments are
+# wrapped by hand, and the includes stay in the order they are in.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+PointerAlignment: Left
+BreakBeforeBraces: Allman
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+Cpp11BracedListStyle: false
+AlignConsecutiveMacros: Consecutive
+ReflowComments: false
+SortIncludes: false

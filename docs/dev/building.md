@@ -47,6 +47,7 @@ tools/make-release.py         builds the release archive (the developer tools st
 tools/tests/install-sandbox.sh  test: the install scripts in a sandbox (CI job install-scripts)
 docs/                         user guides (install, drivers, games, frame generation, launch options, performance, troubleshooting)
 docs/dev/                     developer documents (how it works, building, debugging)
+.clang-format                 in each source directory: how its code is written, for clang-format ("Code Style" below)
 .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the D3D11/Vulkan DLLs, the ICD,
                               both patched drivers, the unpatched driver, the bundled libraries (lib/bundled) and the layer, checks the scripts
                               and runs the install scripts in a sandbox
@@ -307,6 +308,23 @@ Handles CM kernels whose sampler is passed in a D3D12 descriptor table rather th
 ### `0006-anv-cmat-vars-before-jay.patch` (26.3.0 only)
 
 Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matrix lowering (`brw_nir_lower_cmat`) leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into `ivec8` vectors) and runs no variable-to-SSA or dead-variable pass afterward. When those derefs reach Jay, `jay_emit_instr` hits `UNREACHABLE("All derefs should've been lowered")`. In a release build (`__builtin_unreachable`), execution jumps into whatever function the compiler placed next (`jay_emit_fb_write` when built with GCC 15; GCC 16 happened not to crash), crashing the game while compiling the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables`, and `nir_opt_dce` right after `brw_nir_lower_cmat`.
+
+---
+
+## Code Style (`.clang-format`)
+
+Each source directory has a `.clang-format` that says how its code is written:
+
+| Directory | Style | Existing lines a whole-file run would change |
+|---|---|---|
+| `ffxfg/`, `common/` | 4 spaces, the brace of a function on its own line, `Type* name`, 120 columns | about 4 % and 6 % |
+| `layer/` | Mesa's: 3 spaces, a function's return type on its own line, `type *name`, 120 columns | about 4 % |
+| `vkwrap/`, `dx11bridge/`, `icd/` | 3 spaces, the brace of a function on its own line, `type *name`, 120 columns | about 11 %, 2 % and none |
+| `shim/` (the files from dxvk-igdext) | 4 spaces, every brace on its own line, declarations aligned in columns, no column limit | about 2 % |
+| `shim/src/dll/` (this project's shim code) | 4 spaces, every brace on its own line, short statements on one line, no column limit | about 12 % |
+| `controllib/` | 4 spaces, every brace on its own line, 120 columns | about 16 % |
+
+The files are for new and changed lines: `clang-format --lines=<first>:<last> -i <file>`, or `git clang-format` (LLVM's script, which formats the lines that differ from `HEAD`). Do not run clang-format over a whole existing file. The code's lines were broken and its comments aligned by hand, and the last column says how much of it such a run would rewrite (clang-format 19, November 2026). Third-party code (`layer/third_party/`, `shim/d3dext-sdk/`) is not formatted at all.
 
 ---
 
