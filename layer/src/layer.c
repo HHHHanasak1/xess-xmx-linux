@@ -533,6 +533,12 @@ self_test(struct xdevice *d)
    d->ok = t && r == VK_SUCCESS;
    xlog("self-test %s: %s, template %s, pipeline from binary %d", d->ok ? "passed" : "FAILED", drv.driverInfo,
         t ? "round-trips" : "unusable", r);
+   if (d->ok && d->L == &d->Lp && d->gen->max_grf) {
+      /* the patched driver on Xe2 runs XeSS' Vulkan kernels itself, at their own 256 GRF (vkwrap's driver mode):
+       * the layer's 128-GRF ones would only be slower there */
+      d->ok = false;
+      xlog("self-test: not served on the patched driver on %s (the driver runs the kernels at full GRF)", d->gen->name);
+   }
    mtx_unlock(&d->mtx);
 }
 
