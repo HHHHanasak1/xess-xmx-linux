@@ -391,6 +391,13 @@ def main():
        and "the game's own files are back" in text, text[-400:])
 
     cache = os.path.join(sb, "home", ".cache", "xess-xmx")
+    for line in ("XESS_LL=off", "XESS=auto_off XESS_FG=5"):
+        run("neither", "SteamGameId=4444 " + line)
+        text = open(os.path.join(cache, "hook-4444.log")).read() if os.path.isfile(os.path.join(cache, "hook-4444.log")) else ""
+        ok("the hook's own log: a run with %s gets its first line, with nothing else to say" % line.split()[0],
+           text.endswith("| %s\n" % line), text[-300:])
+    run("neither", "SteamGameId=4445 XESS_FG=3")
+    ok("the hook's own log: none for a run without an option of the hook", not os.path.exists(os.path.join(cache, "hook-4445.log")))
     run("neither", "SteamGameId= STEAM_COMPAT_APP_ID=4343 XESS_LOG=1")
     ok("the hook's own log: named after STEAM_COMPAT_APP_ID where Steam gives no other id (its install-script helper)",
        os.path.isfile(os.path.join(cache, "hook-4343.log")), " ".join(sorted(os.listdir(cache))))

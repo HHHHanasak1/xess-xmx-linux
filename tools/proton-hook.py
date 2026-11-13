@@ -80,9 +80,11 @@ VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_EXT_descriptor_heap", "VK_KHR_prese
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
 # variables for the game: user_settings.py passes its dict in; Proton applies them unless the launch options set them
 SETTINGS = globals().get("SETTINGS", {})
-# what the launch options can say to this script, and the two that change what its routes do: for the log's first line
+# what the launch options can say to this script, and the three that change what its routes do: for the log's first
+# line. A run with one of this script's own gets that line also when there is nothing else to say (OWN)
 OPTIONS = ("XESS", "XESS_FG", "XESS_VK", "XESS_LL", "XESS_LOG", "FSR", "FSR_FG", "FSR_VENDOR", "OFLOW_FG", "MESA",
            "IGDEXT_XELL_CAP")
+OWN = tuple(k for k in OPTIONS if k not in ("XESS_FG", "MESA", "IGDEXT_XELL_CAP"))
 XESS_OPT = "XESS=latest"   # the option the lines about a game's own XeSS name: main() makes it XESS=auto
 _log = None   # the hook's own log: opened by the first line of a run (hook_log), False when it cannot be written
 
@@ -104,21 +106,27 @@ def hook_log():
         time.strftime("%Y-%m-%d %H:%M:%S"), os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0]))),
         sys.argv[1] if len(sys.argv) > 1 else "", exe,
         " ".join("%s=%s" % (k, os.environ[k]) for k in OPTIONS if k in os.environ) or "no options"))
+    f.flush()
     return f
 
 
-def say(msg):
-    """a line for Steam's output (Proton's own stderr is not in PROTON_LOG's file) and for the hook's log"""
+def note(msg=None):
+    """the run's first line in the hook's log if it is not there yet, then msg"""
     global _log
-    sys.stderr.write("xess-xmx: %s\n" % msg)
     try:
         if _log is None:
             _log = hook_log()
-        if _log:
+        if _log and msg is not None:
             _log.write(msg + "\n")
             _log.flush()
     except Exception:   # a cache folder that cannot be written, or anything else: the lines still go to stderr
         _log = False
+
+
+def say(msg):
+    """a line for Steam's output (Proton's own stderr is not in PROTON_LOG's file) and for the hook's log"""
+    sys.stderr.write("xess-xmx: %s\n" % msg)
+    note(msg)
 
 
 def u16(b, o):
@@ -772,6 +780,8 @@ def main():
     oflow = os.environ.get("OFLOW_FG", "") not in ("", "0")
     mult = os.environ.get("XESS_FG", "")
     mult = int(mult) if mult.isdigit() else 0
+    if any(os.environ.get(k) for k in OWN):
+        note()   # the log then tells that this script ran with these options, whatever it has to say
     clean_left_over()
     # a session started before install.sh added an extension still has the old value until the next login, and a
     # VKD3D_DISABLE_EXTENSIONS in the launch options replaces the session's
