@@ -747,7 +747,8 @@ mark_failed(struct xdevice *d, const struct xmx_placeholder *ph)
 }
 
 /* the replacement pipeline of a kernel placeholder; VK_NULL_HANDLE if it cannot be made (then the placeholder is
- * created as it is, and the kernel is marked failed for the shim's next launch) */
+ * created as it is, and the kernel is marked failed for the shim's next launch). Not marked: a device the self-test
+ * did not pass (the shim gets no self-test answer and does not use XMX at all) and the patched driver's own kernels. */
 static VkPipeline
 replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct xmx_placeholder *ph)
 {
@@ -757,6 +758,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    struct xpipelayout *pl = xmap_get(&pipe_layouts, HKEY(ci->layout));
    if (!pl) {
       xlog("kernel %s: unknown pipeline layout", ph->hash);
+      mark_failed(d, ph);
       return VK_NULL_HANDLE;
    }
    if (d->L == &d->Lp && pl->nsets != 0)
@@ -815,6 +817,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
       kr->sampler_mode = 3;
       if (nsurf > NSURF_BINDINGS) {
          xlog("kernel %s: %u surfaces, more than the layer's %u bindings", ph->hash, nsurf, NSURF_BINDINGS);
+         mark_failed(d, ph);
          free(kr);
          free(img);
          return VK_NULL_HANDLE;
@@ -834,6 +837,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
    if (!vkpush && nsurf && (!heap || base == ~0u || nsurf > 24)) {
       xlog("kernel %s: no vkd3d-style descriptor heap in the layout (%u sets) - VKD3D_DISABLE_EXTENSIONS="
            "VK_EXT_descriptor_buffer set?", ph->hash, pl->nsets);
+      mark_failed(d, ph);
       free(kr);
       free(img);
       return VK_NULL_HANDLE;
@@ -849,6 +853,7 @@ replace(struct xdevice *d, const VkComputePipelineCreateInfo *ci, const struct x
       /* prepare_dispatch reads the tables from the first XMX_PC_BYTES of push constants it keeps */
       xlog("kernel %s: descriptor tables beyond %u bytes of push constants (%u)", ph->hash, XMX_PC_BYTES,
            pl->push_size);
+      mark_failed(d, ph);
       free(kr);
       free(img);
       return VK_NULL_HANDLE;
