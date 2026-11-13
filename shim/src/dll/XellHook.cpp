@@ -69,12 +69,7 @@ static PFN_XellReports g_reports;
 static void XLog(const char* fmt, ...)
 {
     if (!g_log) return;
-    FILE* f = nullptr;
-    if (fopen_s(&f, "C:\\igdext_xell.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    va_list ap; va_start(ap, fmt); AppendLogLine("C:\\igdext_xell.log", fmt, ap); va_end(ap);
 }
 
 static void XellLogCb(const char* msg, uint32_t level)
@@ -933,12 +928,7 @@ static bool g_fgLog = false;
 static void FLog(const char* fmt, ...)
 {
     if (!g_fgLog) return;
-    FILE* f = nullptr;
-    if (fopen_s(&f, "C:\\igdext_xefg.log", "ab") != 0 || !f) return;
-    SYSTEMTIME st; GetLocalTime(&st);
-    fprintf(f, "%02d:%02d:%02d.%03d [%lu] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId());
-    va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
-    fputc('\n', f); fclose(f);
+    va_list ap; va_start(ap, fmt); AppendLogLine("C:\\igdext_xefg.log", fmt, ap); va_end(ap);
 }
 
 static void XefgLogCb(const char* msg, int32_t level, void*)
