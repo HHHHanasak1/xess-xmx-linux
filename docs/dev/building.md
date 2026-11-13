@@ -21,9 +21,9 @@ controllib/                   ControlLib.dll source: the frame generation overri
 ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR upscaling on XeSS SR),
                               amd_fidelityfx_framegeneration_dx12.dll (FSR frame generation on XeSS-FG) and
                               dxgi.dll (XeSS-FG for a game without FSR frame generation, FSR_FG=inject, and
-                              for any DX12 game from optical flow, OFLOW_FG=1); get-headers.sh fetches the AMD /
-                              Intel headers they are built against, build-ffxsdk.bat the FidelityFX SDK 1.1.4
-                              optical flow libraries
+                              for any DX12 game from optical flow, OFLOW_FG=1); ffx_common.h: the log and settings
+                              code of the first two; get-headers.sh fetches the AMD / Intel headers they are built
+                              against, build-ffxsdk.bat the FidelityFX SDK 1.1.4 optical flow libraries
 dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
 vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interfaces for Vulkan games
 icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
@@ -39,6 +39,7 @@ tools/switch-driver.sh        sets the default among the package's drivers (per 
 tools/session-check.sh        the driver check run before each session
 tools/cmk_pack.py             zebin -> .cmk packer (the driver has a C port; cm-compile.sh uses this one for older drivers)
 tools/xell-probe.sh           XeLL driver-mode probe (debugging.md)
+tools/fsr-trace.py            reads the frame time line a debug build of the frame generation DLL writes (FFX_XEFG_TRACE=1)
 tools/gen_placeholders.py     placeholder templates for run-time kernels; tools/check_placeholders.py consistency check
 tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
 tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
@@ -186,7 +187,7 @@ If you omit the output directory argument (`layer/build.sh`), it defaults to `la
 
 ### Layer Unit Tests and Probing a New Mesa Version
 
-`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
+`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), a compile script that hangs (`test_compile_timeout`: killed after `ANV_CM_COMPILE_TIMEOUT`, the kernel marked failed), the compile jobs (`test_compile_parallel`: at most `XMX_LAYER_COMPILE_JOBS` at a time, the same cache files with 1 and with 8 jobs), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
 
 ANV's serialized compute shader format (`layer/src/anvbin.c`) differs between Mesa minor versions. `layer/src/layouts.h` holds one measured offset table (`struct anv_layout`) per supported version (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`), including `pd_size_patched` (`656` on 26.1.2, `664` on 26.3.0) for this project's patched drivers. The offsets were measured on exported binaries from the variant shaders in `layer/tests/variants` rather than taken from Mesa's headers:
 
@@ -315,4 +316,4 @@ With all binaries built and placed in their release locations in the working tre
 python3 tools/make-release.py <version> [out dir]
 ```
 
-`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.
+`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`, `fsr-trace.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.

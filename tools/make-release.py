@@ -16,8 +16,8 @@ files = ["igdext64.dll", "ControlLib.dll", "ffxfg/amd_fidelityfx_framegeneration
          "ffxfg/LICENSE.FidelityFX-SDK.txt", "dx11bridge/libxess_dx11.dll", "vkwrap/vulkan-1.dll",
          "lib/libvulkan_intel.so", "install.sh", "uninstall.sh", "enable.sh", "disable.sh",
          "xmx-launch.sh", "xmx-stock.sh", "README.md", "LICENSE", "THIRD_PARTY.md"]
-# what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py)
-# stay in the repository
+# what a user's install needs; developer tools (gen_placeholders.py, check_placeholders.py, build-deps.sh, split_patch.py,
+# fsr-trace.py) stay in the repository
 tools = ["cm-compile.sh", "cmk_pack.py", "get-igc.sh", "get-xess.sh", "get-ffx.sh", "proton-hook.py", "fsr-fg.sh",
          "steam-libraries.sh", "session-check.sh", "rebuild-driver.sh", "switch-driver.sh", "xell-probe.sh"]
 files += ["tools/" + t for t in tools]
