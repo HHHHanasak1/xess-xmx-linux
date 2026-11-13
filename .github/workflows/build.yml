@@ -5,8 +5,9 @@ name: build
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
 #   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
-# plus syntax checks of the scripts. Release archives are made from these artifacts (tools/make-release.py, see
-# docs/dev/building.md); they also show that the tree builds and give Mesa ABI mismatches a place to surface.
+# plus syntax checks of the scripts and a run of the install scripts in a sandbox (tools/tests/install-sandbox.sh).
+# Release archives are made from these artifacts (tools/make-release.py, see docs/dev/building.md); they also show that
+# the tree builds and give Mesa ABI mismatches a place to surface.
 
 # A push that only touches docs/ or Markdown runs nothing. Path filters are not evaluated for tag pushes, so a release
 # tag always builds.
@@ -27,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: shell syntax
-        run: for f in *.sh tools/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
+        run: for f in *.sh tools/*.sh tools/tests/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
         run: python3 -m py_compile tools/*.py
       - name: placeholder templates match the driver (shapes, magic, self-test values, DXBC checksums)
@@ -45,6 +46,16 @@ jobs:
       - name: debug tools stay out of the feature patch
         run: |
           ! grep -n -E '^\+.*(ANV_CM_(GCAP|CAPTURE|VIEW|ONLY|SKIP|SYNC|MAXGROUPS|PREEMPT|PC)|anv_cm_bos|XMX-DEBUG)' patches/0001-anv-cm-kernel-injection.patch patches/mesa-26.3/0001-anv-cm-kernel-injection.patch
+
+  # install.sh, uninstall.sh, enable.sh / disable.sh, xmx-launch.sh, xmx-stock.sh, tools/switch-driver.sh,
+  # tools/session-check.sh and tools/fsr-fg.sh in a sandbox: a made-up HOME and Steam tree, stand-ins for the binaries,
+  # stub systemctl / vulkaninfo. No network, GPU or root; the Steam libraries must end as if nothing had been installed
+  install-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the install scripts in a sandbox
+        run: bash tools/tests/install-sandbox.sh
 
   icd:
     runs-on: ubuntu-latest

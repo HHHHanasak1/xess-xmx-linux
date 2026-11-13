@@ -44,10 +44,12 @@ tools/gen_placeholders.py     placeholder templates for run-time kernels; tools/
 tools/split_patch.py          writes patches 0001 / 0002 from the marked source tree
 tools/build-deps.sh           builds the bundled SPIRV-Tools and libdisplay-info (lib/bundled/)
 tools/make-release.py         builds the release archive (the developer tools stay out of it)
+tools/tests/install-sandbox.sh  test: the install scripts in a sandbox (CI job install-scripts)
 docs/                         user guides (install, drivers, games, frame generation, launch options, performance, troubleshooting)
 docs/dev/                     developer documents (how it works, building, debugging)
 .github/workflows/build.yml   CI: builds the shim, ControlLib.dll, the FSR DLLs, the D3D11/Vulkan DLLs, the ICD,
                               both patched drivers, the unpatched driver, the bundled libraries (lib/bundled) and the layer, checks the scripts
+                              and runs the install scripts in a sandbox
 ```
 
 The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
@@ -305,6 +307,16 @@ Handles CM kernels whose sampler is passed in a D3D12 descriptor table rather th
 ### `0006-anv-cmat-vars-before-jay.patch` (26.3.0 only)
 
 Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matrix lowering (`brw_nir_lower_cmat`) leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into `ivec8` vectors) and runs no variable-to-SSA or dead-variable pass afterward. When those derefs reach Jay, `jay_emit_instr` hits `UNREACHABLE("All derefs should've been lowered")`. In a release build (`__builtin_unreachable`), execution jumps into whatever function the compiler placed next (`jay_emit_fb_write` when built with GCC 15; GCC 16 happened not to crash), crashing the game while compiling the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables`, and `nir_opt_dce` right after `brw_nir_lower_cmat`.
+
+---
+
+## Testing the Install Scripts (`tools/tests/install-sandbox.sh`)
+
+```bash
+bash tools/tests/install-sandbox.sh        # KEEP=1 keeps the sandbox and prints its path
+```
+
+The test runs `install.sh` (patched mode, stock mode, a second time, and as the watcher does after a Proton update), `tools/switch-driver.sh`, `tools/session-check.sh` (with a driver that stops loading, and its copy in `~/.config/xess-xmx` with the package folder gone), `enable.sh` / `xmx-launch.sh` / `disable.sh`, `xmx-stock.sh`, `tools/fsr-fg.sh` and `uninstall.sh` in a temporary folder: a made-up `HOME` with a Steam tree (two libraries, three Protons, four prefixes, two games, one of them in a folder with `[`, `*` and a space in its name) and a package made of the tree's scripts plus stand-ins for the binaries, in a folder with a space in its name. `systemctl`, `vulkaninfo`, `pgrep` and `curl` are stubs that log their calls, so nothing outside the folder changes and no network, GPU or root is needed; a C compiler is, because the stand-in drivers are real (empty) shared objects that the driver check loads. It checks the files each step writes (the session environment, the systemd units, the shim and its `.stock` backups, the Proton hook) and, at the end, that both Steam libraries are file for file what they would be had the package never been installed. CI runs it as the job `install-scripts`.
 
 ---
 
