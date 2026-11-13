@@ -38,6 +38,7 @@
 #include "gens.h"
 #include "layouts.h"
 #include "map.h"
+#include "pace.h"
 #include "placeholder.h"
 #include "prof.h"
 #include "prologue.h"
@@ -149,6 +150,7 @@ struct xdevice {
    int prof_run;                /* the slot of the runs in mode 2 */
    double ts_period;            /* ns per time stamp tick */
    uint64_t ts_mask;            /* the valid bits of a time stamp */
+   struct xpace *pace;          /* XMX_LAYER_PACE (pace.c), NULL if off */
 };
 
 struct xsetlayout {
@@ -1548,6 +1550,8 @@ x_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pi)
    struct xdevice *d = dev_of(queue);
    if (d->prof)
       xprof_present(xlog);
+   if (d->pace)
+      return xpace_present(d->pace, queue, pi);
    return d->QueuePresentKHR(queue, pi);
 }
 
@@ -1575,6 +1579,7 @@ x_DestroyDevice(VkDevice device, const VkAllocationCallbacks *alloc)
       return;
    if (d->prof)
       xprof_final(xlog);
+   xpace_destroy(d->pace);
    struct xdevice *cached = d;
    atomic_compare_exchange_strong(&last_dev, &cached, NULL);
    PFN_vkDestroyDevice destroy = d->DestroyDevice;
@@ -1705,6 +1710,7 @@ x_CreateDevice(VkPhysicalDevice phys, const VkDeviceCreateInfo *ci_in, const VkA
 #define X(n) d->n = (PFN_vk##n)gdpa(*out, "vk" #n);
    DEVICE_FNS(X)
 #undef X
+   d->pace = xpace_create(*out, gdpa);
    VkPhysicalDeviceProperties2 p2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
    in->GetPhysicalDeviceProperties2(phys, &p2);
    d->info.pci_id = p2.properties.deviceID;
@@ -1869,6 +1875,9 @@ x_DestroyInstance(VkInstance instance, const VkAllocationCallbacks *alloc)
 EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 xmx_GetDeviceProcAddr(VkDevice device, const char *name)
 {
+   PFN_vkVoidFunction pf = xpace_proc(device, name);
+   if (pf)
+      return pf;
    DEVICE_HOOKS;
    if (!strcmp(name, "vkCmdDispatchBaseKHR"))
       return (PFN_vkVoidFunction)x_CmdDispatchBase;

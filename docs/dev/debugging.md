@@ -204,7 +204,7 @@ The layer is loaded as an explicit layer via `VK_ADD_LAYER_PATH=<package>/layer`
 | `FFX_XEFG_CAP=auto\|<us>\|0` | `amd_fidelityfx_framegeneration_dx12.dll` | Real-frame interval cap via XeLL (`auto` is default when `FFX_XEFG_OFLOW=1`, `<us>` sets a fixed interval in microseconds, `0` disables). |
 | `FFX_XEFG_CAP_PAD=<ms>` | `amd_fidelityfx_framegeneration_dx12.dll` | Initial estimate in milliseconds of per-frame time beyond the measured GPU time for `FFX_XEFG_CAP=auto` (default `1.5`, then learned). |
 | `FFX_XEFG_REFRESH=<Hz>` | `amd_fidelityfx_framegeneration_dx12.dll` | Overrides the display refresh rate for `FFX_XEFG_CAP=auto` when Windows reports a wrong one (default from `EnumDisplaySettingsA`, else `144`). |
-| `FFX_XEFG_TIMES=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Logs frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow and expansion GPU times every 300 runs. |
+| `FFX_XEFG_TIMES=1` | `amd_fidelityfx_framegeneration_dx12.dll` | Logs frame time, time in `Present`, and `xellSleep` percentiles every 300 frames, plus optical-flow and expansion GPU times every 300 runs. Every 300 rendered frames it also logs the gaps between the shown frames' `Present` calls on the real swap chain and the longest / shortest gap per rendered frame (`shown frames over ...`). |
 
 #### `FFXFG_DEBUG=1` Build-Only Switches (`ffxfg/build.bat` with `FFXFG_DEBUG=1`)
 
