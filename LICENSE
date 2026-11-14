@@ -20,9 +20,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This license covers the files written for this project: the Mesa ANV patch,
-the kernel tools, the install scripts and the additions to the shim
-(in shim/src/dll/: D3D12Api.cpp, GpuInfo.cpp, XellDriver.cpp, XellHook.cpp,
-XefgAnswers.cpp, XefgHook.cpp, HookUtil.cpp, their headers and the generated
-tables). Third-party components keep their own licenses, see
-THIRD_PARTY.md.
+This license covers the files written for this project: the Mesa ANV patches
+(patches/), the Vulkan layer (layer/, without layer/third_party/), the
+sources in controllib/, ffxfg/, dx11bridge/, vkwrap/, common/ and icd/, the
+tools and install scripts, and the additions to the shim (shim/src/Trace.cpp
+and Trace.h; in shim/src/dll/: D3D12Api.cpp, GpuInfo.cpp, XellDriver.cpp,
+XellHook.cpp, XefgAnswers.cpp, XefgHook.cpp, HookUtil.cpp, their headers,
+DxbcChecksum.h, LdrNotify.h and the generated tables). Third-party
+components keep their own licenses, see THIRD_PARTY.md.
