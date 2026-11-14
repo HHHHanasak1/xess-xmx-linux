@@ -7,13 +7,16 @@ For every other case, find what your game ships in the list below. All launch op
 ## What to Do for Your Game
 
 * **D3D12 with XeSS 2.0.2.68 or newer:** Nothing. Turn on XeSS (and XeSS Frame Generation, if offered) in the game's menu. *Example: Wuthering Waves.*
-* **D3D12 with XeSS older than 2.0.2.68** (XeSS runs on DP4a, or the XeSS Frame Generation option is missing): `XESS=latest %command%` ([below](#games-with-xess-older-than-20268-cyberpunk-2077)). *Example: Cyberpunk 2077.*
-* **The menu offers only 2x frame generation:** Set the multiplier with `XESS_FG=`, for example `XESS_FG=3` ([frame-generation.md](frame-generation.md#setting-the-multiplier-xess_fg)). *Example: Cyberpunk 2077.*
-* **No XeSS Frame Generation, but FSR 3.1+ frame generation:** `FSR=xess %command%` runs the game's FSR upscaling and frame generation on XeSS ([frame-generation.md](frame-generation.md#3-fsr-31-on-xess-fsrxess-and-fsr_fgxess)). *Example: CONTROL Resonant.*
-* **No XeSS Frame Generation and no FSR frame generation, but FSR 3.1+ upscaling:** `FSR=xess FSR_FG=inject %command%` adds XeSS frame generation fed by the FSR upscaler ([frame-generation.md](frame-generation.md#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)). *Example: Forza Horizon 6, whose own frame generation is NVIDIA DLSS-G only.*
-* **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds experimental frame generation from optical flow on the final image; there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1-experimental)). *Examples: Resident Evil 4 (2023), Viewfinder.*
-* **D3D11 with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-d3d11-game)).
-* **Vulkan with XeSS:** `XESS=latest %command%` ([below](#xess-in-a-vulkan-game)). Not yet tested on Xe-HPG and Xe2.
+* **Anything else that ships XeSS or FSR 3.1+:** `XESS=auto %command%`. The hook looks at what the game's folder holds and sets the game up for it ([launch-options.md](launch-options.md#what-xessauto-chooses)):
+  * **XeSS older than 2.0.2.68** (XeSS runs on DP4a, or the XeSS Frame Generation option is missing): the game runs with the XeSS libraries of Intel's XeSS SDK ([below](#games-with-xess-older-than-20268-cyberpunk-2077)). *Example: Cyberpunk 2077.*
+  * **D3D11 or Vulkan with XeSS:** the game gets the package's D3D11 bridge ([below](#xess-in-a-d3d11-game)) or Vulkan wrapper ([below](#xess-in-a-vulkan-game); not yet tested on Xe-HPG and Xe2).
+  * **No XeSS Frame Generation, but FSR 3.1+ frame generation:** the game's FSR upscaling and frame generation run on XeSS; choose FSR in the game's menu ([frame-generation.md](frame-generation.md#3-fsr-31-on-xess-fsrxess-and-fsr_fgxess)). *Example: CONTROL Resonant.*
+  * **No frame generation an Intel GPU can use, but FSR 3.1+ upscaling:** with `XESS_FG=<n>` next to it, XeSS frame generation is added, fed by the FSR upscaler; choose FSR upscaling in the game's menu ([frame-generation.md](frame-generation.md#4-a-game-with-fsr-upscaling-and-no-fsr-frame-generation-fsr_fginject)). *Example: Forza Horizon 6, whose own frame generation is NVIDIA DLSS-G only.*
+* **The menu offers only 2x frame generation:** Set the multiplier with `XESS_FG=`, for example `XESS=auto XESS_FG=3 %command%` ([frame-generation.md](frame-generation.md#setting-the-multiplier-xess_fg)). *Example: Cyberpunk 2077.*
+* **The game ships XeSS Frame Generation, but its menu does not offer it, and the game has FSR 3.1+ frame generation:** `FSR=xess %command%` runs the game's FSR upscaling and frame generation on XeSS ([frame-generation.md](frame-generation.md#3-fsr-31-on-xess-fsrxess-and-fsr_fgxess)). `XESS=auto` cannot tell such a game from one that offers its XeSS Frame Generation, and leaves its FSR alone. *Example: Resident Evil Requiem.*
+* **Neither XeSS nor FSR 3.1+** (FSR 2, FSR 3.0, or FSR compiled into the game): `OFLOW_FG=1 %command%` adds frame generation from optical flow on the final image (2x; 3x and higher are experimental); there is no XeSS upscaling in this case ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1)). *Examples: Resident Evil 4 (2023), Viewfinder.*
+
+The options of earlier releases (`XESS=latest`, `FSR=xess`, `FSR=xess FSR_FG=inject`) still work; they choose by hand what `XESS=auto` chooses from the game's folder ([launch-options.md](launch-options.md#choosing-the-route-yourself)).
 
 If the game still runs XeSS on DP4a or sees no Intel GPU, see [troubleshooting.md](troubleshooting.md).
 
@@ -22,17 +25,17 @@ If the game still runs XeSS on DP4a or sees no Intel GPU, see [troubleshooting.m
 | Game | What Runs on XMX | Launch Options | Tested On |
 |---|---|---|---|
 | Wuthering Waves | XeSS SR, XeSS-FG | None | Arc B390 |
-| Cyberpunk 2077 (2.31) | XeSS SR, XeSS-FG | `XESS=latest`, `XESS_FG=<n>` | Arc B390 |
-| Forza Horizon 6 | XeSS SR, XeSS-FG from FSR upscaling | `FSR=xess FSR_FG=inject` | Arc B390 |
-| CONTROL Resonant | XeSS SR, XeSS-FG from FSR | `FSR=xess` | Arc B390 |
+| Cyberpunk 2077 (2.31) | XeSS SR, XeSS-FG | `XESS=auto`, `XESS_FG=<n>` | Arc B390 |
+| Forza Horizon 6 | XeSS SR, XeSS-FG from FSR upscaling | `XESS=auto XESS_FG=<n>` | Arc B390 |
+| CONTROL Resonant | XeSS SR, XeSS-FG from FSR | `XESS=auto` | Arc B390 |
 | Resident Evil Requiem | XeSS-FG from FSR (XeSS SR too with `FSR=xess`) | `FSR=xess` or `FSR_FG=xess` | Arc B390 |
-| Resident Evil 4 (2023) | XeSS-FG from optical flow (experimental) | `OFLOW_FG=1` | Arc B390 |
-| Viewfinder | XeSS-FG from optical flow (experimental) | `OFLOW_FG=1`, `-force-d3d12` after `%command%` | Arc B390 |
+| Resident Evil 4 (2023) | XeSS-FG from optical flow | `OFLOW_FG=1` | Arc B390 |
+| Viewfinder | XeSS-FG from optical flow | `OFLOW_FG=1`, `-force-d3d12` after `%command%` | Arc B390 |
 | Satisfactory | XeSS SR | None | Arc A310 (Xe-HPG), by a user ([#28](https://github.com/HHHHanasak1/xess-xmx-linux/issues/28)) |
 
-Wuthering Waves and Cyberpunk 2077 were tested on Mesa 26.1.2 and 26.3.0-rc1, Forza Horizon 6 with `FSR_FG=inject` on Mesa 26.3.0-rc2, Satisfactory on Mesa 26.3.0-rc1; the benchmarks in [performance.md](performance.md) used 26.1.2 and 26.3.0-rc3. Details for the FSR and optical-flow games are in [frame-generation.md](frame-generation.md); [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) has a Final Fantasy VII Rebirth comparison (~15% faster on Mesa 26.3 + XMX than on 26.1.2 + DP4a).
+Wuthering Waves and Cyberpunk 2077 were tested on Mesa 26.1.2 and 26.3.0-rc1, Forza Horizon 6 with `FSR_FG=inject` on Mesa 26.3.0-rc2, Satisfactory on Mesa 26.3.0-rc1; the `XESS=auto` lines of Cyberpunk 2077, Forza Horizon 6, and CONTROL Resonant were run on the unpatched Mesa 26.3.0 with the layer, and they set these games up as `XESS=latest`, `FSR=xess FSR_FG=inject`, and `FSR=xess` did before; the benchmarks in [performance.md](performance.md) used 26.1.2 and 26.3.0-rc3. Details for the FSR and optical-flow games are in [frame-generation.md](frame-generation.md); [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) has a Final Fantasy VII Rebirth comparison (~15% faster on Mesa 26.3 + XMX than on 26.1.2 + DP4a).
 
-Any other D3D12 game with XeSS 2.0.2.68 or newer works the same way (older XeSS: add `XESS=latest`): its kernels are compiled on first use and cached in `~/.cache/xess-xmx/kernels`. To share how a game runs on your GPU, working or not, post it in [Game reports](https://github.com/HHHHanasak1/xess-xmx-linux/discussions/categories/game-reports). If a game does not work, please also open an issue with the `XESS_LOG=1` log (`C:\igdext_trace.log`) ([troubleshooting.md](troubleshooting.md)).
+Any other D3D12 game with XeSS 2.0.2.68 or newer works the same way (older XeSS: add `XESS=auto`): its kernels are compiled on first use and cached in `~/.cache/xess-xmx/kernels`. To share how a game runs on your GPU, working or not, post it in [Game reports](https://github.com/HHHHanasak1/xess-xmx-linux/discussions/categories/game-reports). If a game does not work, please also open an issue with the `XESS_LOG=1` log (`C:\igdext_trace.log`) ([troubleshooting.md](troubleshooting.md)).
 
 ---
 
@@ -42,17 +45,17 @@ Any other D3D12 game with XeSS 2.0.2.68 or newer works the same way (older XeSS:
 
 1. In Steam, open the game's **Properties → General → Launch options** and set:
    ```text
-   XESS=latest %command%
+   XESS=auto %command%
    ```
    To change the frame generation multiplier, add `XESS_FG=`, for example 3x:
    ```text
-   XESS=latest XESS_FG=3 %command%
+   XESS=auto XESS_FG=3 %command%
    ```
 2. Start the game and enable **XeSS** and **XeSS Frame Generation** in the game's graphics settings.
 
-While the game runs, `tools/proton-hook.py` replaces the game's older `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` with links to Intel's XeSS SDK 3.0.2 libraries (`xess/`: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) and restores the game's original files when it exits ([launch-options.md](launch-options.md)). Tested in Cyberpunk 2077 2.31 on an Arc B390: super resolution and frame generation, including multi-frame generation, run on XMX.
+While the game runs, `tools/proton-hook.py` replaces the game's older `libxess.dll`, `libxess_fg.dll`, and `libxell.dll` with links to Intel's XeSS SDK 3.0.2 libraries (`xess/`: XeSS 2.0.2.68, XeSS-FG 1.3.1.78, XeLL 1.3.2.10) and restores the game's original files when it exits ([launch-options.md](launch-options.md#choosing-the-route-yourself)). `XESS=latest` does this part alone, without looking at the game's FSR. Tested in Cyberpunk 2077 2.31 on an Arc B390: super resolution and frame generation, including multi-frame generation, run on XMX.
 
-### Why Old XeSS Needs `XESS=latest`
+### Why Old XeSS Needs Newer Libraries
 
 When a game loads a `libxess.dll` older than 2.0.2.68, DXVK's DXGI (DirectX Graphics Infrastructure) layer activates a built-in workaround (`isXessVendorWaNeeded()` in DXVK's `dxgi_options.cpp`, which has no option to turn it off) and reports your Intel GPU as an AMD GPU. In the Proton log (`PROTON_LOG=1`), this appears as:
 
@@ -69,7 +72,7 @@ Mesa has a second mechanism that hides the Intel vendor ID in certain games: `fo
 If you use a per-game setup (`enable.sh`) or a Proton without the hook, you can replace the game's XeSS DLLs by hand. In Cyberpunk 2077, these are `libxess.dll`, `libxess_dx11.dll`, `libxess_fg.dll`, and `libxell.dll` in `bin/x64/`. Back up the originals first (a game update or Steam's "Verify integrity of game files" restores the old files). You can get a 2.0.2.68 set from:
 
 * `<package>/xess/` (downloaded by `install.sh` or `tools/get-xess.sh`), Intel's XeSS SDK release, or another game that ships 2.0.2.68;
-* Proton: launch the game once with `PROTON_XESS_UPGRADE=1 %command%` so Proton downloads a newer set into the prefix (`drive_c/windows/system32/umu/`), then copy those four files into the game folder. Proton's redirect in `umu/` is not enough by itself because the game loads `libxess.dll` from its own folder.
+* GE-Proton: launch the game once with `PROTON_XESS_UPGRADE=1 %command%` so GE-Proton downloads a newer set into the prefix (`drive_c/windows/system32/umu/`), then copy those four files into the game folder. Its redirect in `umu/` is not enough by itself because the game loads `libxess.dll` from its own folder. (Valve's Proton has no such option.)
 
 ---
 
@@ -81,11 +84,11 @@ To run XeSS on XMX in a D3D11 game:
 
 1. Set the game's Steam launch options to:
    ```text
-   XESS=latest %command%
+   XESS=auto %command%
    ```
 2. Enable **XeSS** in the game's graphics settings.
 
-While the game runs, `XESS=latest` replaces every `libxess_dx11.dll` in the game folder with this package's D3D11-to-D3D12 bridge (`dx11bridge/libxess_dx11.dll`), regardless of the game file's version, and links the XeSS SDK's `libxess.dll` next to it if the folder does not already have one. The bridge creates a companion D3D12 device on the same GPU, copies the frame's inputs across shared textures (converting depth via a small compute shader), runs D3D12 XeSS on XMX through the shim and driver, and copies the upscaled output back to D3D11.
+While the game runs, `XESS=auto` (as `XESS=latest` does) replaces every `libxess_dx11.dll` in the game folder with this package's D3D11-to-D3D12 bridge (`dx11bridge/libxess_dx11.dll`), regardless of the game file's version, and links the XeSS SDK's `libxess.dll` next to it if the folder does not already have one. The bridge creates a companion D3D12 device on the same GPU, copies the frame's inputs across shared textures (converting depth via a small compute shader), runs D3D12 XeSS on XMX through the shim and driver, and copies the upscaled output back to D3D11.
 
 The cross-device texture copies cost a small amount of memory bandwidth per frame; nothing else changes. This also works with **OptiScaler's** XeSS in a D3D11 game (`Dx11Upscaler=xess`), which loads `libxess_dx11.dll` from the game folder. Tested with the XeSS SDK's D3D11 sample on an Arc B390 (`XESS_DX11_TRACE=1` logs each call; `XESS_DX11_DUMP=<n>` writes the output of execute `n` next to the DLL).
 
@@ -101,16 +104,16 @@ To run XeSS on XMX in a Vulkan game:
 
 1. Set the game's Steam launch options to:
    ```text
-   XESS=latest %command%
+   XESS=auto %command%
    ```
-   Some games load `vulkan-1.dll` dynamically at runtime. They call `LoadLibrary` instead of listing `vulkan-1.dll` in their `.exe` import table. If such a game stays on DP4a with `XESS=latest` alone, add `XESS_VK=1`:
+   Some games load `vulkan-1.dll` dynamically at runtime. They call `LoadLibrary` instead of listing `vulkan-1.dll` in their `.exe` import table. If such a game stays on DP4a with `XESS=auto` alone, add `XESS_VK=1`:
    ```text
-   XESS=latest XESS_VK=1 %command%
+   XESS=auto XESS_VK=1 %command%
    ```
-   (To prevent `XESS=latest` from placing `vulkan-1.dll` in a non-Vulkan game where it gets in the way, set `XESS_VK=0`.)
+   (To prevent `XESS=auto` from placing `vulkan-1.dll` in a non-Vulkan game where it gets in the way, set `XESS_VK=0`.)
 2. Enable **XeSS** in the game's graphics settings.
 
-When `XESS=latest` detects a game that has `libxess.dll` and imports `vulkan-1.dll`, or when `XESS_VK=1` is set, the hook does two things while the game runs. It places the package's `vkwrap/vulkan-1.dll` next to the game executable, and it enables `VK_LAYER_XESS_xmx` (`layer/`). This `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`. It intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer, or, on GPUs the layer does not serve, to the patched driver.
+When the hook (`XESS=auto`, or `XESS=latest`) detects a game that has `libxess.dll` and imports `vulkan-1.dll`, or when `XESS_VK=1` is set, it does two things while the game runs. It places the package's `vkwrap/vulkan-1.dll` next to the game executable, and it enables `VK_LAYER_XESS_xmx` (`layer/`). This `vulkan-1.dll` forwards standard Vulkan calls to Wine's `vulkan-1.dll`. It intercepts XeSS's private Intel queries, shader module options, and descriptor pushes, and hands the kernels to the package's Vulkan layer, or, on GPUs the layer does not serve, to the patched driver.
 
 Notes and requirements for Vulkan games:
 * **Xe3 and Xe2 through the layer, other GPUs through the patched driver:** `VK_LAYER_XESS_xmx` serves the Xe3 GPUs of `layer/gpu-ids.txt`, and its Xe2 GPUs on an unpatched driver (stock mode, kernels at 128 GRF, untested on real Xe2 hardware). On Xe-HPG, other Xe3 IDs, and Xe2 on the patched driver, the layer does not answer the self-test (`layer_canary`). There `vulkan-1.dll` gives the kernels to the patched driver, which these GPUs use anyway (it answers with `anv_canary`). For that, `vulkan-1.dll` sets up a descriptor heap the way vkd3d-proton does for D3D12 games. This path has not been tested on Xe-HPG or Xe2 GPUs yet. Reports are welcome.

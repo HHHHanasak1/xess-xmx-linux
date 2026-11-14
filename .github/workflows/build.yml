@@ -5,7 +5,8 @@ name: build
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
 #   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
-# plus syntax checks of the scripts and a run of the install scripts in a sandbox (tools/tests/install-sandbox.sh).
+# plus syntax checks of the scripts and a run of the install scripts and of the Proton hook in a sandbox
+# (tools/tests/install-sandbox.sh, tools/tests/hook-sandbox.py).
 # Release archives are made from these artifacts (tools/make-release.py, see docs/dev/building.md); they also show that
 # the tree builds and give Mesa ABI mismatches a place to surface.
 
@@ -30,7 +31,7 @@ jobs:
       - name: shell syntax
         run: for f in *.sh tools/*.sh tools/tests/*.sh ffxfg/*.sh; do bash -n "$f" || exit 1; done
       - name: python syntax
-        run: python3 -m py_compile tools/*.py
+        run: python3 -m py_compile tools/*.py tools/tests/*.py
       - name: placeholder templates match the driver (shapes, magic, self-test values, DXBC checksums), and so do the layer's and vkwrap's constants
         run: |
           python3 tools/check_placeholders.py patches/0001-anv-cm-kernel-injection.patch
@@ -49,13 +50,17 @@ jobs:
 
   # install.sh, uninstall.sh, enable.sh / disable.sh, xmx-launch.sh, xmx-stock.sh, tools/switch-driver.sh,
   # tools/session-check.sh and tools/fsr-fg.sh in a sandbox: a made-up HOME and Steam tree, stand-ins for the binaries,
-  # stub systemctl / vulkaninfo. No network, GPU or root; the Steam libraries must end as if nothing had been installed
+  # stub systemctl / vulkaninfo. No network, GPU or root; the Steam libraries must end as if nothing had been installed.
+  # tools/proton-hook.py, run as Proton runs it on made-up game folders: every launch line swaps what it swapped
+  # before XESS=auto, XESS=auto swaps what the old line for that kind of game swaps, and the folders end as they were
   install-scripts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: the install scripts in a sandbox
         run: bash tools/tests/install-sandbox.sh
+      - name: the Proton hook's launch options in a sandbox
+        run: python3 tools/tests/hook-sandbox.py
 
   icd:
     runs-on: ubuntu-latest

@@ -1,7 +1,8 @@
 #!/bin/bash
 # install.sh - system-wide install of the XeSS XMX package for the current user (SteamOS / any systemd user session):
 #   1. compiler bundle (igc/) fetched if missing            -> run-time kernel compilation for any XeSS version;
-#      Intel's XeSS SDK libraries (xess/) fetched if missing -> for games with XESS=latest in their launch options
+#      Intel's XeSS SDK libraries (xess/) fetched if missing -> for games with XESS=auto (or XESS=latest) in their
+#      launch options
 #      AMD's FidelityFX loader + providers (ffx/) fetched if missing -> FSR=xess / FSR_FG=xess with FSR 3.1.0-3.1.3
 #   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
 #      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
@@ -88,10 +89,10 @@ if [ "$MANUAL" = 1 ] && ! xmx_have_compiler "$PKG"; then
   echo "== fetching the compiler bundle (IGC 2.10.10 + ocloc, ~95 MB)"
   bash "$PKG/tools/get-igc.sh" "$PKG" || { echo "compiler download failed - the run-time kernel path will be unavailable"; }
 fi
-# Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=latest, tools/proton-hook.py)
+# Intel's XeSS SDK libraries, used only by games whose launch options ask for them (XESS=auto, tools/proton-hook.py)
 if [ "$MANUAL" = 1 ] && [ ! -f "$PKG/xess/libxess.dll" ]; then
-  echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=latest)"
-  bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=latest will use the games' own libraries"
+  echo "== fetching Intel's XeSS SDK libraries (~77 MB, for XESS=auto)"
+  bash "$PKG/tools/get-xess.sh" "$PKG" || echo "XeSS SDK download failed - XESS=auto and XESS=latest will use the games' own libraries"
 fi
 # AMD's FidelityFX loader and providers: FSR=xess / FSR_FG=xess in games with FSR 3.1.0-3.1.3 (one amd_fidelityfx_dx12.dll)
 if [ "$MANUAL" = 1 ] && { [ ! -f "$PKG/ffx/amd_fidelityfx_loader_dx12.dll" ] || [ ! -f "$PKG/ffx/amd_fidelityfx_framegeneration_dx12.dll" ]; }; then
@@ -197,14 +198,15 @@ $f";; esac
 # only " and \ are escaped
 HOOK_LIT=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$PKG/tools/proton-hook.py" 2>/dev/null) || {
   HOOK_LIT=${PKG//\\/\\\\}/tools/proton-hook.py; HOOK_LIT="\"${HOOK_LIT//\"/\\\"}\""; }
-install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=latest, FSR=xess, FSR_FG=xess)
+install_hook() { # <Proton folder>: user_settings.py that runs tools/proton-hook.py (XESS=auto and the other options)
   local p=$1 u="$1/user_settings.py"
   [ -f "$p/proton" ] && [ -w "$p" ] || return
   # a user_settings.py of the user's own (Proton's debug settings) keeps working: it becomes user_settings.user.py
   if [ -f "$u" ] && ! grep -q 'xess-xmx proton hook' "$u"; then mv -f "$u" "$p/user_settings.user.py"; fi
   cat > "$u.new" <<EOF
 # xess-xmx proton hook - written by $PKG/install.sh, removed by uninstall.sh. Runs tools/proton-hook.py at every game
-# start (XESS=latest, FSR=xess, FSR_FG=xess in a game's launch options). Your own Proton settings go into user_settings.user.py.
+# start (XESS=auto and the other launch options of docs/launch-options.md). Your own Proton settings go into
+# user_settings.user.py.
 import os as _os
 user_settings = {}
 try:
@@ -367,3 +369,7 @@ EOF
     || echo "!! the package's driver does not load on this system - see ~/.cache/xess-xmx/driver-status"
 fi
 echo "done. Reboot (or log out and in) once so Steam picks up the environment; then any game with XeSS runs on XMX."
+if [ "$MANUAL" = 1 ]; then
+  echo "   Most games need no launch option. Where XeSS is missing from a game's menu or runs on DP4a: XESS=auto %command%"
+  echo "   More than 2x frame generation: add XESS_FG=3 (docs/launch-options.md)"
+fi

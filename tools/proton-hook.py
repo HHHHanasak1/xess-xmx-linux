@@ -1,27 +1,43 @@
 # proton-hook.py - run by Proton at every game start through the user_settings.py that install.sh puts next to each
 # Proton's `proton` script (Proton imports that file before it starts the game). It does something only when the game's
 # launch options say so (docs/launch-options.md):
+#   XESS=auto %command%     the game is set up for XeSS from what its folder holds (auto_route): its own XeSS as
+#                           XESS=latest does, and in a game without XeSS frame generation its FSR 3.1+ as FSR=xess
+#                           does; an FSR upscaler without frame generation gets XeSS-FG as FSR_FG=inject gives it when
+#                           the launch options ask for frame generation (XESS_FG=<n>, OFLOW_FG=1). An FSR / FSR_FG of
+#                           the launch options decides instead; OFLOW_FG=1 next to it is the last resort, for a game
+#                           with neither XeSS frame generation nor FSR 3.1+
 #   XESS=latest %command%   the game runs with the XeSS libraries of Intel's SDK (tools/get-xess.sh, <package>/xess)
 #                           instead of its own older ones. Meant for a game with XeSS older than 2.0.2.68: DXVK reports
 #                           an Intel GPU to such a game as an AMD one (DP4a; XeSS-FG older than 1.2 is not offered)
+#   XESS=auto_off %command% no XESS=auto for this game, where the whole session has it (environment.d)
 #   XESS=dp4a %command%     XeSS without the shim's extension: DP4a, frame generation on its generic path
 #                           (IGDEXT_FORCE_FALLBACK=1)
+#   XESS_LL=off %command%   the low latency by a short name: off, on, auto:<ms> (IGDEXT_XELL_CAP=off, auto, auto:<ms>,
+#                           which the shim and the frame generation DLL read in the game)
 #   XESS_LOG=1 %command%    the shim's trace and the XeLL, XeSS-FG and ControlLib.dll logs (IGDEXT_TRACE=1
 #                           IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1)
+#   XESS_LOG=2 %command%    a whole report: also Proton's log (PROTON_LOG=1; it has the game's stderr, where the
+#                           patched driver's ANV_CM_DEBUG=1 lines go), the layer's log as a file of its own
+#                           (XMX_LAYER_LOG=~/.cache/xess-xmx/layer.log), VKWRAP_LOG=1 and XESS_DX11_TRACE=1
 #   FSR=xess %command%      a game's FSR 3.1+ runs on XeSS: its amd_fidelityfx_upscaler_dx12.dll and
 #                           amd_fidelityfx_framegeneration_dx12.dll become the package's (ffxfg/, XeSS SR and XeSS-FG,
 #                           docs/frame-generation.md), with the SDK's libxess.dll, libxess_fg.dll and libxell.dll
 #                           next to them. FSR 3.1.0-3.1.3 has everything in one amd_fidelityfx_dx12.dll: AMD's loader
 #                           takes its place, with the providers next to it (tools/get-ffx.sh, <package>/ffx)
 #   FSR_FG=xess %command%   only the frame generation (the game's own FSR upscaler stays)
-#   FSR=xess FSR_FG=inject %command%   for a game with FSR 3.1+ upscaling and no FSR frame generation: dxgi.dll next to
-#                           the game gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/)
-#   OFLOW_FG=1 %command%    experimental, any DX12 game: the same dxgi.dll next to the game's executable, XeSS-FG fed
-#                           with motion vectors from optical flow on the final image (FFX_XEFG_OFLOW=1,
-#                           docs/frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame
+#   FSR_FG=inject %command% for a game with FSR 3.1+ upscaling and no FSR frame generation: dxgi.dll next to the game
+#                           gives it an XeSS-FG swap chain, fed from the upscaler's inputs (ffxfg/). It needs the
+#                           upscaler on XeSS, so it means FSR=xess FSR_FG=inject
+#   OFLOW_FG=1 %command%    any DX12 game: the same dxgi.dll next to the game's executable, XeSS-FG fed with motion
+#                           vectors from optical flow on the final image (FFX_XEFG_OFLOW=1,
+#                           docs/frame-generation.md); XESS_FG=<n> sets the frames shown per rendered frame (more
+#                           than 2 is experimental)
 # Debug: FSR_VENDOR=amd (DXVK reports the GPU as AMD's, for a game that offers FSR only on AMD GPUs; XeSS still gets
 # Intel's vendor id from the package's DLLs).
 # (XESS_FG=<n>, the frame generation override, needs no hook: ControlLib.dll and the shim read it in the game)
+# What a run was started with and every line it prints are kept in ~/.cache/xess-xmx/hook-<app id>.log (hook_log):
+# the lines go to Proton's own stderr, which is Steam's output, not the file PROTON_LOG=1 writes.
 # The game's own old libraries are not given the Intel GPU (DXVK_CONFIG=dxgi.customVendorId = 8086 would): Cyberpunk
 # 2077's XeSS-FG 1.1.0.19 then crashes on a null context (libxess_fg +0x238ea4); with the SDK's 1.3.1.78 it works.
 # The variables behind them go into Proton's user_settings, which never override one the launch options set themselves.
@@ -36,7 +52,7 @@
 # lock nobody holds any more are left over; links of a live run are not touched.
 # FSR / FSR_FG swap the same way; a file the game does not have (libxess_fg.dll, libxell.dll, the upscaler and frame
 # generation DLLs next to the loader) is added as a link (no .xmx-orig) and removed again.
-import atexit, fcntl, os, shutil, signal, sys
+import atexit, fcntl, os, shutil, signal, sys, time
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE = os.path.join(PKG, "xess")
@@ -64,10 +80,53 @@ VKD3D_OFF = ("VK_EXT_descriptor_buffer", "VK_EXT_descriptor_heap", "VK_KHR_prese
 LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "xess-xmx", "xess-swap")
 # variables for the game: user_settings.py passes its dict in; Proton applies them unless the launch options set them
 SETTINGS = globals().get("SETTINGS", {})
+# what the launch options can say to this script, and the three that change what its routes do: for the log's first
+# line. A run with one of this script's own gets that line also when there is nothing else to say (OWN)
+OPTIONS = ("XESS", "XESS_FG", "XESS_VK", "XESS_LL", "XESS_LOG", "FSR", "FSR_FG", "FSR_VENDOR", "OFLOW_FG", "MESA",
+           "IGDEXT_XELL_CAP")
+OWN = tuple(k for k in OPTIONS if k not in ("XESS_FG", "MESA", "IGDEXT_XELL_CAP"))
+XESS_OPT = "XESS=latest"   # the option the lines about a game's own XeSS name: main() makes it XESS=auto
+_log = None   # the hook's own log: opened by the first line of a run (hook_log), False when it cannot be written
+
+
+def hook_log():
+    """The log of this script, ~/.cache/xess-xmx/hook-<Steam's id of the game, else the executable's name>.log: the
+    runs of one game one after another (emptied when it has passed 200 KB), each starting with what it was started
+    with. Steam starts Proton for its install-script helper before a game, with the game's id in STEAM_COMPAT_APP_ID
+    only: that run is the one that puts back what a killed run left, and its lines belong into the game's log too"""
+    exe = sys.argv[2] if len(sys.argv) > 2 else ""
+    name = next((v for v in (os.environ.get(k, "") for k in ("SteamGameId", "SteamAppId", "STEAM_COMPAT_APP_ID"))
+                 if v.isdigit() and v != "0"), "")
+    if not name:
+        name = "".join(c if c.isalnum() or c in "._-" else "_" for c in os.path.basename(exe)) or "unknown"
+    path = os.path.join(os.path.dirname(LOCKS), "hook-%s.log" % name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    f = open(path, "w" if os.path.exists(path) and os.path.getsize(path) > 200 << 10 else "a")
+    f.write("== %s %s: %s %s | %s\n" % (
+        time.strftime("%Y-%m-%d %H:%M:%S"), os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0]))),
+        sys.argv[1] if len(sys.argv) > 1 else "", exe,
+        " ".join("%s=%s" % (k, os.environ[k]) for k in OPTIONS if k in os.environ) or "no options"))
+    f.flush()
+    return f
+
+
+def note(msg=None):
+    """the run's first line in the hook's log if it is not there yet, then msg"""
+    global _log
+    try:
+        if _log is None:
+            _log = hook_log()
+        if _log and msg is not None:
+            _log.write(msg + "\n")
+            _log.flush()
+    except Exception:   # a cache folder that cannot be written, or anything else: the lines still go to stderr
+        _log = False
 
 
 def say(msg):
+    """a line for Steam's output (Proton's own stderr is not in PROTON_LOG's file) and for the hook's log"""
     sys.stderr.write("xess-xmx: %s\n" % msg)
+    note(msg)
 
 
 def u16(b, o):
@@ -292,19 +351,19 @@ def fresh(f):
 
 
 def xess_dx11(game, f, swaps):
-    """XESS=latest, a game's libxess_dx11.dll: the package's in its place, whatever the version, and the SDK's
-    libxess.dll next to it if the game has none there (the package's runs XeSS through it)"""
+    """XESS=latest / XESS=auto, a game's libxess_dx11.dll: the package's in its place, whatever the version, and the
+    SDK's libxess.dll next to it if the game has none there (the package's runs XeSS through it)"""
     ours_dx11 = os.path.join(DX11, "libxess_dx11.dll")
     rel = os.path.relpath(f, game)
     if not os.path.isfile(ours_dx11):
-        say("XESS=latest: %s kept (%s missing)" % (rel, ours_dx11))
+        say("%s: %s kept (%s missing)" % (XESS_OPT, rel, ours_dx11))
         return
     swaps.link(f, ours_dx11)
-    say("XESS=latest: %s %s -> XeSS for D3D11 on D3D12 (dx11bridge)" % (rel, vstr(version(f))))
+    say("%s: %s %s -> XeSS for D3D11 on D3D12 (dx11bridge)" % (XESS_OPT, rel, vstr(version(f))))
     top = os.path.dirname(f)
     if not any(n.lower() == "libxess.dll" for n in os.listdir(top)):
         swaps.link(os.path.join(top, "libxess.dll"), os.path.join(STORE, "libxess.dll"))
-        say("XESS=latest: %s added (the SDK's, for D3D11 XeSS)" % os.path.relpath(os.path.join(top, "libxess.dll"), game))
+        say("%s: %s added (the SDK's, for D3D11 XeSS)" % (XESS_OPT, os.path.relpath(os.path.join(top, "libxess.dll"), game)))
 
 
 def pe_imports(path):
@@ -342,11 +401,11 @@ def pe_imports(path):
 
 
 def xess_vulkan(game, swaps, found):
-    """XESS=latest, a Vulkan game with XeSS (its exe imports vulkan-1.dll; XESS_VK=1 forces, XESS_VK=0 skips): the
-    package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and the layer,
-    which serves XeSS' Vulkan kernels on the package's patched and unpatched Mesa on Xe3, and on the unpatched Mesa on
-    Xe2 (the patched one runs them itself there). Without the layer XeSS stays on DP4a: vkwrap checks that the layer
-    (or the patched driver) serves the device."""
+    """XESS=latest / XESS=auto, a Vulkan game with XeSS (its exe imports vulkan-1.dll; XESS_VK=1 forces, XESS_VK=0
+    skips): the package's vulkan-1.dll next to the exe (vkwrap/, Wine's own builtin otherwise wins: vulkan-1=n,b), and
+    the layer, which serves XeSS' Vulkan kernels on the package's patched and unpatched Mesa on Xe3, and on the
+    unpatched Mesa on Xe2 (the patched one runs them itself there). Without the layer XeSS stays on DP4a: vkwrap
+    checks that the layer (or the patched driver) serves the device."""
     force = os.environ.get("XESS_VK", "")
     exe = sys.argv[2] if len(sys.argv) > 2 else ""
     if force == "0" or sys.argv[1] != "waitforexitandrun" or not exe.lower().endswith(".exe") or not os.path.isfile(exe):
@@ -357,13 +416,13 @@ def xess_vulkan(game, swaps, found):
     s = proton_session()
     f = os.path.join(os.path.dirname(exe), "vulkan-1.dll")
     if not os.path.isfile(ours_vk) or not os.path.isfile(os.path.join(LAYER, "libVkLayer_xess_xmx.so")):
-        say("XESS=latest (Vulkan): %s or the layer missing; XeSS stays on DP4a" % ours_vk)
+        say("%s (Vulkan): %s or the layer missing; XeSS stays on DP4a" % (XESS_OPT, ours_vk))
         return
     if not s:
-        say("XESS=latest (Vulkan): not run by Proton's script; XeSS stays on DP4a")
+        say("%s (Vulkan): not run by Proton's script; XeSS stays on DP4a" % XESS_OPT)
         return
     if os.path.lexists(f):
-        say("XESS=latest (Vulkan): the game has a vulkan-1.dll of its own next to %s; XeSS stays on DP4a" % exe)
+        say("%s (Vulkan): the game has a vulkan-1.dll of its own next to %s; XeSS stays on DP4a" % (XESS_OPT, exe))
         return
     swaps.link(f, ours_vk)
     s.dlloverrides["vulkan-1"] = "n,b"
@@ -377,8 +436,8 @@ def xess_vulkan(game, swaps, found):
         s.env["VK_LOADER_LAYERS_ENABLE"] = "VK_LAYER_XESS_xmx" + ("," + cur if cur else "")
     s.env.setdefault("XMX_LAYER_HELPER", os.path.join(PKG, "tools", "cm-compile.sh"))
     s.env.setdefault("XMX_IGC_DIR", os.path.join(PKG, "igc"))
-    say("XESS=latest (Vulkan): %s -> XeSS on XMX through vkwrap and the layer (Mesa %s)"
-        % (os.path.relpath(f, game) if f.startswith(game) else f, s.env.get("MESA", "default")))
+    say("%s (Vulkan): %s -> XeSS on XMX through vkwrap and the layer (Mesa %s)"
+        % (XESS_OPT, os.path.relpath(f, game) if f.startswith(game) else f, s.env.get("MESA", "default")))
 
 
 def xess_latest(game, swaps, found=None):
@@ -396,9 +455,9 @@ def xess_latest(game, swaps, found=None):
         rel = os.path.relpath(f, game)
         if vg and vs and vg < vs:
             swaps.link(f, sdk)
-            say("XESS=latest: %s %s -> %s" % (rel, vstr(vg), vstr(vs)))
+            say("%s: %s %s -> %s" % (XESS_OPT, rel, vstr(vg), vstr(vs)))
         else:
-            say("XESS=latest: %s %s kept (the SDK has %s)" % (rel, vstr(vg), vstr(vs)))
+            say("%s: %s %s kept (the SDK has %s)" % (XESS_OPT, rel, vstr(vg), vstr(vs)))
 
 
 def inject_fg(top, swaps, ours_fg):
@@ -615,13 +674,114 @@ def game_folder():
     return top
 
 
+def shipped(found, names):
+    """the game's own files of these names among game_libs(): a link this script added next to the FidelityFX DLLs
+    (another run of the same game that is still alive) is not one; a link with the game's original beside it is"""
+    return [f for f in named(found, names) if not ours(f) or os.path.isfile(f + ".xmx-orig")]
+
+
+def auto_route(game, found, want_fg):
+    """XESS=auto: what the game folder calls for beyond the game's own XeSS libraries, as (route, FSR, inject, why).
+    route "xess": the game ships XeSS frame generation. Its own XeSS is the route and FSR is left alone: what a game
+    hands to FSR is not always what XeSS works best with, and a wrong guess here leaves a feature out, where one the
+    other way could break a game. (A game that ships libxess_fg.dll and does not offer it under Proton cannot be told
+    from one that does by its files: FSR=xess in its launch options says so.)
+    route "fsr": no XeSS frame generation, but FSR 3.1+ DLLs: FSR runs on XeSS, as FSR=xess does. An upscaler without
+    frame generation gets XeSS-FG, as FSR_FG=inject gives it, only when the launch options ask for frame generation
+    (want_fg): the injected swap chain cannot be switched off in the game's menu.
+    route "": neither."""
+    xefg = shipped(found, ("libxess_fg.dll",))
+    if xefg:
+        return "xess", "", False, ("the game ships XeSS frame generation (%s %s): its own XeSS is used, FSR is left alone"
+                                   % (os.path.relpath(xefg[0], game), vstr(version(xefg[0]))))
+    folders = {}
+    for f in shipped(found, FFX_DLLS):
+        folders.setdefault(os.path.dirname(f), set()).add(os.path.basename(f).lower())
+    if any(names & {FG_DLL, SINGLE_DLL} for names in folders.values()):
+        return "fsr", "xess", False, ("no XeSS frame generation in the game, FSR 3.1+ with frame generation: FSR runs "
+                                      "on XeSS (as FSR=xess)")
+    if folders and want_fg:
+        return "fsr", "xess", True, ("no XeSS frame generation in the game, FSR 3.1+ upscaling without frame "
+                                     "generation: XeSS-FG is added to it (as FSR=xess FSR_FG=inject); choose FSR "
+                                     "upscaling in the game")
+    if folders:
+        return "fsr", "xess", False, ("FSR 3.1+ upscaling without frame generation: the upscaling runs on XeSS (as "
+                                      "FSR=xess); XESS_FG=<n> adds frame generation to it")
+    return "", "", False, "neither XeSS frame generation nor FSR 3.1+ in the game folder"
+
+
+def low_latency(s):
+    """XESS_LL: the low latency by a short name, handed on as IGDEXT_XELL_CAP, which the shim and the frame generation
+    DLL read in the game: off / 0, on / 1 / auto, auto:<ms>. The fixed cap in microseconds has no short name. An
+    IGDEXT_XELL_CAP that is set decides, as with every shorthand: this script cannot tell one of the launch options
+    from one of the whole session."""
+    ll = os.environ.get("XESS_LL", "")
+    if not ll:
+        return
+    v = ll.lower()
+    cap = {"off": "off", "0": "off", "on": "auto", "1": "auto", "auto": "auto"}.get(v)
+    if cap is None and v.startswith("auto:") and v[5:].lstrip("-").replace(".", "", 1).isdigit():
+        cap = v
+    cur = (s.env if s else os.environ).get("IGDEXT_XELL_CAP")
+    if cap is None:
+        say("XESS_LL=%s: unknown value (off, on, auto:<ms>); ignored" % ll)
+    elif cur is None:
+        SETTINGS["IGDEXT_XELL_CAP"] = cap
+    elif cur != cap:
+        say("XESS_LL=%s: IGDEXT_XELL_CAP=%s is set as well and decides" % (ll, cur))
+
+
+def logs(s):
+    """XESS_LOG=1: the package's logs in the game's prefix. XESS_LOG=2, for a report: also Proton's log (the game's
+    stderr goes there, and with it the patched driver's ANV_CM_DEBUG lines; the game runs slower), the layer's log as
+    a file of its own, emptied here as the layer appends, and the Vulkan wrapper's and the D3D11 bridge's."""
+    level = os.environ.get("XESS_LOG", "")
+    if level in ("", "0"):
+        return
+    SETTINGS.update({"IGDEXT_TRACE": "1", "IGDEXT_XELL_LOG": "1", "IGDEXT_XEFG_LOG": "1", "XESS_FG_LOG": "1"})
+    say("XESS_LOG: C:\\igdext_trace.log, igdext_xell.log, igdext_xefg.log, igcl_stub.log in the prefix")
+    if not level.isdigit() or int(level) < 2:
+        return
+    layer_log = os.path.join(os.path.dirname(LOCKS), "layer.log")
+    own = (s.env if s else os.environ).get("XMX_LAYER_LOG")   # one that is set stays, as with every shorthand
+    if own is None:
+        try:
+            os.makedirs(os.path.dirname(layer_log), exist_ok=True)
+            open(layer_log, "w").close()
+        except OSError:
+            pass
+    SETTINGS.update({"PROTON_LOG": "1", "ANV_CM_DEBUG": "1", "XMX_LAYER_LOG": layer_log, "VKWRAP_LOG": "1",
+                     "XESS_DX11_TRACE": "1"})
+    say("XESS_LOG=2: also Proton's log (steam-<app id>.log in the home folder: the game's stderr, with the driver's "
+        "lines; the game runs slower) and the layer's, %s"
+        % (layer_log if own is None else "where XMX_LAYER_LOG=%s puts it" % own))
+
+
+def proton_upgrades():
+    """GE-Proton (a Proton with protonfixes) can bring newer upscaler libraries itself: with one of these variables its
+    loader takes the copies in C:\\windows\\system32\\umu in place of a game's libraries of that name
+    (WINE_UPSCALER_REPLACE, set after this script has run), wherever the game loads them from"""
+    if not os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "protonfixes")):
+        return
+    on = [k for k in ("PROTON_XESS_UPGRADE", "PROTON_FFX4_UPGRADE", "PROTON_FFX3_UPGRADE", "PROTON_USE_OPTISCALER")
+          if os.environ.get(k, "0") not in ("", "0")]
+    if on:
+        say("%s: this Proton then takes its own copies of those libraries (C:\\windows\\system32\\umu), so the files "
+            "linked here may not be the ones the game loads" % ", ".join(on))
+
+
 def main():
+    global XESS_OPT
     if len(sys.argv) < 2 or sys.argv[1] not in ("waitforexitandrun", "run"):
         return
     want = os.environ.get("XESS", "")
     fg = os.environ.get("FSR_FG", "")
     sr = os.environ.get("FSR", "")
     oflow = os.environ.get("OFLOW_FG", "") not in ("", "0")
+    mult = os.environ.get("XESS_FG", "")
+    mult = int(mult) if mult.isdigit() else 0
+    if any(os.environ.get(k) for k in OWN):
+        note()   # the log then tells that this script ran with these options, whatever it has to say
     clean_left_over()
     # a session started before install.sh added an extension still has the old value until the next login, and a
     # VKD3D_DISABLE_EXTENSIONS in the launch options replaces the session's
@@ -632,27 +792,34 @@ def main():
     # install.sh's path then arrives as C:windowssystem32... and XeSS never finds the shim under Proton 11.0
     if s and s.env.get("INTC_ALT_DRIVER_EXTENSIONS_PATH") == ALT_EXT.replace("\\", ""):
         s.env["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
-    if os.environ.get("XESS_LOG", "") not in ("", "0"):
-        SETTINGS.update({"IGDEXT_TRACE": "1", "IGDEXT_XELL_LOG": "1", "IGDEXT_XEFG_LOG": "1", "XESS_FG_LOG": "1"})
-        say("XESS_LOG: C:\\igdext_trace.log, igdext_xell.log, igdext_xefg.log, igcl_stub.log in the prefix")
+    logs(s)
+    low_latency(s)
     if want == "dp4a":
         SETTINGS["IGDEXT_FORCE_FALLBACK"] = "1"
-    elif want and want != "latest":
-        say("XESS=%s: unknown value (latest, dp4a); ignored" % want)
+    elif want == "auto_off":
+        want = ""   # no XESS=auto for this game, where the whole session has it; nothing else is turned off
+    elif want and want not in ("latest", "auto"):
+        say("XESS=%s: unknown value (auto, auto_off, latest, dp4a); ignored" % want)
+    auto = want == "auto"
     inject = fg == "inject"
-    if inject and sr != "xess":
-        say("FSR_FG=inject needs FSR=xess; ignored")
     if fg and fg not in ("xess", "inject"):
         say("FSR_FG=%s: unknown value (xess, inject); ignored" % fg)
     if sr and sr != "xess":
         say("FSR=%s: unknown value (xess); ignored" % sr)
         sr = ""
+    if inject:
+        sr = "xess"   # the injected XeSS-FG is fed by the upscaler on XeSS: FSR_FG=inject means FSR=xess FSR_FG=inject
     if sr == "xess":
         fg = "xess"
     if oflow and (fg or sr):
         say("OFLOW_FG=1 with FSR / FSR_FG: OFLOW_FG is left out (the game's own inputs are better than optical flow)")
         oflow = False
-    if want != "latest" and fg != "xess" and not sr and not oflow:
+    if want not in ("latest", "auto") and fg != "xess" and not sr and not oflow:
+        return
+    if os.path.basename(sys.argv[2] if len(sys.argv) > 2 else "").lower() == "iscriptevaluator.exe":
+        # Steam's install-script helper, which Proton runs before a game. It has the game's folder and the options
+        # of the whole session (environment.d), not the game's launch options: the game's own run follows, and
+        # setting the folder up for these few seconds would only copy the libraries twice
         return
     game = game_folder()
     if not game or not os.path.isdir(game):
@@ -691,13 +858,34 @@ def main():
     old = [(s, signal.signal(s, on_signal)) for s in sigs]
 
     found = game_libs(game)   # the game folder walked once for every option
-    if want == "latest":
+    if auto:
+        XESS_OPT = "XESS=auto"
+        if fg == "xess" or sr:
+            # an FSR / FSR_FG of the launch options decides: also in a game whose own XeSS frame generation
+            # auto_route() would have taken and whose menu does not offer it
+            say("XESS=auto: the route is set in the launch options (%s); the game's own XeSS is looked after as well"
+                % " ".join("%s=%s" % (k, os.environ[k]) for k in ("FSR", "FSR_FG") if os.environ.get(k)))
+        else:
+            route, sr, inject, why = auto_route(game, found, mult >= 2 or oflow)
+            fg = "xess" if sr else ""
+            if oflow and route:
+                # optical flow next to XESS=auto is the last resort, as it is left out next to FSR / FSR_FG
+                why += "; OFLOW_FG=1 is left out (the game's own inputs are better than optical flow)"
+                oflow = False
+            elif oflow:
+                why += ": frame generation from optical flow (OFLOW_FG=1)"
+            elif not route:
+                why += ": only the game's own XeSS is looked after"
+                if mult >= 2:
+                    why += " (frame generation for a DX12 game without them: OFLOW_FG=1)"
+            say("XESS=auto: " + why)
+    if want in ("latest", "auto"):
         if os.path.isfile(os.path.join(STORE, "libxess.dll")):
             xess_latest(game, swaps, found)
             xess_vulkan(game, swaps, found)
         else:
-            say("XESS=latest: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
-                % (STORE, PKG))
+            say("%s: no XeSS SDK in %s (run %s/tools/get-xess.sh); the game's own libraries are used"
+                % (XESS_OPT, STORE, PKG))
     if oflow:
         oflow_fg(swaps, game)
     if fsr(game, swaps, fg == "xess", sr, inject, found) and os.environ.get("FSR_VENDOR", "") == "amd":
@@ -710,6 +898,7 @@ def main():
         env = s.env if s else os.environ
         if prefix_has_shim() and "INTC_ALT_DRIVER_EXTENSIONS_PATH" not in env:
             SETTINGS["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
+        proton_upgrades()
     if not swaps.paths:
         for sig, h in old:
             signal.signal(sig, h)   # nothing to put back: this run does not touch how Proton ends
