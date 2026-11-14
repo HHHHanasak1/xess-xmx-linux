@@ -1,7 +1,7 @@
 #!/bin/bash
 # xmx-stock.sh - Steam launch wrapper: this game runs on the system's own, unpatched Mesa ANV with the
 # package's Vulkan layer VK_LAYER_XESS_xmx (layer/), which puts XeSS' XMX kernels in from outside the driver, instead
-# of on the package's patched driver. Steam launch options (variables may come before it):
+# of on one of the package's drivers. Steam launch options (variables may come before it):
 #   /path/to/xess-xmx-linux/xmx-stock.sh %command%
 # It sets everything before Steam's runtime container (pressure-vessel) starts: inside the container the driver list
 # has already been rewritten, and a list changed there loaded two Intel drivers (the container's copy of the patched

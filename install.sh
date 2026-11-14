@@ -5,10 +5,14 @@
 #      launch options
 #      AMD's FidelityFX loader + providers (ffx/) fetched if missing -> FSR=xess / FSR_FG=xess with FSR 3.1.0-3.1.3
 #   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
-#      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
+#      gets the package's ANV as its Vulkan ICD (the session's driver, below) and the kernel path; no per-game launch
+#      options needed any more
 #   3. the shim igdext64.dll goes into every Proton that bundles its own igdext (Proton Experimental copies that file
-#      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store
-#   4. a user path unit re-installs the shim whenever a Proton update replaces its bundled copy
+#      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store;
+#      ControlLib.dll (XESS_FG) goes into those prefixes, and the launch-option hook (user_settings.py, which runs
+#      tools/proton-hook.py) into every Proton
+#   4. a user path unit re-installs them whenever a Proton update replaces its bundled copy or a new prefix appears
+#   5. a user unit checks before each graphical session that the driver still loads (tools/session-check.sh)
 # Re-run after Steam installs a new Proton or after a game created a new prefix. uninstall.sh reverts everything.
 # Environment: XMX_NO_ENV=1 skips step 2 and the session check (keep using enable.sh / launch options per game).
 #   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply

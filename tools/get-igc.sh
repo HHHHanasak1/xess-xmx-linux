@@ -3,7 +3,7 @@
 #   igc/igc  Intel Graphics Compiler 2.10.10 (the igc-core deb, unpacked; the version every shipped kernel
 #            was built with - newer IGC releases fail on XeSS kernels: IGC 2.41.5 with compute-runtime 26.35, its
 #            pair, rejected 128 of 150 from five games, "spirv_read_verify: verify Module failed")
-#   igc/neo  ocloc from intel-compute-runtime 25.18.1
+#   igc/neo  ocloc from intel-compute-runtime 25.18.33578.6
 # Only the files are unpacked (no installation); about 95 MB. The igc-opencl package is not needed: SPIR-V input never uses it. Needs curl, ar (binutils) and tar.
 set -eu
 PKG="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
