@@ -73,7 +73,7 @@ The options mean the same on every path. `XESS_LL` is the short name of `IGDEXT_
 | `XESS_LL=auto:<ms> %command%` | Keeps the low latency on, and starts each frame `<ms>` milliseconds earlier (or later if negative) | Giving the game more frame-rate headroom at the cost of a little more latency (for example, `XESS_LL=auto:2 %command%`) |
 | `XESS_LL=on %command%` (or `auto`) | The low latency as it is by default | A game that should keep it where `XESS_LL=off` is set for every game |
 | `IGDEXT_XELL_CAP=<us> %command%` | Turns the wait off. XeLL's frame cap holds the frames instead: any smaller interval the game sets with `xellSetSleepMode` is raised to `<us>` microseconds per displayed frame. Valid values: `1` to `1000000`; `0` = off. Any other value turns both off. A game that never calls `xellSetSleepMode` gets no cap from it. It has no short name: `XESS_LL` does not take a number | Locking a steady fixed frame rate through XeLL |
-| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves 30 fps frame-cap fix in any game | Another game drops to 30 fps when enabling frame generation until a menu is opened and closed |
+| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the 30 fps frame-cap fix, which is on by default for Wuthering Waves only, in any game | A game drops to 30 fps when frame generation is enabled, until a menu is opened and closed |
 
 The switches for ruling out one part of the low latency when debugging (`IGDEXT_XELL_CHECK=0`, `IGDEXT_XELL_POLLS=0`, `IGDEXT_XELL_KEEPCAP=1`) are in [dev/debugging.md](dev/debugging.md).
 
@@ -112,7 +112,7 @@ Where the GPU is already fully busy, the frame rate rises only slightly: in Forz
   - **CPU-limited** (CPU held to ~2 W, 4–6 minutes): **76.1 ms -> 47.8 ms (−37%)** at 28.7 ms frame time.
   - **Render-thread-limited** (moving in a heavy scene, ~6 minutes): **105.5 ms -> 67.2 ms (−36%)** at ~42.1 ms frame time.
 
-**Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
+**30 fps after enabling frame generation:** A game can pass a 33.3 ms (30 fps) frame cap to XeLL right after it enables frame generation, and clear it only when the pause menu is opened and closed (Wuthering Waves does). The shim's fix replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers). It is on by default for Wuthering Waves only; `IGDEXT_XELL_FIXCAP=1` applies it in any game.
 
 ---
 
