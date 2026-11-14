@@ -77,7 +77,7 @@ The options mean the same on every path. `XESS_LL` is the short name of `IGDEXT_
 
 The switches for ruling out one part of the low latency when debugging (`IGDEXT_XELL_CHECK=0`, `IGDEXT_XELL_POLLS=0`, `IGDEXT_XELL_KEEPCAP=1`) are in [dev/debugging.md](dev/debugging.md).
 
-**Log lines.** They are the same on every path. A game's own XeSS-FG writes them to `C:\igdext_xell.log` inside the game's prefix (with `XESS_LOG=1`, or `IGDEXT_XELL_LOG=1` alone). The FSR routes and `OFLOW_FG` write them to `ffx_xefg.log` next to the game's executable.
+**Log lines.** They are the same on every path. A game's own XeSS-FG writes them to `C:\igdext_xell.log` inside the game's prefix (with `XESS_LOG=1`, or `IGDEXT_XELL_LOG=1` alone). The FSR routes and `OFLOW_FG` write them to `ffx_xefg.log` in the game's folder, next to the frame generation DLL ([section 6](#6-logs-and-configuration-variables)).
 
 * `low latency (IGDEXT_XELL_CAP): ...` at the start: `auto`, `XeLL's fixed cap` or `off`, and who answers the game's questions.
 * `low latency: frames are held back ... (frame generation on ...)` or `low latency: no wait (frame generation off ...)` when frame generation goes on or off.
@@ -87,7 +87,7 @@ The switches for ruling out one part of the low latency when debugging (`IGDEXT_
 
 ### Measured
 
-Arc B390, SteamOS, 1920x1200, 144 Hz VRR. Each row compares separate runs of the release build as installed and of this build, interleaved, at the same spot or in the same benchmark, without input. Latency is XeLL's time from the start of a frame's simulation to the end of its present (`IGDEXT_XELL_LOG=1`). Full data and method are in [performance.md](performance.md).
+Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 2026-11-11. Each row compares separate runs of the release that was installed that day ("release build", a release before 20261113) and of the code this section describes ("this build", first released as 20261113), interleaved, at the same spot or in the same benchmark, without input. Latency is XeLL's time from the start of a frame's simulation to the end of its present (`IGDEXT_XELL_LOG=1`). Full data and method are in [performance.md](performance.md).
 
 | Path | Game | Release build | This build |
 |---|---|---|---|
@@ -177,7 +177,7 @@ Unlike the `FSR=xess` hook, `tools/fsr-fg.sh all` looks for a frame generation D
 
 ### A Game That Offers FSR Only on AMD GPUs (`FSR_VENDOR=amd`)
 
-Wuthering Waves shows FSR in its menu only on an AMD GPU. Add `FSR_VENDOR=amd` to the launch options (or put `dxgi.customVendorId = 1002` in `dxvk.conf` next to the game's `.exe`) to make DXVK report the GPU as AMD's to the game:
+Some games show FSR in their menu only on an AMD GPU (Wuthering Waves, for example). Add `FSR_VENDOR=amd` to the launch options (or put `dxgi.customVendorId = 1002` in `dxvk.conf` next to the game's `.exe`) to make DXVK report the GPU as AMD's to the game:
 
 ```text
 FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
@@ -194,7 +194,7 @@ FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
 
 ## 4. A Game with FSR Upscaling and No FSR Frame Generation (`FSR_FG=inject`)
 
-Forza Horizon 6 has FSR upscaling and XeSS super resolution, but its frame generation option is NVIDIA DLSS-G only. Because FSR 3.1+ upscaling receives depth, motion vectors, jitter, and frame time every frame, the package can feed those inputs into an XeSS-FG swap chain.
+A game can have FSR 3.1+ upscaling while its only frame generation option is NVIDIA DLSS-G (Forza Horizon 6, for example, which also has XeSS super resolution). Because FSR 3.1+ upscaling receives depth, motion vectors, jitter, and frame time every frame, the package can feed those inputs into an XeSS-FG swap chain.
 
 ### How to Use `FSR_FG=inject`
 
