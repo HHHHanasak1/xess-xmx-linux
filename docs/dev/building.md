@@ -93,7 +93,7 @@ cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build shim/build
 ```
 
-This writes `shim/build/igdext64.dll`. The DLL links against the static MSVC runtime and imports only `kernel32`, `advapi32`, and `dxgi`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), causing XeSS to fall back to DP4a (dot-product instructions). `shim/toolchain-mingw64.cmake` is kept from upstream `dxvk-igdext` for MinGW cross-compilation, but is not used for releases.
+This writes `shim/build/igdext64.dll`. The DLL links against the static MSVC runtime and imports only `kernel32` and `advapi32`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), causing XeSS to fall back to DP4a (dot-product instructions). `shim/toolchain-mingw64.cmake` is kept from upstream `dxvk-igdext` for MinGW cross-compilation, but is not used for releases.
 
 #### Regenerating and Checking the DXBC Placeholder Templates
 
