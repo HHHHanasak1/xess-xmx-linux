@@ -1,3 +1,5 @@
+> This is the README of upstream [dxvk-igdext](https://github.com/GameTechDev/dxvk-igdext), kept for reference: it describes upstream's build, not this project's shim, which is described in [docs/dev/how-it-works.md](../docs/dev/how-it-works.md).
+
 # dxvk-igdext
 
 `igdext64.dll` for Wine/DXVK: lets games use Intel D3D11 Graphics Extensions
