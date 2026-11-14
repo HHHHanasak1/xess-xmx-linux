@@ -132,7 +132,7 @@ For the internal design of `vkwrap/vulkan-1.dll` and `VK_LAYER_XESS_xmx`, see [d
 
 **No longer developed.** This project no longer actively develops FSR 4 on XMX. Visual quality differences were hard to judge on a handheld's small screen, it brought no significant performance gain over XeSS on XMX, it adds setup complexity, and combining it with XeSS multi-frame generation required per-game image fixes—which goes against this project's goal of working across games without per-game workarounds. FSR 3.1+ games are supported through `FSR=xess` instead ([frame-generation.md](frame-generation.md)). The notes below are kept for manual setup (tested with one build on one GPU in two games).
 
-Experimental FSR 4 upscaler builds shared on the OptiScaler Discord server run FSR 4 as C-for-Metal (CM) kernels through Intel's D3D12 extension, so they work through this package's shim and driver (using `patches/0005-anv-cm-sampler-descriptor-table.patch`, which supports CM kernels whose sampler is in a descriptor table; older drivers without patch 0005 render corrupted images). The build tested here is "B Boost" (FileVersion `4.0.2.1`); other builds may behave differently.
+Experimental FSR 4 upscaler builds shared on the OptiScaler Discord server run FSR 4 as C-for-Metal (CM) kernels through Intel's D3D12 extension, so they work through this package's shim and driver (using `patches/0005-anv-cm-sampler-descriptor-table.patch`, which supports CM kernels whose sampler is in a descriptor table; older drivers without patch 0005 render corrupted images). The build tested here is "B Boost" (FileVersion `4.0.2.1`); other builds may behave differently. It was tested on the patched driver (`MESA=26.3`); it has not been tested with the layer.
 
 ### Manual Setup
 
