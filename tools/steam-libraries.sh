@@ -50,9 +50,9 @@ steam_prefix_of() {
 xmx_icd_json() {
   printf '{ "ICD": { "api_version": "1.4.348", "library_arch": "64", "library_path": "%s" }, "file_format_version": "1.0.1" }\n' "$1"
 }
-# the VK_DRIVER_FILES list for a session on the patched driver: the package's ICD, then every other driver of the
+# the VK_DRIVER_FILES list for a session on the package's driver: the package's ICD, then every other driver of the
 # system (hybrid laptops, eGPUs) - only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of
-# the patched one; the 32-bit Intel ICD stays (32-bit games)
+# the package's; the 32-bit Intel ICD stays (32-bit games)
 #   xmx_driver_files <package ICD json>
 xmx_driver_files() {
   local drivers="$1" d j

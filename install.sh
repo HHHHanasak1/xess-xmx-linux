@@ -108,7 +108,7 @@ chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 # 2. session environment
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   # VK_DRIVER_FILES replaces the loader's driver list: every other GPU's driver stays in it (hybrid laptops, eGPUs),
-  # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the patched one
+  # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the package's
   drivers=$(xmx_driver_files "$PKG/run/intel_icd.json")
   mkdir -p "$ENVD"
   {
@@ -327,7 +327,7 @@ if [ -n "$watch" ]; then
     systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
   fi
 fi
-# 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
+# 5. safety net: before each graphical session, check that the package's driver still loads (a system update could break
 #    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU
 #    The unit runs a small copy outside the package: if the package folder is deleted or moved, the session environment
 #    still names its driver and leaves out the stock one, so without the folder that copy points the session back to the
