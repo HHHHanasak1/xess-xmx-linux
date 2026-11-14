@@ -112,7 +112,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   drivers=$(xmx_driver_files "$PKG/run/intel_icd.json")
   mkdir -p "$ENVD"
   {
-    echo "# XeSS XMX (xess-xmx-linux): patched ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
+    echo "# XeSS XMX (xess-xmx-linux): the package's ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
     echo "VK_DRIVER_FILES=$drivers"
     echo "# vkd3d-proton: the classic descriptor heap (the kernel binding code needs it) and present wait 1 (with present wait 2,"
     echo "# frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes)"
