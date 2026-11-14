@@ -25,7 +25,7 @@ body:
     id: system
     attributes:
       label: System, package release, Proton
-      placeholder: SteamOS 3.8, release 20261111, GE-Proton 11-6
+      placeholder: SteamOS 3.8, release 20261113, GE-Proton 11-12
     validations:
       required: true
   - type: dropdown

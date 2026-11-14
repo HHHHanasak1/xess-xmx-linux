@@ -12,7 +12,7 @@ Requires an Intel GPU with XMX engines on the Linux `xe` or `i915` kernel driver
 
 Xe-LPG (Meteor Lake) has no XMX units. Only the native Linux Steam client is supported, not Flatpak Steam. Full system requirements are in [docs/install.md](docs/install.md).
 
-The project is developed on an ONEXPLAYER 3 (Arc B390) with SteamOS, Mesa 26.1.2 / 26.3, and GE-Proton 11-6 / Proton Experimental.
+The project is developed on an ONEXPLAYER 3 (Arc B390) with SteamOS, Mesa 26.1.2 / 26.3, and GE-Proton 11-12 / Proton Experimental.
 
 ## What It Gives You
 
