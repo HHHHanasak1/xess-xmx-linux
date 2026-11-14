@@ -3,7 +3,7 @@
 Builds release/xess-xmx-linux-<version>.zip from the working tree: the binaries (igdext64.dll, the drivers
 lib/mesa-<version>/libvulkan_intel.so, the default's name in lib/active, and lib/libvulkan_intel.so built from
 icd/xmx-icd.c, which loads one of them),
-lib/bundled/ (tools/build-deps.sh), the Vulkan layer for the system's own driver (layer/, xmx-stock.sh), the scripts,
+lib/bundled/ (tools/build-deps.sh), the Vulkan layer for an unpatched driver (layer/), the scripts,
 tools, patches and docs. Shell and Python scripts get the executable bit.
 Kernels are not included (they are compiled on the user's machine). Refuses to run if a binary is missing."""
 import os, sys, zipfile
@@ -54,7 +54,7 @@ files += drivers + ["lib/active"]
 bundled = ["lib/bundled/" + f for f in ("libSPIRV-Tools.so", "libdisplay-info.so.3", "LICENSE.SPIRV-Tools",
                                          "LICENSE.libdisplay-info", "SOURCES.txt")]
 files += bundled
-# layer/: VK_LAYER_XESS_xmx for xmx-stock.sh (the system's unpatched ANV). The release is packed in a fresh clone, so
+# layer/: VK_LAYER_XESS_xmx for an unpatched ANV (stock mode, xmx-stock.sh). The release is packed in a fresh clone, so
 # libVkLayer_xess_xmx.so is the CI artifact "xmx-layer" (job "layer", layer/build.sh) copied into layer/; the manifest
 # is the repository's layer/VkLayer_xess_xmx.json (library_path ./libVkLayer_xess_xmx.so, next to it). At run time it
 # needs tools/cm-compile.sh and the compiler bundle (igc/), which the package has anyway. BLAKE3 is compiled into it

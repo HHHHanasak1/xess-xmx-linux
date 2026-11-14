@@ -73,11 +73,11 @@ The options mean the same on every path. `XESS_LL` is the short name of `IGDEXT_
 | `XESS_LL=auto:<ms> %command%` | Keeps the low latency on, and starts each frame `<ms>` milliseconds earlier (or later if negative) | Giving the game more frame-rate headroom at the cost of a little more latency (for example, `XESS_LL=auto:2 %command%`) |
 | `XESS_LL=on %command%` (or `auto`) | The low latency as it is by default | A game that should keep it where `XESS_LL=off` is set for every game |
 | `IGDEXT_XELL_CAP=<us> %command%` | Turns the wait off. XeLL's frame cap holds the frames instead: any smaller interval the game sets with `xellSetSleepMode` is raised to `<us>` microseconds per displayed frame. Valid values: `1` to `1000000`; `0` = off. Any other value turns both off. A game that never calls `xellSetSleepMode` gets no cap from it. It has no short name: `XESS_LL` does not take a number | Locking a steady fixed frame rate through XeLL |
-| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the Wuthering Waves 30 fps frame-cap fix in any game | Another game drops to 30 fps when enabling frame generation until a menu is opened and closed |
+| `IGDEXT_XELL_FIXCAP=1 %command%` | Applies the 30 fps frame-cap fix, which is on by default for Wuthering Waves only, in any game | A game drops to 30 fps when frame generation is enabled, until a menu is opened and closed |
 
 The switches for ruling out one part of the low latency when debugging (`IGDEXT_XELL_CHECK=0`, `IGDEXT_XELL_POLLS=0`, `IGDEXT_XELL_KEEPCAP=1`) are in [dev/debugging.md](dev/debugging.md).
 
-**Log lines.** They are the same on every path. A game's own XeSS-FG writes them to `C:\igdext_xell.log` inside the game's prefix (with `XESS_LOG=1`, or `IGDEXT_XELL_LOG=1` alone). The FSR routes and `OFLOW_FG` write them to `ffx_xefg.log` next to the game's executable.
+**Log lines.** They are the same on every path. A game's own XeSS-FG writes them to `C:\igdext_xell.log` inside the game's prefix (with `XESS_LOG=1`, or `IGDEXT_XELL_LOG=1` alone). The FSR routes and `OFLOW_FG` write them to `ffx_xefg.log` in the game's folder, next to the frame generation DLL ([section 6](#6-logs-and-configuration-variables)).
 
 * `low latency (IGDEXT_XELL_CAP): ...` at the start: `auto`, `XeLL's fixed cap` or `off`, and who answers the game's questions.
 * `low latency: frames are held back ... (frame generation on ...)` or `low latency: no wait (frame generation off ...)` when frame generation goes on or off.
@@ -87,7 +87,7 @@ The switches for ruling out one part of the low latency when debugging (`IGDEXT_
 
 ### Measured
 
-Arc B390, SteamOS, 1920x1200, 144 Hz VRR. Each row compares separate runs of the release build as installed and of this build, interleaved, at the same spot or in the same benchmark, without input. Latency is XeLL's time from the start of a frame's simulation to the end of its present (`IGDEXT_XELL_LOG=1`). Full data and method are in [performance.md](performance.md).
+Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 2026-11-11. Each row compares separate runs of the release that was installed that day ("release build", a release before 20261113) and of the code this section describes ("this build", first released as 20261113), interleaved, at the same spot or in the same benchmark, without input. Latency is XeLL's time from the start of a frame's simulation to the end of its present (`IGDEXT_XELL_LOG=1`). Full data and method are in [performance.md](performance.md).
 
 | Path | Game | Release build | This build |
 |---|---|---|---|
@@ -112,7 +112,7 @@ Where the GPU is already fully busy, the frame rate rises only slightly: in Forz
   - **CPU-limited** (CPU held to ~2 W, 4–6 minutes): **76.1 ms -> 47.8 ms (−37%)** at 28.7 ms frame time.
   - **Render-thread-limited** (moving in a heavy scene, ~6 minutes): **105.5 ms -> 67.2 ms (−36%)** at ~42.1 ms frame time.
 
-**Wuthering Waves 30 fps cap fix:** Wuthering Waves passes a 33.3 ms (30 fps) frame cap to XeLL right after enabling frame generation and only clears it when the pause menu is opened and closed. By default, for Wuthering Waves only, the shim replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers).
+**30 fps after enabling frame generation:** A game can pass a 33.3 ms (30 fps) frame cap to XeLL right after it enables frame generation, and clear it only when the pause menu is opened and closed (Wuthering Waves does). The shim's fix replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers). It is on by default for Wuthering Waves only; `IGDEXT_XELL_FIXCAP=1` applies it in any game.
 
 ---
 
@@ -177,7 +177,7 @@ Unlike the `FSR=xess` hook, `tools/fsr-fg.sh all` looks for a frame generation D
 
 ### A Game That Offers FSR Only on AMD GPUs (`FSR_VENDOR=amd`)
 
-Wuthering Waves shows FSR in its menu only on an AMD GPU. Add `FSR_VENDOR=amd` to the launch options (or put `dxgi.customVendorId = 1002` in `dxvk.conf` next to the game's `.exe`) to make DXVK report the GPU as AMD's to the game:
+Some games show FSR in their menu only on an AMD GPU (Wuthering Waves, for example). Add `FSR_VENDOR=amd` to the launch options (or put `dxgi.customVendorId = 1002` in `dxvk.conf` next to the game's `.exe`) to make DXVK report the GPU as AMD's to the game:
 
 ```text
 FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
@@ -194,7 +194,7 @@ FSR=xess FSR_VENDOR=amd XESS_FG=4 %command%
 
 ## 4. A Game with FSR Upscaling and No FSR Frame Generation (`FSR_FG=inject`)
 
-Forza Horizon 6 has FSR upscaling and XeSS super resolution, but its frame generation option is NVIDIA DLSS-G only. Because FSR 3.1+ upscaling receives depth, motion vectors, jitter, and frame time every frame, the package can feed those inputs into an XeSS-FG swap chain.
+A game can have FSR 3.1+ upscaling while its only frame generation option is NVIDIA DLSS-G (Forza Horizon 6, for example, which also has XeSS super resolution). Because FSR 3.1+ upscaling receives depth, motion vectors, jitter, and frame time every frame, the package can feed those inputs into an XeSS-FG swap chain.
 
 ### How to Use `FSR_FG=inject`
 

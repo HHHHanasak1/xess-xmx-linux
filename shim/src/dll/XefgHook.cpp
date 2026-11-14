@@ -10,7 +10,7 @@
 
 // XeFG (libxess_fg.dll) diagnostics, IGDEXT_XEFG_LOG=1 (XESS_LOG=1 sets it): XeFG's own log through its public
 // xefgSwapChainSetLoggingCallback, and what the game asks for and gets: the maximum number of interpolated frames after
-// context creation (where an Intel Graphics Software override, tools' ControlLib.dll with XESS_FG, takes effect), the
+// context creation (where an Intel Graphics Software override, ControlLib.dll with XESS_FG here, takes effect), the
 // value the game passes at initialization, and every change of the number. Written to C:\igdext_xefg.log.
 typedef int32_t (*PFN_XefgCreate)(void* dev, void** ctx);
 typedef int32_t (*PFN_XefgInit)(void* ctx, void* queue, const void* params);

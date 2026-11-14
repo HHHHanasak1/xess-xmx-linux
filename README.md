@@ -12,7 +12,7 @@ Requires an Intel GPU with XMX engines on the Linux `xe` or `i915` kernel driver
 
 Xe-LPG (Meteor Lake) has no XMX units. Only the native Linux Steam client is supported, not Flatpak Steam. Full system requirements are in [docs/install.md](docs/install.md).
 
-The project is developed on an ONEXPLAYER 3 (Arc B390) with SteamOS, Mesa 26.1.2 / 26.3, and GE-Proton 11-6 / Proton Experimental.
+The project is developed on an ONEXPLAYER 3 (Arc B390) with SteamOS, Mesa 26.1.2 / 26.3, and GE-Proton 11-12 / Proton Experimental.
 
 ## What It Gives You
 
@@ -53,7 +53,7 @@ Measured on an ONEXPLAYER 3 (Arc B390, Xe3, SteamOS, 1920x1200, 27 W SoC) using 
 
 * XMX itself is about 5% faster than DP4a in both games; most of the gain from 26.1.2 to 26.3 comes from **Jay**, Mesa's new shader compiler backend (default on Xe2 and Xe3). Forza Horizon 6 is held back by its CPU render thread on this device, so overall frame rate rises less than GPU frame rate. Final Fantasy VII Rebirth gains about +15% ([#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19), half from Jay).
 * With native XeSS frame generation on, the shim's low-latency mode cuts frame-queue latency by 36–50% at the same frame rate (tested in Wuthering Waves at 3x: 69.0 -> 34.8 ms GPU-limited, 76.1 -> 47.8 ms CPU-limited, 105.5 -> 67.2 ms render-thread-limited).
-* The unpatched driver with `VK_LAYER_XESS_xmx`, the default on Xe3 and Xe2 (measured here with Mesa 26.3.0-rc3), performs like the patched driver in Cyberpunk 2077 (118.9 fps) and faster in Forza Horizon 6 (103 fps), the two games in which both were measured.
+* The unpatched driver with `VK_LAYER_XESS_xmx`, the default on Xe3 and Xe2 (measured here with Mesa 26.3.0-rc3), performs about the same as the patched driver to slightly faster: 118.9 fps against 117.0 in Cyberpunk 2077 and 103 fps against 98 in Forza Horizon 6, the two games in which both were measured, in single runs.
 
 Full settings and benchmark tables are in [docs/performance.md](docs/performance.md).
 
@@ -62,7 +62,7 @@ Full settings and benchmark tables are in [docs/performance.md](docs/performance
 * **XeLL driver mode:** Intel XeLL runs in its cross-vendor context under Proton because its driver mode checks for Wine and does not start. The shim's low-latency mode paces native XeSS-FG games on top of XeLL's frame reports ([docs/dev/how-it-works.md](docs/dev/how-it-works.md)).
 * **Fallback behavior:** If the self-test fails or a kernel fails to compile, the shim declines the Intel extension context so XeSS uses its generic DP4a path. Generic XeSS frame generation is limited to 2x, so games set to 3x or 4x run at 2x until the XMX path works again.
 * **Multipliers above 4x:** `XESS_FG=5` to `8` raise the interpolation count by modifying a value inside `libxess_fg.dll` in memory while the game runs. Intel does not support more than 4x; if the change cannot be verified, the game stays at 4x. 7x and 8x are experimental: they add a lot of latency.
-* **vkd3d-proton and Mesa internals:** The driver patches (for Mesa 26.1.2 and 26.3.0) and the Vulkan layer (for Mesa 26.1, 26.3, and 27.0 on the Xe3 and Xe2 GPUs of `layer/gpu-ids.txt`) rely on how vkd3d-proton compiles placeholder shaders and lays out its classic descriptor heap (`VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_KHR_present_wait2`). If a vkd3d-proton update changes the first, the self-test turns XMX off; if it changes the second, the driver logs `no vkd3d-style descriptor heap` and kernels run as no-ops. Not measured yet: image quality, and how much the game itself slows down because vkd3d-proton runs without `VK_EXT_descriptor_buffer`.
+* **vkd3d-proton and Mesa internals:** The driver patches (for Mesa 26.1.2 and 26.3.0) and the Vulkan layer (for Mesa 26.1, 26.3, and 27.0 on the Xe3 and Xe2 GPUs of `layer/gpu-ids.txt`) rely on how vkd3d-proton compiles placeholder shaders and lays out its classic descriptor heap (`VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer,VK_EXT_descriptor_heap,VK_KHR_present_wait2`). If a vkd3d-proton update changes either, the self-test gets no answer and XeSS falls back to DP4a (for the second, the driver or layer logs `no vkd3d-style descriptor heap`). Not measured yet: image quality, and how much the game itself slows down because vkd3d-proton runs without `VK_EXT_descriptor_buffer`.
 
 ## Documentation
 

@@ -1,16 +1,16 @@
 #!/bin/bash
 # session-check.sh [--dry-run] - run by the user unit xess-xmx-check.service before the graphical session starts.
-# The patched ANV links against system libraries (libSPIRV-Tools.so, glibc, libstdc++) and talks to the kernel driver.
+# The package's ANV links against system libraries (libSPIRV-Tools.so, glibc, libstdc++) and talks to the kernel driver.
 # If a system update breaks one of them, the driver cannot be loaded or cannot create a device, and - because install.sh
 # puts only our 64-bit Intel driver into VK_DRIVER_FILES - every 64-bit Vulkan program of the session, gamescope
 # included, would lose the Intel GPU. This script
 #   1. checks that the ICD file (run/intel_icd.json) and the library it names exist (if not: stock drivers right away),
 #      then loads the driver once (every symbol resolved),
-#   2. lets vulkaninfo create an instance and enumerate the GPU with only the patched driver,
+#   2. lets vulkaninfo create an instance and enumerate the GPU with only the package's driver,
 # (plus two reports that change nothing: Mesa version against the system's, and whether the driver reads the system's
 # per-game workarounds in /usr/share/drirc.d) and if either of the first two fails points the session back to the stock drivers (games still run; the shim's self-test then makes
 # XeSS use DP4a) - unless another driver of the package (lib/mesa-<version>/) passes; that one is then activated.
-# A Mesa version that differs from the system's is only reported (the patched driver is a complete driver).
+# A Mesa version that differs from the system's is only reported (the package's driver is a complete driver).
 # Result: ~/.cache/xess-xmx/driver-status and the journal (journalctl --user -u xess-xmx-check).
 # The unit starts it through ~/.config/xess-xmx/session-check.sh (install.sh), which falls back to the stock drivers
 # by itself when the package folder is gone.
@@ -60,7 +60,7 @@ fail() { # <reason> [stock]
     done
   fi
   echo "FAILED $(date '+%F %T') $LIB: $1" > "$STATUS"
-  echo "patched ANV unusable ($1) - using the stock Intel driver for this session (XeSS runs as DP4a)" >&2
+  echo "the package's ANV unusable ($1) - using the system's stock Intel driver for this session (XeSS runs as DP4a)" >&2
   echo "fix: update the package or rebuild the driver (tools/rebuild-driver.sh); see docs/troubleshooting.md" >&2
   [ "${DRY:-0}" = 1 ] && exit 1
   # unset-environment cannot remove variables that come from environment.d, so they are overwritten instead: the
@@ -97,7 +97,7 @@ cached() { # <name> <file> <command...>: the command's output, kept in CACHE/<na
 # 0. lib/deps (the drivers' run path): copies of the host libraries that games under Proton cannot reach otherwise.
 #    Inside the Steam Linux Runtime container the host's /usr is not visible; pressure-vessel brings in only the
 #    libraries the host's own Vulkan drivers need, and the runtime has neither libSPIRV-Tools nor libdisplay-info. So a
-#    system without another 64-bit Mesa Vulkan driver (radeon, nouveau) leaves the patched ANV unloadable in games, and
+#    system without another 64-bit Mesa Vulkan driver (radeon, nouveau) leaves the package's ANV unloadable in games, and
 #    a system whose SPIRV-Tools has another name (libSPIRV-Tools-shared.so on Void Linux, libSPIRV-Tools-<version>.so
 #    on openSUSE) has no libSPIRV-Tools.so at all. The driver uses only SPIRV-Tools' stable C API, so any of them does.
 #    Refreshed every session, so a system update of either library reaches the copy. A system without the library
@@ -231,7 +231,7 @@ EOF
 rc=$?
 [ $rc -eq 0 ] || { err=$(printf '%s' "$err" | tail -1); fail "${err:-cannot be loaded (exit $rc)}"; }
 
-# 2. instance + device enumeration through the loader, with nothing but the patched driver
+# 2. instance + device enumeration through the loader, with nothing but the package's driver
 ours=""
 if command -v vulkaninfo >/dev/null 2>&1; then
   out=$(MESA="$CHECK_MESA" VK_DRIVER_FILES="$ICD" VK_LOADER_LAYERS_DISABLE='*' timeout 20 vulkaninfo --summary 2>&1)

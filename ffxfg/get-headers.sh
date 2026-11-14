@@ -1,5 +1,6 @@
 #!/bin/bash
-# get-headers.sh - fetch the public headers ffx_xefg.cpp (and dx11bridge/) is built against into ffxfg/inc (not kept in git):
+# get-headers.sh - fetch the public headers the sources of ffxfg/ (and dx11bridge/, and vkwrap's test) are built against
+# into ffxfg/inc (not kept in git):
 #   AMD FSR SDK 2.4.0 (GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, MIT): the FFX API, its upscaler and frame generation types
 #   Intel XeSS SDK 3.0.2 headers (intel/xess): XeSS SR and XeLL (MIT), XeSS-FG (Intel Simplified Software License)
 # Every file is checked against its SHA-256; nothing is written unless all of them match. Needs curl.

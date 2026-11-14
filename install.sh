@@ -5,10 +5,14 @@
 #      launch options
 #      AMD's FidelityFX loader + providers (ffx/) fetched if missing -> FSR=xess / FSR_FG=xess with FSR 3.1.0-3.1.3
 #   2. ~/.config/environment.d/50-xess-xmx.conf               -> every process of the user session (Steam, gamescope, games)
-#      gets the patched ANV as its Vulkan ICD and the kernel path; no per-game launch options needed any more
+#      gets the package's ANV as its Vulkan ICD (the session's driver, below) and the kernel path; no per-game launch
+#      options needed any more
 #   3. the shim igdext64.dll goes into every Proton that bundles its own igdext (Proton Experimental copies that file
-#      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store
-#   4. a user path unit re-installs the shim whenever a Proton update replaces its bundled copy
+#      into the prefix at each launch) and into every existing prefix that already has the igd_faux driver store;
+#      ControlLib.dll (XESS_FG) goes into those prefixes, and the launch-option hook (user_settings.py, which runs
+#      tools/proton-hook.py) into every Proton
+#   4. a user path unit re-installs them whenever a Proton update replaces its bundled copy or a new prefix appears
+#   5. a user unit checks before each graphical session that the driver still loads (tools/session-check.sh)
 # Re-run after Steam installs a new Proton or after a game created a new prefix. uninstall.sh reverts everything.
 # Environment: XMX_NO_ENV=1 skips step 2 and the session check (keep using enable.sh / launch options per game).
 #   XMX_WAIT_PREFIX=<seconds> is how the watcher (step 4) runs this script: no downloads, the shim pass repeated cheaply
@@ -104,11 +108,11 @@ chmod +x "$PKG"/tools/*.sh "$PKG"/tools/*.py 2>/dev/null
 # 2. session environment
 if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   # VK_DRIVER_FILES replaces the loader's driver list: every other GPU's driver stays in it (hybrid laptops, eGPUs),
-  # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the patched one
+  # only the stock 64-bit Intel ANV is left out so that a game cannot pick it instead of the package's
   drivers=$(xmx_driver_files "$PKG/run/intel_icd.json")
   mkdir -p "$ENVD"
   {
-    echo "# XeSS XMX (xess-xmx-linux): patched ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
+    echo "# XeSS XMX (xess-xmx-linux): the package's ANV as the Intel Vulkan driver + native CM kernels for every game of this session"
     echo "VK_DRIVER_FILES=$drivers"
     echo "# vkd3d-proton: the classic descriptor heap (the kernel binding code needs it) and present wait 1 (with present wait 2,"
     echo "# frame generation's high present rate crashed Cyberpunk 2077 in vkWaitForPresent2KHR within minutes)"
@@ -323,7 +327,7 @@ if [ -n "$watch" ]; then
     systemctl --user restart xess-xmx-shim.path >/dev/null 2>&1 && echo "== watcher: xess-xmx-shim.path active"
   fi
 fi
-# 5. safety net: before each graphical session, check that the patched driver still loads (a system update could break
+# 5. safety net: before each graphical session, check that the package's driver still loads (a system update could break
 #    its library dependencies); if not, the session falls back to the stock driver instead of losing the Intel GPU
 #    The unit runs a small copy outside the package: if the package folder is deleted or moved, the session environment
 #    still names its driver and leaves out the stock one, so without the folder that copy points the session back to the

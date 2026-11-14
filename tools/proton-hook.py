@@ -39,7 +39,7 @@
 # What a run was started with and every line it prints are kept in ~/.cache/xess-xmx/hook-<app id>.log (hook_log):
 # the lines go to Proton's own stderr, which is Steam's output, not the file PROTON_LOG=1 writes.
 # The game's own old libraries are not given the Intel GPU (DXVK_CONFIG=dxgi.customVendorId = 8086 would): Cyberpunk
-# 2077's XeSS-FG 1.1.0.19 then crashes on a null context (libxess_fg +0x238ea4); with the SDK's 1.3.1.78 it works.
+# 2077's XeSS-FG 1.1.0.19 then crashes at startup, inside libxess_fg.dll; with the SDK's 1.3.1.78 it works.
 # The variables behind them go into Proton's user_settings, which never override one the launch options set themselves.
 # XESS=latest: while the game runs, each libxess.dll / libxess_fg.dll / libxell.dll in the game folder that is older
 # than the SDK's is renamed to <name>.xmx-orig and replaced by a link to the SDK's file; each libxess_dx11.dll by a link

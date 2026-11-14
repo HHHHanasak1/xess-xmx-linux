@@ -2,7 +2,7 @@
 
 The release archive contains prebuilt Windows and Linux binaries compiled from this repository. Intel C-for-Metal (CM, Intel's GPU kernel language) kernels are not in the repository or the release archive; the driver or layer compiles them on the user's machine at runtime from the SPIR-V inside each game's XeSS libraries (see [how-it-works.md](how-it-works.md)).
 
-GitHub Actions (`.github/workflows/build.yml`) builds every binary on every push and pull request and keeps them as workflow artifacts. To build a release archive, download the artifacts for the release commit and run `tools/make-release.py`.
+GitHub Actions (`.github/workflows/build.yml`) builds every binary on every push and pull request (one that only touches `docs/` or Markdown files runs nothing) and keeps them as workflow artifacts. To build a release archive, download the artifacts for the release commit and run `tools/make-release.py`.
 
 ## Repository Layout
 
@@ -29,7 +29,7 @@ ffxfg/                        source of amd_fidelityfx_upscaler_dx12.dll (FSR up
 dx11bridge/                   libxess_dx11.dll source: XeSS for D3D11 games on the D3D12 XeSS
 vkwrap/                       vulkan-1.dll source: XeSS's Intel Vulkan interfaces for Vulkan games
 icd/xmx-icd.c                 lib/libvulkan_intel.so: loads the driver that MESA names, or the default
-tools/cm-compile.sh           run-time compiler helper called by the driver
+tools/cm-compile.sh           run-time compiler helper called by the driver and the layer
 tools/get-igc.sh              fetches IGC 2.10.10 + ocloc 25.18 into igc/
 tools/get-xess.sh             fetches Intel's XeSS SDK libraries into xess/ (XESS=auto, XESS=latest)
 tools/get-ffx.sh              fetches AMD's FidelityFX loader and providers into ffx/ (FSR / FSR_FG with FSR 3.1.0-3.1.3)
@@ -70,7 +70,7 @@ The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the th
 | `lib/libvulkan_intel.so` | `icd/xmx-icd.c` | Linux, `gcc` | Forwarding Vulkan ICD (installable client driver) that loads the selected Mesa driver |
 | `lib/mesa-<ver>/libvulkan_intel.so` | `patches/` + Mesa tarball | Linux (Arch container), `meson` + `ninja` | Patched (`26.1.2`, `26.3.0`) and unpatched (`stock-26.3.0`) Mesa ANV drivers |
 | `lib/bundled/*` | `tools/build-deps.sh` | Linux (Debian 12 container), CMake + Meson | Bundled `libSPIRV-Tools.so` and `libdisplay-info.so.3` (glibc >= 2.36) for systems that lack them |
-| `layer/libVkLayer_xess_xmx.so` | `layer/` | Linux, `gcc`, `glslangValidator`, Python 3 | `VK_LAYER_XESS_xmx` Vulkan layer for unpatched ANV (`xmx-stock.sh`) and Vulkan XeSS |
+| `layer/libVkLayer_xess_xmx.so` | `layer/` | Linux, `gcc`, `glslangValidator`, Python 3 | `VK_LAYER_XESS_xmx` Vulkan layer for unpatched ANV (stock mode, `xmx-stock.sh`) and Vulkan XeSS |
 
 ---
 
@@ -93,7 +93,7 @@ cmake -S shim -B shim/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build shim/build
 ```
 
-This writes `shim/build/igdext64.dll`. The DLL links against the static MSVC runtime and imports only `kernel32`, `advapi32`, and `dxgi`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), causing XeSS to fall back to DP4a (dot-product instructions). `shim/toolchain-mingw64.cmake` is kept from upstream `dxvk-igdext` for MinGW cross-compilation, but is not used for releases.
+This writes `shim/build/igdext64.dll`. The DLL links against the static MSVC runtime and imports only `kernel32` and `advapi32`. A dynamically linked build crashed in `DllMain` in a prefix with an older `msvcp140.dll` (Resident Evil 4), causing XeSS to fall back to DP4a (dot-product instructions). `shim/toolchain-mingw64.cmake` is kept from upstream `dxvk-igdext` for MinGW cross-compilation, but is not used for releases.
 
 #### Regenerating and Checking the DXBC Placeholder Templates
 
@@ -137,7 +137,7 @@ ffxfg\build.bat
 
 `ffxfg\build.bat` compiles `oflow_expand.hlsl` and `oflow_down.hlsl` to headers (`oflow_expand_cs.h`, `oflow_down_cs.h`) using `dxc -T cs_6_0`, compiles `ffx_oflow.cpp` and the `ffx_xefg*.cpp` files (`ffx_xefg.h` says what each one holds; a build with `FFXFG_DEBUG=1` adds `ffx_trace.cpp`) into `ffxfg\build\amd_fidelityfx_framegeneration_dx12.dll`, compiles `ffx_xess.cpp` into `ffxfg\build\amd_fidelityfx_upscaler_dx12.dll`, and compiles `dxgi_xefg.cpp` into `ffxfg\build\dxgi.dll`. The package keeps them in `ffxfg/`.
 
-To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XEFG_TRACE`, `FFX_XESS_JITTER`, and the measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, `FFX_XEFG_MVNDC`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
+To include the debug switches (`FFX_XEFG_CAMERA`, `FFX_XEFG_JITTER`, `FFX_XEFG_RENDERTIME`, `FFX_XEFG_RENDERSCALE`, `FFX_XEFG_DUMP`, `FFX_XEFG_ORDER`, `FFX_XEFG_TRACE`, `FFX_XESS_JITTER`, and the measuring aids `FFX_XEFG_SLEEP`, `FFX_XEFG_OWNWAIT`, `FFX_XEFG_PACE`, `FFX_XEFG_AB`, `FFX_XEFG_HOLD`, `FFX_XEFG_VALIDITY`, `FFX_XEFG_MVNDC`, `FFX_XEFG_HDR10_AB`; see [debugging.md](debugging.md)), set `FFXFG_DEBUG=1` in the environment before running `build.bat`:
 
 ```bat
 set FFXFG_DEBUG=1
@@ -146,7 +146,7 @@ ffxfg\build.bat
 
 ### 3. XeSS for D3D11 (`dx11bridge/libxess_dx11.dll`) and Vulkan (`vkwrap/vulkan-1.dll`)
 
-Both components need the XeSS headers fetched by `bash ffxfg/get-headers.sh` ([../games.md](../games.md#xess-in-a-d3d11-game)). On Windows with the same Build Tools (and Python for `gen.py`, which writes 259 forwarding stubs in `stubs.asm`, `names.h`, and `vulkan-1.def` from the 262 exports in `vkwrap/exports.txt`, the export list of Proton's `vulkan-1.dll`, while `vkwrap.c` implements `vkGetInstanceProcAddr`, `vkGetDeviceProcAddr`, and `vkCreateDevice` itself):
+`libxess_dx11.dll` needs the XeSS headers fetched by `bash ffxfg/get-headers.sh` ([../games.md](../games.md#xess-in-a-d3d11-game)); `vulkan-1.dll` needs none of them (its test program does). On Windows with the same Build Tools (and Python for `gen.py`, which writes 259 forwarding stubs in `stubs.asm`, `names.h`, and `vulkan-1.def` from the 262 exports in `vkwrap/exports.txt`, the export list of Proton's `vulkan-1.dll`, while `vkwrap.c` implements `vkGetInstanceProcAddr`, `vkGetDeviceProcAddr`, and `vkCreateDevice` itself):
 
 ```bat
 bash ffxfg/get-headers.sh
@@ -193,7 +193,7 @@ If you omit the output directory argument (`layer/build.sh`), it defaults to `la
 
 ### Layer Unit Tests and Probing a New Mesa Version
 
-`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), a compile script that hangs (`test_compile_timeout`: killed after `ANV_CM_COMPILE_TIMEOUT`, the kernel marked failed), the compile jobs (`test_compile_parallel`: at most `XMX_LAYER_COMPILE_JOBS` at a time, the same cache files with 1 and with 8 jobs), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need `IGC`, offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
+`layer/tests/build.sh` compiles and runs unit tests for SPIR-V placeholder detection (`test_placeholder`), the C zebin-to-`CMK2`/`CML1` packer against `tools/cmk_pack.py` (`test_cmk`), `-noLoadPayload` compilation via `tools/cm-compile.sh` (`test_compile`, once as an Xe3 and once as an Xe2 device with `TEST_GEN=xe2`, where every kernel must come out at 128 GRF), a compile script that hangs (`test_compile_timeout`: killed after `ANV_CM_COMPILE_TIMEOUT`, the kernel marked failed), the compile jobs (`test_compile_parallel`: at most `XMX_LAYER_COMPILE_JOBS` at a time, the same cache files with 1 and with 8 jobs), the C prologue tables of both platforms against the IGA assembler (`test_prologue`), a compile of the whole `KSET` folder as the layer does it on a B580 (`CM_MAX_GRF=128`, each kernel at 128 GRF without scratch, then its Xe2 prologue against the assembler; `XE2_SET=0` skips it), and ANV binary serialization round-tripping (`test_anvbin`). Tests that need the compiler bundle (`XMX_IGC_DIR` for `ocloc`, `IGC` for the assembler in it), offline kernel sets (`CMK_SET`, `KSET`), or exported template blobs (`TEMPLATES`) are skipped automatically when those are absent.
 
 ANV's serialized compute shader format (`layer/src/anvbin.c`) differs between Mesa minor versions. `layer/src/layouts.h` holds one measured offset table (`struct anv_layout`) per supported version (`Mesa 26.1.`, `Mesa 26.3.`, and `Mesa 27.0.`), including `pd_size_patched` (`656` on 26.1.2, `664` on 26.3.0) for this project's patched drivers. The offsets were measured on exported binaries from the variant shaders in `layer/tests/variants` rather than taken from Mesa's headers:
 

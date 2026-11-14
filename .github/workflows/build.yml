@@ -2,8 +2,10 @@ name: build
 
 # Builds the binaries from source on every push / pull request and keeps them as workflow artifacts:
 #   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
-#                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/)
-#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched)
+#                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/), libxess_dx11.dll
+#                        (dx11bridge/), vulkan-1.dll (vkwrap/)
+#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched),
+#                        the forwarding ICD (icd/) and the bundled libraries (tools/build-deps.sh)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
 # plus syntax checks of the scripts and a run of the install scripts and of the Proton hook in a sandbox
 # (tools/tests/install-sandbox.sh, tools/tests/hook-sandbox.py).
@@ -76,7 +78,7 @@ jobs:
           name: xmx-icd
           path: out/libvulkan_intel.so
 
-  # layer/ of the release: VK_LAYER_XESS_xmx (xmx-stock.sh, the system's unpatched ANV). It needs VK_KHR_pipeline_binary,
+  # layer/ of the release: VK_LAYER_XESS_xmx (an unpatched ANV: stock mode, xmx-stock.sh). It needs VK_KHR_pipeline_binary,
   # newer than Ubuntu's headers: Vulkan-Headers at a fixed tag, checked against its commit
   layer:
     runs-on: ubuntu-latest
@@ -232,7 +234,7 @@ jobs:
             mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
-          # unpatched (lib/mesa-stock-26.3.0/): Xe3's default driver, with the Vulkan layer for the XMX kernels
+          # unpatched (lib/mesa-stock-26.3.0/): Xe3's and Xe2's default driver, with the Vulkan layer for the XMX kernels
           - name: stock-26.3.0
             version: 26.3.0
             mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a

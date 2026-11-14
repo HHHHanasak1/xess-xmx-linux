@@ -140,9 +140,9 @@ With `XESS=auto` there, the hook looks at every game you start and changes files
 
 ## How the Options Are Applied
 
-`XESS_FG` and `MESA` are read inside the game's process, by `ControlLib.dll`, `igdext64.dll`, and the frame generation DLL, and by the package's driver. They work wherever the package is installed.
+`XESS_FG` and `MESA` are read inside the game's process, by `ControlLib.dll`, `igdext64.dll`, and the frame generation DLL, and by the package's driver. So are the `IGDEXT_*`, `FFX_XESS_*`, and `FFX_XEFG_*` variables (the package's DLLs), and `INTEL_DEBUG` and `force_vk_vendor` (Mesa). They work wherever the package is installed.
 
-The other options on this page are handled by the Proton hook, which needs the system-wide install ([install.md](install.md)):
+These options are handled by the Proton hook, which needs the system-wide install ([install.md](install.md)):
 
 * `XESS`, `XESS_LL`, and `XESS_LOG`
 * `FSR`, `FSR_FG`, and `OFLOW_FG`
@@ -156,7 +156,7 @@ The hook swaps files in the game's folder, which Steam gives it (`STEAM_COMPAT_I
 
 If you set `VKD3D_DISABLE_EXTENSIONS` in the launch options (it replaces the system-wide value), the hook adds the extensions the XMX kernels need (`VK_EXT_descriptor_buffer`, `VK_EXT_descriptor_heap`, `VK_KHR_present_wait2`) to your list while the package's driver or layer is active; your own entries stay.
 
-**GE-Proton's own upgrades.** GE-Proton has variables of its own that bring newer upscaler libraries (`PROTON_XESS_UPGRADE=1`, `PROTON_FFX4_UPGRADE=1`, `PROTON_USE_OPTISCALER=1`): its loader then takes its copies in place of a game's libraries of that name. They have not been tested together with the options of this page. When one of them is set and the hook has replaced files, its log says that those files may not be the ones the game loads.
+**GE-Proton's own upgrades.** GE-Proton has variables of its own that bring newer upscaler libraries (`PROTON_XESS_UPGRADE=1`, `PROTON_FFX4_UPGRADE=1`, `PROTON_FFX3_UPGRADE=1`, `PROTON_USE_OPTISCALER=1`): its loader then takes its copies in place of a game's libraries of that name. They have not been tested together with the options of this page. When one of them is set and the hook has replaced files, its log says that those files may not be the ones the game loads.
 
 ### Without the Hook
 

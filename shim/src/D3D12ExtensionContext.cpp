@@ -1,3 +1,22 @@
+/*****************************************************************************\
+
+Copyright (C) 2026 Intel Corporation
+
+SPDX-License-Identifier: MIT
+
+File Name:  D3D12ExtensionContext.cpp
+
+Abstract:   D3D12 Extension Context
+
+Notes:      Modified for xess-xmx-linux. In dxvk-igdext this always reports
+            zero supported versions and always fails to initialize. Here
+            GetSupportedVersions reports HW feature level 5 / API version
+            20, and InitExtensions grants the context and fills in the
+            device info of the detected GPU (dll/GpuInfo.cpp), unless the
+            shim falls back to XeSS' generic paths (XmxFallbackActive,
+            dll/D3D12Api.cpp).
+
+\*****************************************************************************/
 #include "Stdafx.h"
 #include "Trace.h"
 #include "ExtensionVersions.h"
