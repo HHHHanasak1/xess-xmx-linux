@@ -22,6 +22,10 @@
 //   (FFX_XEFG_SLEEP, OWNWAIT, PACE, VALIDITY, MVNDC, AB, AB_OLD, HOLD and HDR10_AB, measuring aids, are read by a
 //   debug build only: see DBG_SWITCH in ffx_xefg.h)
 //   FFX_XEFG_EXCLUSIVE=1   let the game enter exclusive fullscreen (XeSS-FG then refuses to interpolate)
+//   FFX_XEFG_HUDLESS=0     the game's HUD-less color is not used: no UI composition, XeSS-FG interpolates the
+//                          whole image, the UI included
+//   FFX_XEFG_VENDOR=0      XeSS-FG and XeLL are not given 0x8086 for an Intel GPU that DXVK reports as another
+//                          vendor's (FSR_VENDOR=amd; ffx_xefg_init.cpp)
 //   FFX_XEFG_OFLOW=1       motion vectors from FidelityFX optical flow on the final image instead of the game's,
 //                          constant depth (FFX_XEFG_OFLOW_DEPTH, default 1.0), no camera, no HUD-less color or UI: what
 //                          a driver-level frame generation has (ffx_oflow.cpp; tools/proton-hook.py sets it for OFLOW_FG=1)

@@ -13,7 +13,7 @@
 //                        render size)
 //   FFX_XESS_AUTOEXPOSURE=0  no XeSS auto exposure for a game that asks for it (debug)
 //   FFX_XESS_PREEXPOSURE=0  ignore the game's FSR pre-exposure: XeSS's exposure multiplier stays 1, as in releases up
-//                        to 20261111 (A/B debug)
+//                        to 20261113 (A/B debug)
 //   FFX_XESS_JITTER=<f>  jitter times this (-1 negates it); only in a build with FFXFG_DEBUG (build.bat)
 // The same KEY=VALUE lines can go into ffx_xess.env next to the DLL (the environment wins).
 #define WIN32_LEAN_AND_MEAN
