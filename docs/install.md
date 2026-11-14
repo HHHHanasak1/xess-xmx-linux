@@ -72,7 +72,7 @@ Then reboot or log out and back in so Steam drops the session environment variab
   - `libSPIRV-Tools.so` and `libdisplay-info.so.3` are bundled in `lib/bundled/` for distributions that lack them or name them differently.
 * **Command-line tools for `install.sh`:**
   - To unpack the compiler bundle: `curl`, `ar` (from `binutils`), `tar`, and `zstd`.
-  - For the Proton hook, compiler helper, session check, and `tools/fsr-fg.sh`: `python3`.
+  - For the Proton hook, the session check, and `tools/fsr-fg.sh`: `python3`.
   - To unpack the XeSS SDK download: `unzip` or `python3`.
 
 ---
@@ -122,7 +122,7 @@ If you prefer not to set the driver for your entire desktop session, you can ins
    XMX_PREFIX=/path/to/prefix ./enable.sh
    ```
    (Start the game once first if its prefix does not exist yet. If you have not run `install.sh`, also run `./tools/get-igc.sh` once to download the kernel compiler.)
-2. `enable.sh` backs up and replaces `igdext64.dll` in that prefix and copies `ControlLib.dll` into its `system32`. It then runs `tools/session-check.sh --dry-run` (which also populates `lib/deps/`). Finally, it writes the environment variable block to `~/.config/xess-xmx.conf`.
+2. `enable.sh` backs up and replaces `igdext64.dll` in that prefix and copies `ControlLib.dll` into its `system32`. It then writes the environment variable block to `~/.config/xess-xmx.conf`. Finally, it runs `tools/session-check.sh --dry-run` (which also populates `lib/deps/`).
 3. Set the game's Steam launch options to:
    ```text
    /path/to/package/xmx-launch.sh %command%
@@ -177,4 +177,4 @@ XESS=auto /path/to/package/xmx-stock.sh %command%
 * It writes one `xess-xmx: xmx-stock:` line naming the driver and the layer to Steam's output (the terminal Steam was started from; in Game Mode, the user journal), not to `PROTON_LOG`'s file. If the layer files or a 64-bit Intel ICD of the system are missing, that line says so and the game starts unchanged (on the session's driver: the package's unpatched driver + layer in stock mode on Xe3 and Xe2, or the patched driver otherwise).
 * `MESA` has no effect when using `xmx-stock.sh`.
 
-See [drivers.md](drivers.md) and [launch-options.md](launch-options.md) for full details on `xmx-stock.sh` and its variables. These variables are `XMX_STOCK_ICD`, `XMX_LAYER_LOG`, and `XMX_LAYER_PROF`.
+`XMX_STOCK_ICD` (an Intel ICD file other than the system's) is described in [launch-options.md](launch-options.md#the-driver-for-one-game). The layer's own switches, such as `XMX_LAYER_LOG` and `XMX_LAYER_PROF`, are in [dev/debugging.md](dev/debugging.md#unpatched-driver-vulkan-layer-vk_layer_xess_xmx-layer).
