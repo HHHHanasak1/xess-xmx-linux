@@ -7,7 +7,7 @@ shaders (tests/variants, exported with `probe export`). Prints sizes and offsets
 2. prog_data fields from what changes between variants: program_size = code length, local_size = 8,4,2 in ls842,
    total_shared = 1024 / 4096, the barrier byte, the sampler byte;
 3. the binding table entries and the inline data of the group-count variant (numwg).
-Checked against Mesa 26.1.2, whose layout is known (src/layout261.h)."""
+Checked against Mesa 26.1.2, whose layout is known (src/layouts.h)."""
 import os
 import struct
 import sys
