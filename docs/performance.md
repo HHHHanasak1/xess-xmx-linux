@@ -1,4 +1,4 @@
-# Performance (2026-11-05)
+# Performance
 
 **Device**: ONEXPLAYER 3, Intel Arc B390 (Panther Lake, Arc G3 Extreme), SteamOS, 1920x1200, SoC (system-on-chip) power limit 27 W.
 
