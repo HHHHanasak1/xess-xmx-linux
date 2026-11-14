@@ -1,16 +1,16 @@
 // XellDriver.cpp - driver side of Intel XeLL's latency-reduction extension (_INTC_D3D12_*LatencyReduction*, RenderSubmitStart,
 // SetNumGeneratedFrames, SetPresentSequenceNumber, GetDisplayTelemetry), and what it takes for libxell.dll to use it.
 //
-// How libxell.dll (XeSS SDK 2.x, 1.3.x) decides between driver timings and its own cross-vendor pacing, from the code of
-// 1.3.2.10 (SDK bin/libxell.dll; whether the 1.3.0.5 that games ship has the same check shows in its strings,
+// How libxell.dll (XeSS SDK 2.x, 1.3.x) decides between driver timings and its own cross-vendor pacing, as observed
+// with 1.3.2.10 (SDK bin/libxell.dll; whether the 1.3.0.5 that games ship has the same check shows in its strings,
 // `strings libxell.dll | grep wine_get_version`, and in the probe's "hid wine_get_version" line):
 //
-//  1. At context creation it takes the DXGI adapter of the device and sets an "Intel GPU" flag only if VendorId == 0x8086
-//     AND GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version") returns nothing. Under Wine that export
-//     exists, so the flag is never set and libxell goes straight to "[XeLL] Using built-in context" without loading
+//  1. At context creation it takes the DXGI adapter of the device and goes on as on an Intel GPU only if the adapter's
+//     vendor id is Intel's (0x8086) and ntdll.dll has no export named wine_get_version. Under Wine that export
+//     exists, so libxell goes straight to "[XeLL] Using built-in context" without loading
 //     igdext64.dll at all: no GetSupportedVersions, no LatencyReductionExt, nothing for the shim to see. Nothing in
 //     Proton hides that export; the shim does it for libxell alone (below).
-//  2. With the flag set it loads igdext64.dll (INTC_ALT_DRIVER_EXTENSIONS_PATH, the driver folder, the current folder),
+//  2. Otherwise it loads igdext64.dll (INTC_ALT_DRIVER_EXTENSIONS_PATH, the driver folder, the current folder),
 //     asks GetSupportedVersions for HW feature level 5 or 4 with API version 13 (exact match on both; the shim lists
 //     5/13 and 4/13), creates an extension context, and requires
 //       - the driver version string >= 31.0.101.6252 (the shim says 32.0.101.9999), else "unsupported driver";
