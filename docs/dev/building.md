@@ -12,7 +12,8 @@ enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam
 patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                               0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                               patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
-                              cooperative matrix shaders
+                              cooperative matrix shaders; patches/mesa-license/: Mesa's license statement and
+                              MIT text, which the release archive carries for the drivers
 layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's and Xe2's session default; xmx-stock.sh:
                               the system's own, per game) and XeSS's Vulkan path (Xe3: every driver of the package; Xe2: unpatched)
 shim/                         igdext64.dll source: dxvk-igdext plus this project's code in src/dll/
@@ -357,4 +358,4 @@ With all binaries built and placed in their release locations in the working tre
 python3 tools/make-release.py <version> [out dir]
 ```
 
-`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`, `fsr-trace.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`.
+`tools/make-release.py` checks that every required file exists and verifies signature strings inside each binary (preventing stock or third-party DLLs from being packed by mistake), excludes developer-only scripts (`gen_placeholders.py`, `check_placeholders.py`, `build-deps.sh`, `split_patch.py`, `fsr-trace.py`), sets executable permissions (`0755`) on `.sh` and `.py` files, and writes `release/xess-xmx-linux-<version>.zip`. Besides the binaries, scripts, patches, and `docs/`, the archive gets `layer/README.md` (the user guides link to it) and the license texts that go with the binaries: `shim/LICENSE.md` and `shim/dxvk-igdext_third-party-programs.md` for `igdext64.dll`, `patches/mesa-license/` for the drivers in `lib/mesa-*/`, and those in `lib/bundled/`, `ffxfg/`, and `layer/third_party/blake3/`.
