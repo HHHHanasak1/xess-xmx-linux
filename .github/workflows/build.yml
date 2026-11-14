@@ -78,7 +78,7 @@ jobs:
           name: xmx-icd
           path: out/libvulkan_intel.so
 
-  # layer/ of the release: VK_LAYER_XESS_xmx (xmx-stock.sh, the system's unpatched ANV). It needs VK_KHR_pipeline_binary,
+  # layer/ of the release: VK_LAYER_XESS_xmx (an unpatched ANV: stock mode, xmx-stock.sh). It needs VK_KHR_pipeline_binary,
   # newer than Ubuntu's headers: Vulkan-Headers at a fixed tag, checked against its commit
   layer:
     runs-on: ubuntu-latest
@@ -234,7 +234,7 @@ jobs:
             mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
-          # unpatched (lib/mesa-stock-26.3.0/): Xe3's default driver, with the Vulkan layer for the XMX kernels
+          # unpatched (lib/mesa-stock-26.3.0/): Xe3's and Xe2's default driver, with the Vulkan layer for the XMX kernels
           - name: stock-26.3.0
             version: 26.3.0
             mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
