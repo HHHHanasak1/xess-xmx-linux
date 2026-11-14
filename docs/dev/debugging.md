@@ -34,11 +34,11 @@ grep -a -o "walker kernel [0-9]*,[0-9]*,[0-9]*" stderr.log | sort | uniq -c
 
 ## 2. XeLL Driver-Mode Probe
 
-Under Proton, Intel XeLL (`libxell.dll`) runs in its cross-vendor mode ([how-it-works.md](how-it-works.md)). The reason is inside `libxell.dll` itself (read from 1.3.2.10, the SDK copy; run `strings libxell.dll | grep wine_get_version` to check whether the 1.3.0.5 build that games ship has the same check):
+Under Proton, Intel XeLL (`libxell.dll`) runs in its cross-vendor mode ([how-it-works.md](how-it-works.md)). The reason is inside `libxell.dll` itself (observed with 1.3.2.10, the SDK copy; run `strings libxell.dll | grep wine_get_version` to check whether the 1.3.0.5 build that games ship has the same check):
 
-1. Before anything else at context creation, `libxell.dll` checks that the DXGI adapter has `VendorId == 0x8086` **and** that `GetProcAddress(GetModuleHandle("ntdll.dll"), "wine_get_version")` returns `NULL`. Under Wine that export exists, so `libxell.dll` immediately selects its built-in context (`[XeLL] Using built-in context`) without ever loading `igdext64.dll`.
+1. Before anything else at context creation, `libxell.dll` checks that the DXGI adapter's vendor ID is Intel's (`0x8086`) **and** that `ntdll.dll` has no export named `wine_get_version`. Under Wine that export exists, so `libxell.dll` immediately selects its built-in context (`[XeLL] Using built-in context`) without ever loading `igdext64.dll`.
 2. When `wine_get_version` is hidden, `libxell.dll` loads `igdext64.dll`, asks `GetSupportedVersions` for extension version `5/13` or `4/13`, checks that the driver version string is `>= 31.0.101.6252`, and checks that `INTCDeviceInfo::GTGeneration` is one of Intel's `PRODUCT_FAMILY` IDs (`1300` for Panther Lake, `1275` Lunar Lake, `1274` Battlemage, `1273` Arrow Lake, `1272` Meteor Lake, `1270` Alchemist, `1276`, or `>= 1340`; the shim normally reports `30`, `20`, or `12` there for XeSS).
-3. Only after passing those checks does `libxell.dll` call the latency-reduction entry points (`_INTC_D3D12_GetLatencyReductionStatus`, `_INTC_D3D12_LatencyReductionExt`, `_INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers`, `_INTC_D3D12_RenderSubmitStart`, `_INTC_D3D12_SetNumGeneratedFrames`, `_INTC_D3D12_SetPresentSequenceNumber`). Details and offsets are in `shim/src/dll/XellDriver.cpp`.
+3. Only after passing those checks does `libxell.dll` call the latency-reduction entry points (`_INTC_D3D12_GetLatencyReductionStatus`, `_INTC_D3D12_LatencyReductionExt`, `_INTC_D3D12_LatencyReductionGetRenderSubmitTimingsBuffers`, `_INTC_D3D12_RenderSubmitStart`, `_INTC_D3D12_SetNumGeneratedFrames`, `_INTC_D3D12_SetPresentSequenceNumber`). Details are in `shim/src/dll/XellDriver.cpp`.
 
 ### Running the Probe
 
