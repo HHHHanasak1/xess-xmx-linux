@@ -2,7 +2,7 @@
 
 The release archive contains prebuilt Windows and Linux binaries compiled from this repository. Intel C-for-Metal (CM, Intel's GPU kernel language) kernels are not in the repository or the release archive; the driver or layer compiles them on the user's machine at runtime from the SPIR-V inside each game's XeSS libraries (see [how-it-works.md](how-it-works.md)).
 
-GitHub Actions (`.github/workflows/build.yml`) builds every binary on every push and pull request and keeps them as workflow artifacts. To build a release archive, download the artifacts for the release commit and run `tools/make-release.py`.
+GitHub Actions (`.github/workflows/build.yml`) builds every binary on every push and pull request (one that only touches `docs/` or Markdown files runs nothing) and keeps them as workflow artifacts. To build a release archive, download the artifacts for the release commit and run `tools/make-release.py`.
 
 ## Repository Layout
 
