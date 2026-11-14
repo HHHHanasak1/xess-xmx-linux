@@ -52,8 +52,8 @@ Super resolution (SR) comes from one of two sources: the game's own XeSS ("XeSS-
 - On this device, Forza Horizon 6 is held back by its CPU render thread (CPU render is about 48 fps), so overall frame rate moves little; compare the GPU frame rate instead.
 - GPU frame rate: XMX is about 5% faster than DP4a (26.3: +4.8%, 26.1.2: +5.5%); 26.3 is about 10% faster than 26.1.2.
 - FSR translated to XeSS performs like the game's own XeSS (GPU 55.3 against 55.0): the translation costs nothing measurable.
-- Unpatched + layer gives 103 fps against 98 fps on the patched driver; GPU frame rate is about the same, with 74 stutters against 162.
-- Unpatched + layer against the patched driver: matches in Cyberpunk 2077 and is faster in Forza Horizon 6. These are the two games in which both were measured.
+- Unpatched + layer gives 103 fps against 98 fps on the patched driver; GPU frame rate is about the same, with 74 stutters against 162. Each figure is from a single run, and single runs vary: another run with the same settings on the unpatched driver gave 101 fps and 137 stutters (section 3).
+- Unpatched + layer against the patched driver: about the same to slightly faster in Cyberpunk 2077 and Forza Horizon 6, the two games in which both were measured, one run each.
 
 ---
 

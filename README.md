@@ -53,7 +53,7 @@ Measured on an ONEXPLAYER 3 (Arc B390, Xe3, SteamOS, 1920x1200, 27 W SoC) using 
 
 * XMX itself is about 5% faster than DP4a in both games; most of the gain from 26.1.2 to 26.3 comes from **Jay**, Mesa's new shader compiler backend (default on Xe2 and Xe3). Forza Horizon 6 is held back by its CPU render thread on this device, so overall frame rate rises less than GPU frame rate. Final Fantasy VII Rebirth gains about +15% ([#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19), half from Jay).
 * With native XeSS frame generation on, the shim's low-latency mode cuts frame-queue latency by 36–50% at the same frame rate (tested in Wuthering Waves at 3x: 69.0 -> 34.8 ms GPU-limited, 76.1 -> 47.8 ms CPU-limited, 105.5 -> 67.2 ms render-thread-limited).
-* The unpatched driver with `VK_LAYER_XESS_xmx`, the default on Xe3 and Xe2 (measured here with Mesa 26.3.0-rc3), performs like the patched driver in Cyberpunk 2077 (118.9 fps) and faster in Forza Horizon 6 (103 fps), the two games in which both were measured.
+* The unpatched driver with `VK_LAYER_XESS_xmx`, the default on Xe3 and Xe2 (measured here with Mesa 26.3.0-rc3), performs about the same as the patched driver to slightly faster: 118.9 fps against 117.0 in Cyberpunk 2077 and 103 fps against 98 in Forza Horizon 6, the two games in which both were measured, in single runs.
 
 Full settings and benchmark tables are in [docs/performance.md](docs/performance.md).
 
