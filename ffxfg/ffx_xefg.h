@@ -121,6 +121,10 @@ inline int g_xefgLogLevel = 2;
 //                        FFX_XEFG_AB_OLD=1 three turns: as before (answers from the swap chain, no wait), the answers
 //                        as of the last Present, the wait too
 //   FFX_XEFG_HOLD=ms     a fixed wait in the place of the one the low latency works out
+//   FFX_XEFG_LATTARGET=old  the wait stops where frames are held up in front of Present for less than 2.5 ms even
+//                        with a queue on the GPU (the behaviour before g_latQueueMs)
+//   FFX_XEFG_LATQUEUE=ms the frame's first work this long ahead of the GPU getting free is where the queue stops
+//                        deciding the wait (default 6)
 inline DBG_SWITCH bool g_sleep = true;
 inline DBG_SWITCH bool g_ownWait = true;
 inline DBG_SWITCH bool g_pace = false;
@@ -142,6 +146,8 @@ inline bool g_pollCache = false;    // IGDEXT_XELL_POLLS (see the top of ffx_xef
 inline DBG_SWITCH int g_abSec = 0;       // FFX_XEFG_AB
 inline DBG_SWITCH bool g_abOld = false;  // FFX_XEFG_AB_OLD
 inline DBG_SWITCH float g_holdMs = 0;    // FFX_XEFG_HOLD
+inline DBG_SWITCH bool g_latOld = false; // FFX_XEFG_LATTARGET=old (ffx_xefg_lowlat.cpp, g_latQueueMs)
+inline DBG_SWITCH double g_latQueueMs = 6.0;   // FFX_XEFG_LATQUEUE=<ms>: the GPU queue the low latency's wait leaves
 inline bool g_latCheck = true;      // IGDEXT_XELL_CHECK=0: the wait is not checked
 inline bool g_hdr10 = false;        // FFX_XEFG_HDR10=1: XeSS-FG is told when the back buffer is HDR10 ("HDR10")
 inline DBG_SWITCH int g_hdr10AbSec = 0;   // FFX_XEFG_HDR10_AB=s: told and not told in turns of s seconds, told first

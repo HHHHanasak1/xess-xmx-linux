@@ -35,7 +35,7 @@ Keep a frame rate limiter on (the game's own or gamescope's) when using frame ge
 
 **Game files.** This is about `XESS=auto`, `OFLOW_FG=1`, and the options under [Choosing the Route Yourself](#choosing-the-route-yourself). These options change or add DLLs in the game's folder while it runs. A game with anti-cheat can see that as tampering and refuse to start, or flag the account in online play: do not use them in online games that use anti-cheat. `XESS_FG`, `XESS_LL`, and `XESS_LOG` change no game files.
 
-`XESS=auto`, `XESS_LL`, and `XESS_LOG=2` are in releases after 20261113, as are `XESS=auto_off`, `FSR_FG=inject` without `FSR=xess`, and the hook's log.
+`XESS=auto`, `XESS_LL`, and `XESS_LOG=2` came with release 20261115, as did `XESS=auto_off`, `FSR_FG=inject` without `FSR=xess`, and the hook's log.
 
 ### What `XESS=auto` Chooses
 

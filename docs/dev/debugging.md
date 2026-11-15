@@ -228,6 +228,8 @@ Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](bui
 * `FFX_XEFG_PACE=1`: releases the DLL's waitable semaphore when a GPU fence signaled after `Present` completes (with a 200 ms watchdog), instead of when `Present` returns. It showed no gain where it was measured (CONTROL Resonant at 6x).
 * `FFX_XEFG_AB=<s>`: measuring aid: the low latency's wait is off and on in turns of `<s>` seconds (the log says when). With `FFX_XEFG_AB_OLD=1`, three turns: as before, answers only, answers and wait.
 * `FFX_XEFG_HOLD=<ms>`: measuring aid: a fixed wait in `Present` instead of the one the low latency works out. It is not checked (`IGDEXT_XELL_CHECK`).
+* `FFX_XEFG_LATTARGET=old`: the low latency's wait as before the GPU queue decided it: the wait stops growing once frames are held up in front of `Present` for less than 2.5 ms, even while the frame's first work still reaches the GPU's queue long before the GPU gets free (`g_latQueueMs` in `ffx_xefg_lowlat.cpp`).
+* `FFX_XEFG_LATQUEUE=<ms>`: where the GPU queue stops deciding the low latency's wait: as long as the frame's first work reaches the GPU's queue more than `<ms>` before the GPU gets free, the wait grows (default `6`).
 * `FFX_XEFG_VALIDITY=0`: measuring aid: tags depth and motion vectors `UNTIL_NEXT_PRESENT` instead of `ONLY_NOW` (avoids the copy at prepare to measure its cost; can flicker if the game overwrites them before present).
 * `FFX_XEFG_HDR10_AB=<s>`: measuring aid: XeSS-FG is told and not told about an HDR10 back buffer in turns of `<s>` seconds, told first (`ffx_xefg.log` has the time of each change).
 * `FFX_XEFG_MVNDC=1`: sets `XEFG_SWAPCHAIN_INIT_FLAG_USE_NDC_VELOCITY` and scales motion vectors to NDC (`2 / width`, `-2 / height`).

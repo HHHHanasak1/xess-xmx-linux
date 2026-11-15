@@ -190,6 +190,15 @@ bool PaceStop(ScState* st)
 // deviation) in the three games, and a frame that comes late leaves the GPU idle for that long.
 static const double kLatTargetMs = 2.5;
 static const double kLatAheadMs = 1.5;
+// A real queue on the GPU decides alone: where the GPU is watched and a frame's first work reached the GPU's queue
+// more than g_latQueueMs (6 ms) before the GPU got free, the wait grows by that queue, even though the time held up
+// in front of Present is already below kLatTargetMs. A queued frame is still held up there for about 3 ms, so with
+// the held-up time deciding the wait stopped too early. Below g_latQueueMs both times decide together, as before.
+// Measured in CONTROL Resonant at 3x (2026-11-14, 3 + 3 runs): the wait stopped at 8.7 ms with the first work 11 to
+// 13 ms ahead, 51.9 ms from a frame's start to GPU done; with the queue deciding it is 10.7 ms and 46.9 ms, at the
+// same frame time. 6 ms keeps clear of the edge: a fixed wait of 12 ms was free, 13 ms cost 1 ms a frame, and a
+// margin of 4.5 ms let the wait climb to that edge, where the check cut it back in 2 of 3 runs.
+// Debug builds: FFX_XEFG_LATTARGET=old (the held-up time always counts), FFX_XEFG_LATQUEUE=<ms> (another margin).
 
 typedef LONG(NTAPI* PFN_NtDelayExecution)(BOOLEAN alertable, PLARGE_INTEGER interval);   // ntdll, 100 ns, negative = relative
 
@@ -397,8 +406,11 @@ float LatHold(ScState* st, uint64_t tEnd, float blockMs, uint64_t first, bool ok
         // How much later this frame could have started: by what it was held up in front of its present over
         // kLatTargetMs, and no more than its first work was at the GPU's queue earlier than kLatAheadMs before the
         // GPU got free (where the GPU is watched). A wait that the check found to cost is shorter by chk.shortMs.
-        const double early = std::min(blockMs - std::max(0.3, kLatTargetMs + g_latMarginMs + c.chk.shortMs),
-                                      ahead - (kLatAheadMs + g_latMarginMs + c.chk.shortMs));
+        const double blockEarly = blockMs - std::max(0.3, kLatTargetMs + g_latMarginMs + c.chk.shortMs);
+        const double aheadEarly = ahead - (kLatAheadMs + g_latMarginMs + c.chk.shortMs);
+        // a real queue on the GPU decides alone (g_latQueueMs, above)
+        const double queueEarly = ahead - (g_latQueueMs + g_latMarginMs + c.chk.shortMs);
+        const double early = !g_latOld && ahead < 1e8 && queueEarly > 0 ? queueEarly : std::min(blockEarly, aheadEarly);
         // The check: what the two times above say is not all a frame can wait for (see "Low latency"), so the wait
         // has to show that it costs no frame time and lowers the latency. FFX_XEFG_AB and FFX_XEFG_HOLD measure
         // without it.

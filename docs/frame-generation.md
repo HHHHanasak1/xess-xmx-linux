@@ -87,25 +87,19 @@ The switches for ruling out one part of the low latency when debugging (`IGDEXT_
 
 ### Measured
 
-Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 2026-11-11. Each row compares separate runs of the release that was installed that day ("release build", a release before 20261113) and of the code this section describes ("this build", first released as 20261113), interleaved, at the same spot or in the same benchmark, without input. Latency is XeLL's time from the start of a frame's simulation to the end of its present (`IGDEXT_XELL_LOG=1`). Full data and method are in [performance.md](performance.md).
+Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 2026-11-15. Separate runs, interleaved, at the same spot or in the same benchmark, without input. Latency is the time from a frame's start to the moment the GPU has finished its first shown image. "Off" is `XESS_LL=off`; "20261115" is the release with the queue rule of this section. Full data and method are in [performance.md](performance.md), section 3.
 
-| Path | Game | Release build | This build |
-|---|---|---|---|
-| A game's own XeSS-FG | Cyberpunk 2077, built-in benchmark, 3x | 118.9–120.0 fps, latency 39.0–39.5 ms | 118.8–120.1 fps, latency 38.9–39.6 ms |
-| FSR routes | Resident Evil Requiem, 3x, HDR | 42.9–47.9 ms a frame, latency 41.6–47.5 ms | 31.3–32.0 ms, **28.4–29.6 ms** |
-| | Resident Evil Requiem, 3x, SDR | 29.3 ms, 28.7–28.9 ms | 29.2 ms, 28.5 ms |
-| | CONTROL Resonant, 3x | 35.9–36.2 ms, 35.4–35.7 ms | 32.9–33.1 ms, **22.6–23.3 ms** |
-| | CONTROL Resonant, 6x | 42.6 ms, 42.2 ms | 42.5 ms, **34.9 ms** |
-| | Forza Horizon 6, 3x, car page (`FSR_FG=inject`) | 49.2–49.7 ms, 48.2–48.8 ms | 25.3 ms, **24.9 ms** |
-| `OFLOW_FG=1` | Resident Evil 4, 2x | 24.0–24.2 ms, 21.6–23.1 ms | 24.3 ms, 22.5 ms |
-| | Resident Evil 4, 3x | 30.5–30.9 ms, 29.9 ms | 27.6–27.8 ms, **27.0–27.1 ms** |
+| Path | Game | Off | 20261113 | 20261115 |
+|---|---|---|---|---|
+| A game's own XeSS-FG | Cyberpunk 2077, built-in benchmark, 3x | 116.6 fps, latency 45.1 ms | 118.1 fps, as 20261115 | 119.2 fps, **31.7 ms** |
+| FSR routes | CONTROL Resonant, 3x | 35.2 ms a frame, latency 37.2 ms | 33.8 ms, 52.6 ms | 33.0 ms, **48.4 ms** |
+| | Resident Evil Requiem, 3x | 41.3 ms, 42.0 ms | 31.9 ms, 54.1 ms | 31.5 ms, 54.0 ms |
+| | Forza Horizon 6, built-in benchmark, 3x (`FSR_FG=inject`) | 71 fps, the game's latency 126.5 ms | 102 fps, 103.3 ms | 103 fps, 101.8 ms |
+| `OFLOW_FG=1` | Resident Evil 4, 2x | 23.8 ms, 38.4 ms | 24.3 ms, 39.7 ms | 24.2 ms, 38.2 ms |
 
-* **A game's own XeSS-FG:** the release build already had the wait. This build adds the check and the answers, and does not change the result. Cyberpunk 2077 does not ask the swap chain, so the answers do nothing there. The benchmark's scene changes all the time, so the check never takes the wait away there. Without the wait (`IGDEXT_XELL_CAP=off`) the release build is 2% slower in that benchmark, and its latency 12 ms higher.
-* **FSR routes:** the release build had neither the wait nor the answers. With three or more frames shown per rendered frame, a game that asks the swap chain every frame ran with an idle GPU most of the time (Resident Evil Requiem with HDR, Forza Horizon 6's car page). The answers end that. The wait then takes the queue away.
-* **Resident Evil Requiem and HDR:** the game asks the swap chain about its colour space every frame only while its HDR output is on. In SDR the release build has no idle GPU, and both builds are equal: there is almost nothing to wait for. In both builds a rendered frame takes about 2.5 ms longer with HDR than in SDR at 3x.
-* **`OFLOW_FG`:** the frame cap was already there, and this build adds the answers. In Resident Evil 4 nothing changes at 2x. At 3x the release build ran with an idle GPU part of the time. With the answers its frame time is 10% shorter and steadier (95th percentile 43–44 -> 32 ms), and its latency 2.9 ms lower. Without the cap, the wait of the FSR routes gave the same result, so the cap stays the default.
-
-Where the GPU is already fully busy, the frame rate rises only slightly: in Forza Horizon 6's built-in benchmark, 101 -> 103 fps, with the game's average latency 86.7 -> 81.8 ms.
+* **A game's own XeSS-FG:** the wait lowers the latency by 30%, and the benchmark is 2% faster with it.
+* **FSR routes:** with `XESS_LL=off` the swap chain answers the game's questions itself, and a game that asks about each frame waits until the GPU is done. The GPU idles and nothing queues, but the frame rate drops. Whether the latency is then lower depends on where the game reads its input: lower in CONTROL Resonant, higher in Resident Evil Requiem and in Forza Horizon 6's benchmark. The answers bring the frame rate up, and the wait then takes away the queue that comes with it, as far as the check allows. In CONTROL Resonant at 3x, the only one of these with a real queue on the GPU, `20261115` lets that queue decide the wait: 52.6 -> 48.4 ms at a slightly shorter frame time. Where nothing queues, both releases are equal.
+* **`OFLOW_FG`:** in Resident Evil 4 nothing queues at this spot, and all settings give about the same result.
 
 **Earlier test of the wait alone** (the shim's wait, release 20261104, Wuthering Waves on an Arc B390 at 22 W SoC with 3x frame generation, against no wait):
   - **GPU-limited** (fixed spot, 10 minutes): **69.0 ms -> 34.8 ms (−50%)** at ~25.1 ms frame time.
