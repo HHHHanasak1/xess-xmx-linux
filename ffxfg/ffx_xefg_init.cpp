@@ -151,6 +151,8 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     TR(g_abSec = EnvInt("FFX_XEFG_AB", 0));
     TR(g_abOld = EnvInt("FFX_XEFG_AB_OLD", 0) != 0);
     TR(if (GetEnvironmentVariableA("FFX_XEFG_HOLD", env, MAX_PATH)) g_holdMs = (float)atof(env));
+    TR(if (GetEnvironmentVariableA("FFX_XEFG_LATTARGET", env, MAX_PATH)) g_latOld = !_stricmp(env, "old"));
+    TR(if (GetEnvironmentVariableA("FFX_XEFG_LATQUEUE", env, MAX_PATH)) g_latQueueMs = std::max(1.5, atof(env)));
     g_latCheck = EnvInt("IGDEXT_XELL_CHECK", 1) != 0;
     g_hdr10 = EnvInt("FFX_XEFG_HDR10", 0) != 0;
     TR(g_hdr10AbSec = EnvInt("FFX_XEFG_HDR10_AB", 0));
