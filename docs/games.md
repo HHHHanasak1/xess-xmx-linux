@@ -117,7 +117,7 @@ When the hook (`XESS=auto`, or `XESS=latest`) finds `libxess.dll` in the game's 
 
 Notes and requirements for Vulkan games:
 * **Xe3 and Xe2 through the layer, other GPUs through the patched driver:** `VK_LAYER_XESS_xmx` serves the Xe3 GPUs of `layer/gpu-ids.txt`, and its Xe2 GPUs on an unpatched driver (stock mode, kernels at 128 GRF, untested on real Xe2 hardware). On Xe-HPG, other Xe3 IDs, and Xe2 on the patched driver, the layer does not answer the self-test (`layer_canary`). There `vulkan-1.dll` gives the kernels to the patched driver, which these GPUs use anyway (it answers with `anv_canary`). For that, `vulkan-1.dll` sets up a descriptor heap the way vkd3d-proton does for D3D12 games. This path has not been tested on Xe-HPG or Xe2 GPUs yet. Reports are welcome.
-* **Unpatched and patched drivers:** The game keeps the driver your session or `MESA=` selected. On Xe3, `VK_LAYER_XESS_xmx` serves Vulkan XeSS on both the unpatched `stock-26.3.0` driver and the patched drivers (on a patched driver it leaves D3D12 games to the driver).
+* **Unpatched and patched drivers:** The game keeps the driver your session or `MESA=` selected. On Xe3, `VK_LAYER_XESS_xmx` serves Vulkan XeSS on both the unpatched `stock-26.3.1` driver and the patched drivers (on a patched driver it leaves D3D12 games to the driver).
 * **No Khronos validation layer:** XeSS skips its Intel path whenever `VkLayer_khronos_validation.dll` is loaded.
 * **A `vulkan-1.dll` of the game's own:** If one is already next to the game's executable, the hook leaves it there, and XeSS stays on DP4a; the hook's log says so.
 * **Logging:** `VKWRAP_LOG=1` writes `vkwrap.log` next to `vulkan-1.dll`.

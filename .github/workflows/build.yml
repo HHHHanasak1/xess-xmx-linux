@@ -4,7 +4,7 @@ name: build
 #   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/), libxess_dx11.dll
 #                        (dx11bridge/), vulkan-1.dll (vkwrap/)
-#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.0: unpatched),
+#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.1: unpatched),
 #                        the forwarding ICD (icd/) and the bundled libraries (tools/build-deps.sh)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
 # plus syntax checks of the scripts and a run of the install scripts and of the Proton hook in a sandbox
@@ -230,14 +230,14 @@ jobs:
             mesa_sha256: bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0
             patches: patches
             arch_snapshot: 2026/09/20
-          - name: 26.3.0
-            mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
+          - name: 26.3.1
+            mesa_sha256: 4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
-          # unpatched (lib/mesa-stock-26.3.0/): Xe3's and Xe2's default driver, with the Vulkan layer for the XMX kernels
-          - name: stock-26.3.0
-            version: 26.3.0
-            mesa_sha256: 91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a
+          # unpatched (lib/mesa-stock-26.3.1/): Xe3's and Xe2's default driver, with the Vulkan layer for the XMX kernels
+          - name: stock-26.3.1
+            version: 26.3.1
+            mesa_sha256: 4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961
             patches: ""
             arch_snapshot: 2026/10/14
     env:
