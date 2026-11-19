@@ -160,7 +160,7 @@ Because `<toolchain>` is part of the filename, a compiler update, a changed comp
 
 ## 5. Patched Mesa ANV Driver (`patches/`)
 
-There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0`. Both share identical `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` files (enforced by CI in `.github/workflows/build.yml`); version differences in upstream Mesa structs are abstracted behind `anv_cm_bind_state` and `ANV_CM_*` macros in `anv_private.h`.
+There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.1`. Both share identical `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` files (enforced by CI in `.github/workflows/build.yml`); version differences in upstream Mesa structs are abstracted behind `anv_cm_bind_state` and `ANV_CM_*` macros in `anv_private.h`.
 
 ### Patch `0001`: Kernel Injection, Payload, and Binding Tables
 
@@ -210,7 +210,7 @@ In Mesa 26.3, `brw_nir_lower_cmat` (cooperative matrix lowering) leaves dead `ni
 
 ## 6. The Unpatched-Driver Vulkan Layer (`VK_LAYER_XESS_xmx`)
 
-On the GPUs of `layer/gpu-ids.txt` (compiled into the layer through `layer/src/gens.h`), `install.sh` runs the whole session on the package's unpatched Mesa 26.3.0 driver (`lib/mesa-stock-26.3.0/`) paired with `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`). Those GPUs are Xe3 (Panther Lake `0xB080`–`0xB087`, `0xB08F`, `0xB090`, `0xB0A0`, `0xB0B0` and Wildcat Lake `0xFD80`, `0xFD81`) and Xe2, the Lunar Lake and Battlemage IDs of Mesa 26.3. Per game, `xmx-stock.sh %command%` runs the distribution's own unpatched `libvulkan_intel.so` with the same layer. What `patches/0001` does inside the driver, this layer does from outside.
+On the GPUs of `layer/gpu-ids.txt` (compiled into the layer through `layer/src/gens.h`), `install.sh` runs the whole session on the package's unpatched Mesa 26.3.1 driver (`lib/mesa-stock-26.3.1/`) paired with `VK_LAYER_XESS_xmx` (`layer/libVkLayer_xess_xmx.so`). Those GPUs are Xe3 (Panther Lake `0xB080`–`0xB087`, `0xB08F`, `0xB090`, `0xB0A0`, `0xB0B0` and Wildcat Lake `0xFD80`, `0xFD81`) and Xe2, the Lunar Lake and Battlemage IDs of Mesa 26.3. Per game, `xmx-stock.sh %command%` runs the distribution's own unpatched `libvulkan_intel.so` with the same layer. What `patches/0001` does inside the driver, this layer does from outside.
 
 ### Register File Size per Generation
 

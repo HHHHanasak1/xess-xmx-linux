@@ -73,7 +73,7 @@ for dp, dn, fn in os.walk(os.path.join(root, "docs")):   # docs/ and docs/dev/
 # what the documents point to and what has to go with the binaries: the layer's page (docs/launch-options.md links to
 # it); the licence and the third-party notice of dxvk-igdext, which igdext64.dll is built from; Mesa's licence
 # statement and the MIT text it names, for the drivers in lib/mesa-*/ (patches/mesa-license/: docs/license.rst and
-# licenses/MIT of the release tarballs, the same in 26.1.2 and 26.3.0)
+# licenses/MIT of the release tarballs, the same in 26.1.2 and 26.3.1)
 files += ["layer/README.md", "shim/LICENSE.md", "shim/dxvk-igdext_third-party-programs.md",
           "patches/mesa-license/license.rst", "patches/mesa-license/licenses/MIT"]
 missing = [f for f in files if not os.path.isfile(os.path.join(root, f))]

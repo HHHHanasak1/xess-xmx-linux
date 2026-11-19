@@ -86,7 +86,7 @@ Written by `./install.sh` to `~/.config/environment.d/50-xess-xmx.conf` or by `.
 | `ANV_CM_KERNEL_DIR`, `ANV_CM_HELPER` | The patched driver's kernel folder (`<package>/kernels`) and compiler helper (`<package>/tools/cm-compile.sh`). |
 | `INTC_ALT_DRIVER_EXTENSIONS_PATH` | Points XeSS at the prefix folder containing the shim (`C:\windows\system32\driverstore\filerepository\igd_faux.inf_1`). Proton Experimental exposes a driver store in the registry and needs no help; Proton 11.0 has none, and without this variable XeSS never loads the shim there (no XMX, frame generation capped at 2x). GE-Proton sets its own value (`C:\Windows\System32`) for every game. |
 
-*(On the Xe3 and Xe2 GPUs of `layer/gpu-ids.txt`, where `./install.sh` defaults to `stock` mode, `50-xess-xmx.conf` also sets `MESA=stock-26.3.0`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh`, and `XMX_IGC_DIR=<package>/igc`.)*
+*(On the Xe3 and Xe2 GPUs of `layer/gpu-ids.txt`, where `./install.sh` defaults to `stock` mode, `50-xess-xmx.conf` also sets `MESA=stock-26.3.1`, `VK_ADD_LAYER_PATH=<package>/layer`, `VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx`, `XMX_LAYER_HELPER=<package>/tools/cm-compile.sh`, and `XMX_IGC_DIR=<package>/igc`.)*
 
 ### Launch-Option Shorthands (`tools/proton-hook.py`)
 
@@ -244,7 +244,7 @@ Available only when `ffxfg/` is compiled with `/DFFXFG_DEBUG` ([building.md](bui
 | `enable.sh`, `disable.sh` | `XMX_APPID` or `XMX_PREFIX` (one is required), `XMX_CONF` (default `~/.config/xess-xmx.conf`, read by `xmx-launch.sh`), `XMX_GAME` (refuse to run while that process runs), `STEAM_DIR`. |
 | `xmx-stock.sh` | `XMX_STOCK_ICD=<json>[:<json>]` (custom Intel ICD(s) to use instead of the system's), `XMX_ICD_DIRS` (colon-separated ICD search directories, for tests). |
 | `tools/switch-driver.sh [version]` | No argument: lists the package's drivers (`*` = default in `lib/active`); with a version or prefix: tests it and makes it the default. |
-| `tools/rebuild-driver.sh [version]` | Version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees; `XMX_MESA_SHA256` provides the tarball SHA-256 for versions other than `26.1.2` and `26.3.0`. |
+| `tools/rebuild-driver.sh [version]` | Version defaults to the system's Mesa; `XMX_MESA_DIR` (default `~/.cache/xess-xmx/mesa-src`) holds the source and build trees; `XMX_MESA_SHA256` provides the tarball SHA-256 for versions other than `26.1.2` and `26.3.1`. |
 | `tools/session-check.sh [--dry-run]` | Run by `xess-xmx-check.service`; `--dry-run` only reports (and fills `lib/deps/`); `XMX_CHECK_LIB` / `XMX_CHECK_ICD` test another driver library or ICD file. |
 | `tools/get-xess.sh [package dir]` | Downloads Intel's XeSS SDK libraries for `XESS=auto` and `XESS=latest` into `xess/` (run by `install.sh`); `XESS_TAG` (default `v3.0.2`) and `XESS_SHA256` select another release. |
 | `tools/get-ffx.sh [package dir]` | Downloads AMD's FidelityFX loader and providers into `ffx/` (run by `install.sh`), for FSR 3.1.0 to 3.1.3. |

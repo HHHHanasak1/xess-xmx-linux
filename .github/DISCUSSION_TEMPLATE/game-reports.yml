@@ -34,8 +34,8 @@ body:
       label: Driver
       description: The first line of ~/.cache/xess-xmx/driver-status names the driver your session loaded; a per-game MESA= option overrides it.
       options:
-        - Unpatched 26.3.0 + layer (Xe3 and Xe2 default)
-        - Patched 26.3.0
+        - Unpatched 26.3.1 + layer (Xe3 and Xe2 default)
+        - Patched 26.3.1
         - Patched 26.1.2
         - System Mesa + layer (xmx-stock.sh)
         - Not sure

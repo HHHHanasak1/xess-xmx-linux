@@ -51,12 +51,12 @@ printf 'MZ the stand-in for the Control Library, XESS_FG\n' > "$PKG/ControlLib.d
 driver() { # <file> <text>: a shared object that loads and holds the text the scripts look for in a driver
   printf 'const char xmx_test_driver[] = "%s";\n' "$2" | "$CC_BIN" -shared -fPIC -x c - -o "$1"
 }
-for v in 26.1.2 26.3.0 stock-26.3.0; do
+for v in 26.1.2 26.3.1 stock-26.3.1; do
   mkdir -p "$PKG/lib/mesa-$v"
   driver "$PKG/lib/mesa-$v/libvulkan_intel.so" "Mesa ${v#stock-} /usr/share/drirc.d cmk2-c1" || { echo "install-sandbox: the C compiler failed"; exit 2; }
 done
 driver "$PKG/lib/libvulkan_intel.so" "xess-xmx: using the Mesa"
-echo 26.3.0 > "$PKG/lib/active"
+echo 26.3.1 > "$PKG/lib/active"
 printf '#!/bin/sh\nexit 0\n' > "$PKG/igc/neo/bin/ocloc-25.18.1"; chmod +x "$PKG/igc/neo/bin/ocloc-25.18.1"
 touch "$PKG/igc/igc/local/lib/libigc.so.2"
 for f in libxess.dll libxess_fg.dll libxell.dll libxess_dx11.dll; do echo "the SDK's $f" > "$PKG/xess/$f"; done
@@ -73,7 +73,7 @@ EOF
 cat > "$S/bin/vulkaninfo" <<EOF
 #!/bin/sh
 echo "vulkaninfo \$*" >> "$CALLS"
-printf 'deviceName = Intel(R) Graphics (PTL)\ndriverInfo = Mesa 26.3.0\n'
+printf 'deviceName = Intel(R) Graphics (PTL)\ndriverInfo = Mesa 26.3.1\n'
 EOF
 for c in curl pgrep; do printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' "$c" "$CALLS" > "$S/bin/$c"; done
 chmod +x "$S/bin"/*
@@ -150,7 +150,7 @@ ok "watcher: without downloads and environment" line "$UNITS/xess-xmx-shim.servi
 ok "session check: unit" line "$UNITS/xess-xmx-check.service" "ExecStart=/bin/bash \"$HOME/.config/xess-xmx/session-check.sh\""
 ok "session check: its copy outside the package" test -f "$HOME/.config/xess-xmx/session-check.sh"
 ok "driver check passed" has "$O/install" "== driver check: loads fine"
-ok "driver status" grep -q "^ok .*Mesa 26.3.0" "$HOME/.cache/xess-xmx/driver-status"
+ok "driver status" grep -q "^ok .*Mesa 26.3.1" "$HOME/.cache/xess-xmx/driver-status"
 ok "systemd: session environment set" grep -q "^systemctl --user set-environment VK_DRIVER_FILES=$PKG/run/intel_icd.json" "$CALLS"
 ok "systemd: watcher enabled" line "$CALLS" "systemctl --user enable xess-xmx-shim.path"
 ok "systemd: session check enabled" line "$CALLS" "systemctl --user enable xess-xmx-check.service"
@@ -168,22 +168,22 @@ ok "switch-driver.sh 26.1" run "$O/switch" bash "$PKG/tools/switch-driver.sh" 26
 ok "switch: lib/active" is "$PKG/lib/active" 26.1.2
 ok "switch: list" run "$O/list" bash "$PKG/tools/switch-driver.sh"
 ok "switch: the default is marked" line "$O/list" "* 26.1.2 (default)"
-ok "switch: the unpatched driver is listed" line "$O/list" "  stock-26.3.0"
+ok "switch: the unpatched driver is listed" line "$O/list" "  stock-26.3.1"
 no "switch: no such driver" run "$O/switch2" bash "$PKG/tools/switch-driver.sh" 99
 ok "switch: lib/active stays" is "$PKG/lib/active" 26.1.2
 ok "switch-driver.sh 26.3" run "$O/switch3" bash "$PKG/tools/switch-driver.sh" 26.3
-ok "switch: back" is "$PKG/lib/active" 26.3.0
+ok "switch: back" is "$PKG/lib/active" 26.3.1
 
 # ---- 4. stock mode: the unpatched driver and the layer
 ok "install.sh, stock mode" run "$O/install3" env XMX_DRIVER=stock bash "$PKG/install.sh"
-ok "stock: unpatched Mesa" line "$ENVF" "MESA=stock-26.3.0"
+ok "stock: unpatched Mesa" line "$ENVF" "MESA=stock-26.3.1"
 ok "stock: layer folder" line "$ENVF" "VK_ADD_LAYER_PATH=$PKG/layer"
 ok "stock: layer on" line "$ENVF" "VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx"
 ok "stock: compile script" line "$ENVF" "XMX_LAYER_HELPER=$PKG/tools/cm-compile.sh"
 ok "stock: compiler" line "$ENVF" "XMX_IGC_DIR=$PKG/igc"
 ok "stock: mode kept" is "$PKG/run/driver-mode" stock
 ok "stock: what the session check tests" is "$PKG/run/session-driver" stock
-ok "stock: the driver check tested the unpatched driver" has "$HOME/.cache/xess-xmx/driver-status" "$PKG/lib/mesa-stock-26.3.0/libvulkan_intel.so"
+ok "stock: the driver check tested the unpatched driver" has "$HOME/.cache/xess-xmx/driver-status" "$PKG/lib/mesa-stock-26.3.1/libvulkan_intel.so"
 ok "install.sh, mode by GPU again" run "$O/install4" env XMX_DRIVER=auto bash "$PKG/install.sh"
 ok "auto: the kept mode is gone" test ! -e "$PKG/run/driver-mode"
 ok "install.sh, patched again" run "$O/install5" env XMX_DRIVER=patched bash "$PKG/install.sh"
@@ -193,11 +193,11 @@ ok "patched again: the environment file as in the first run" cmp "$O/env1" "$ENV
 : > "$CALLS"
 ok "session check: fine" run "$O/check" bash "$PKG/tools/session-check.sh"
 no "session check: fine, the session is left alone" grep -q "set-environment" "$CALLS"
-cp "$PKG/lib/mesa-26.3.0/libvulkan_intel.so" "$S/good.so"
-echo "not a library" > "$PKG/lib/mesa-26.3.0/libvulkan_intel.so"
+cp "$PKG/lib/mesa-26.3.1/libvulkan_intel.so" "$S/good.so"
+echo "not a library" > "$PKG/lib/mesa-26.3.1/libvulkan_intel.so"
 no "session check, dry run: the broken driver fails" run "$O/check2" bash "$PKG/tools/session-check.sh" --dry-run
 ok "session check, dry run: status" grep -q "^FAILED " "$HOME/.cache/xess-xmx/driver-status"
-ok "session check, dry run: nothing switched" is "$PKG/lib/active" 26.3.0
+ok "session check, dry run: nothing switched" is "$PKG/lib/active" 26.3.1
 ok "session check: another driver of the package takes over" run "$O/check3" bash "$PKG/tools/session-check.sh"
 ok "session check: lib/active" is "$PKG/lib/active" 26.1.2
 ok "session check: says so" has "$O/check3" "switched to the package's Mesa 26.1.2 driver"
@@ -207,8 +207,8 @@ echo "not a library" > "$PKG/lib/mesa-26.1.2/libvulkan_intel.so"
 ok "session check: no driver loads, the session goes on" run "$O/check4" bash "$PKG/tools/session-check.sh"
 ok "session check: the session gets the system's drivers back" grep -q "^systemctl --user set-environment VK_DRIVER_FILES=.* VKD3D_DISABLE_EXTENSIONS= ANV_CM_KERNEL_DIR= ANV_CM_HELPER=\$" "$CALLS"
 no "session check: the package's ICD is not in that list" grep -q "set-environment VK_DRIVER_FILES=[^ ]*$PKG" "$CALLS"
-cp "$S/good.so" "$PKG/lib/mesa-26.3.0/libvulkan_intel.so"; cp "$S/good2.so" "$PKG/lib/mesa-26.1.2/libvulkan_intel.so"
-echo 26.3.0 > "$PKG/lib/active"
+cp "$S/good.so" "$PKG/lib/mesa-26.3.1/libvulkan_intel.so"; cp "$S/good2.so" "$PKG/lib/mesa-26.1.2/libvulkan_intel.so"
+echo 26.3.1 > "$PKG/lib/active"
 # the copy outside the package: runs the package's check, and without the package folder points the session back
 ok "session check copy: runs the package's" run "$O/stub" bash "$HOME/.config/xess-xmx/session-check.sh" --dry-run
 mv "$PKG" "$PKG.gone"; : > "$CALLS"

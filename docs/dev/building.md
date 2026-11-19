@@ -57,7 +57,7 @@ docs/dev/                     developer documents (how it works, building, debug
                               and runs the install scripts in a sandbox
 ```
 
-The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.0/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
+The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the three DLLs in `ffxfg/`, `dx11bridge/libxess_dx11.dll`, `vkwrap/vulkan-1.dll`, the patched drivers in `lib/mesa-<version>/`, the unpatched driver in `lib/mesa-stock-26.3.1/`, the ICD `lib/libvulkan_intel.so`, `lib/bundled/`, and the layer `layer/libVkLayer_xess_xmx.so` with `layer/VkLayer_xess_xmx.json`) and the scripts. It contains no Intel kernels; they are compiled on the user's machine from the SPIR-V inside the game's XeSS libraries.
 
 | Artifact / Binary | Source Directory | Toolchain | Purpose |
 |---|---|---|---|
@@ -69,7 +69,7 @@ The release archive holds the binaries (`igdext64.dll`, `ControlLib.dll`, the th
 | `libxess_dx11.dll` | `dx11bridge/` | Windows, MSVC (`cl`, `fxc`, `rc`) | XeSS D3D11 API bridge running on D3D12 XeSS |
 | `vulkan-1.dll` | `vkwrap/` | Windows, MSVC (`cl`, `ml64`), Python 3 | Vulkan loader wrapper providing Intel private interfaces for Vulkan XeSS |
 | `lib/libvulkan_intel.so` | `icd/xmx-icd.c` | Linux, `gcc` | Forwarding Vulkan ICD (installable client driver) that loads the selected Mesa driver |
-| `lib/mesa-<ver>/libvulkan_intel.so` | `patches/` + Mesa tarball | Linux (Arch container), `meson` + `ninja` | Patched (`26.1.2`, `26.3.0`) and unpatched (`stock-26.3.0`) Mesa ANV drivers |
+| `lib/mesa-<ver>/libvulkan_intel.so` | `patches/` + Mesa tarball | Linux (Arch container), `meson` + `ninja` | Patched (`26.1.2`, `26.3.1`) and unpatched (`stock-26.3.1`) Mesa ANV drivers |
 | `lib/bundled/*` | `tools/build-deps.sh` | Linux (Debian 12 container), CMake + Meson | Bundled `libSPIRV-Tools.so` and `libdisplay-info.so.3` (glibc >= 2.36) for systems that lack them |
 | `layer/libVkLayer_xess_xmx.so` | `layer/` | Linux, `gcc`, `glslangValidator`, Python 3 | `VK_LAYER_XESS_xmx` Vulkan layer for unpatched ANV (stock mode, `xmx-stock.sh`) and Vulkan XeSS |
 
@@ -235,7 +235,7 @@ docker run --rm -v "$PWD":/src -w /src debian:bookworm tools/build-deps.sh lib/b
 ### 3. Rebuilding a Patched Driver (`tools/rebuild-driver.sh`)
 
 `tools/rebuild-driver.sh` automates the entire Mesa ANV build for your system's Mesa version (for example after a SteamOS update, or on Debian 13 / Ubuntu 24.04 where `libwayland-client` is 1.23; see [../drivers.md](../drivers.md)):
-1. Downloads the release tarball from `archive.mesa3d.org` and checks its SHA-256 (`26.1.2`: `bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0`, `26.3.0`: `91d729aa68bb89e4ec857841300bbe922bcb3e52b1f97566ca83930d3b28343a`; for another version, pass `XMX_MESA_SHA256=<sha256>`).
+1. Downloads the release tarball from `archive.mesa3d.org` and checks its SHA-256 (`26.1.2`: `bac2bca9121897a2b8162e79636b50ac998fca799c8e6cf914edd85962babdf0`, `26.3.1`: `4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961`; for another version, pass `XMX_MESA_SHA256=<sha256>`).
 2. Applies the patches (`patches/mesa-26.3/` for 26.3, `patches/` otherwise). If the patches do not apply cleanly to the new version, nothing is changed and the script exits.
 3. Builds `libvulkan_intel.so` (caching the source and build tree under `${XMX_MESA_DIR:-~/.cache/xess-xmx/mesa-src}/<version>`), checks it with `tools/session-check.sh --dry-run`, installs it to `lib/mesa-<version>/libvulkan_intel.so`, and makes it the default driver via `tools/switch-driver.sh`.
 
@@ -243,14 +243,14 @@ SteamOS has no compiler toolchain, so run it inside an Arch Linux distrobox cont
 
 ```bash
 distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh             # the system's Mesa version
-distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.0      # or a given one
+distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.1      # or a given one
 ```
 
 ### 4. Building Mesa ANV by Hand
 
-There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.0` (first contributed in [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
+There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.1` (first contributed in [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
 
-To build patched Mesa `26.1.2` by hand (for `26.3.0`, use `mesa-26.3.0.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.0/` driver is the same `26.3.0` tarball built with the same Meson options and no patches):
+To build patched Mesa `26.1.2` by hand (for `26.3.1`, use `mesa-26.3.1.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.1/` driver is the same `26.3.1` tarball built with the same Meson options and no patches):
 
 ```bash
 mkdir mesa && curl -sfL https://archive.mesa3d.org/mesa-26.1.2.tar.xz | tar -xJ -C mesa --strip-components=1
@@ -275,7 +275,7 @@ Three of the Meson options are easy to get wrong:
 
 ## What the Mesa Patches Change
 
-### `0001-anv-cm-kernel-injection.patch` (26.1.2 and 26.3.0)
+### `0001-anv-cm-kernel-injection.patch` (26.1.2 and 26.3.1)
 
 Most of the code lives in three new files under `src/intel/vulkan` that are byte-for-byte identical between both patch series; upstream files only get small hooks:
 
@@ -287,7 +287,7 @@ Most of the code lives in three new files under `src/intel/vulkan` that are byte
 
 In the `patches/mesa-26.3/` series, `0001` also initializes `device->general_state_pool` on the direct-descriptor path (where Mesa 26.3 stopped creating it, and pins it in `i915/anv_batch_chain.c`), and calls `anv_cm_kernel_replace` in `anv_shader_compile` before the Jay/brw compiler branch.
 
-### `0002-anv-cm-debug-tools.patch` (26.1.2 and 26.3.0)
+### `0002-anv-cm-debug-tools.patch` (26.1.2 and 26.3.1)
 
 Adds the developer debug switches (`ANV_CM_PC`, `ANV_CM_VIEW`, `ANV_CM_GCAP`, `ANV_CM_CAPTURE`, `ANV_CM_ONLY`, `ANV_CM_SKIP`, `ANV_CM_SYNC`, `ANV_CM_MAXGROUPS`, `ANV_CM_PREEMPT`, `ANV_CM_CAP_DIR`, and `<blake3>.cmk` shader replacement) documented in [debugging.md](debugging.md).
 
@@ -299,17 +299,17 @@ python3 tools/split_patch.py <mesa tree> mesa-26.1.2 <out dir>
 
 `tools/split_patch.py` writes `0001` with those blocks stripped and `0002` with them included (untracked files under `src/` such as `anv_cm.c` are picked up automatically), then restores the marked working tree. CI checks that `anv_cm.c`, `anv_cm.h`, and `genX_cm.c` are identical across both patch series and that no debug symbols end up in `0001`.
 
-### `0003-anv-cm-xe2-large-grf.patch` (26.1.2 and 26.3.0)
+### `0003-anv-cm-xe2-large-grf.patch` (26.1.2 and 26.3.1)
 
 Contributed in [#16](https://github.com/HHHHanasak1/xess-xmx-linux/issues/16) for Xe2, and extended to Xe-HPG in [#31](https://github.com/HHHHanasak1/xess-xmx-linux/issues/31), [#32](https://github.com/HHHHanasak1/xess-xmx-linux/issues/32), and [#39](https://github.com/HHHHanasak1/xess-xmx-linux/issues/39). Switches `STATE_COMPUTE_MODE` Large GRF Mode on around 256-GRF CM kernels on Xe-HPG and Xe2, and switches it off before non-CM compute walkers, Mesa's own BLORP compute work (`blorp_exec_on_compute`), ray tracing (`cmd_buffer_trace_rays`), internal simple shaders (`genX_simple_shader.c`), device-generated commands (`genX_cmd_dgc.c` on 26.3), at the end of command buffers, and before executing secondary command buffers (see [how-it-works.md](how-it-works.md)). It also drops direct CM dispatches with a zero workgroup count in any dimension, which the Vulkan specification makes a no-op, on every generation. Applies cleanly with or without `0002`.
 
 *(There is no `0004` patch any more. It was a Mesa bug fix for Resident Evil Requiem and its demo, Pragmata, and Monster Hunter Stories 3: Mesa's `drirc` enabled `anv_emulate_divergent_barriers` for them, a lowering that only works with `brw`, causing a crash at startup in `jay_opt_propagate_forwards` when Jay was active. Mesa 26.3's `drirc` now pairs `anv_emulate_divergent_barriers` with `anv_disable_jay` for those games, and SteamOS's 26.1.2 `drirc` has no ANV entries for them, so the patch was dropped with 26.3.0.)*
 
-### `0005-anv-cm-sampler-descriptor-table.patch` (26.1.2 and 26.3.0)
+### `0005-anv-cm-sampler-descriptor-table.patch` (26.1.2 and 26.3.1)
 
 Handles CM kernels whose sampler is passed in a D3D12 descriptor table rather than as a static sampler, as used by the FSR 4 on XMX plugin ([../games.md](../games.md)). vkd3d-proton puts one push-constant dword per descriptor table at the end of the push constants, and that sampler table is the last root parameter, so the surface tables end one dword earlier; the sampler state is copied from vkd3d-proton's sampler heap at dispatch time. XeSS uses static samplers and does not take this path.
 
-### `0006-anv-cmat-vars-before-jay.patch` (26.3.0 only)
+### `0006-anv-cmat-vars-before-jay.patch` (26.3.1 only)
 
 Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matrix lowering (`brw_nir_lower_cmat`) leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into `ivec8` vectors) and runs no variable-to-SSA or dead-variable pass afterward. When those derefs reach Jay, `jay_emit_instr` hits `UNREACHABLE("All derefs should've been lowered")`. In a release build (`__builtin_unreachable`), execution jumps into whatever function the compiler placed next (`jay_emit_fb_write` when built with GCC 15; GCC 16 happened not to crash), crashing the game while compiling the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables`, and `nir_opt_dce` right after `brw_nir_lower_cmat`.
 
