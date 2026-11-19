@@ -452,6 +452,7 @@ void StartXellHook()
     if (!g_fixCap && !g_log && !g_capUs && !g_capAuto) return;
     if (GetEnvironmentVariableA("IGDEXT_XELL_CHECK", b, sizeof(b)) > 0 && !atoi(b)) g_chk.on = false;
     if (GetEnvironmentVariableA("IGDEXT_XELL_POLLS", b, sizeof(b)) > 0 && !atoi(b)) g_polls = false;
+    if (GetEnvironmentVariableA("IGDEXT_XEFG_ASYNC", b, sizeof(b)) > 0 && atoi(b)) g_xefgAsync = true;
     // the same line as in ffx_xefg.log (the FSR routes)
     XLog("low latency (IGDEXT_XELL_CAP): %s; the game's questions to the swap chain answered %s%s",
          g_capAuto ? "auto, the game's frames are held back in xellSleep" : g_capUs ? "XeLL's fixed cap" : g_capBad ? "off (not off, auto[:ms] or 0..1000000 us)" : "off",

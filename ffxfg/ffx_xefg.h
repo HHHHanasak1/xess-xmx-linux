@@ -30,8 +30,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <thread>
 #include <algorithm>
 #include <vector>
 
@@ -132,6 +134,7 @@ inline bool g_noExclusive = true;
 inline int g_oflow = 0;          // FFX_XEFG_OFLOW=1 (see the top of ffx_xefg.cpp)
 inline float g_oflowDepth = 1.0f;
 inline bool g_times = false;     // FFX_XEFG_TIMES=1
+inline bool g_async = false;     // FFX_XEFG_ASYNC=1: the proxy's Present on our own thread (FgSwapChain)
 inline bool g_capAuto = false;   // FFX_XEFG_CAP=auto (the default with FFX_XEFG_OFLOW)
 // The low latency (ffx_xefg_lowlat.cpp), from IGDEXT_XELL_CAP as the XMX shim reads it: 1 = auto (the default): the
 // game is kept in Present until its next frame should start; 2 = <us>: no wait of ours, XeLL's frame cap (the shim
@@ -250,6 +253,12 @@ struct ScState {
     };
     XellFrame xellFrames[8];
     unsigned xellNext = 0;   // the slot taken next
+    // FFX_XEFG_ASYNC: while our thread is inside the proxy's Present, XeSS-FG holds a lock that a marker sent from
+    // the game's thread waits for (through the XMX shim's XeLL hook). Markers are queued then (with st->lock held),
+    // in order, and our thread sends them once the Present returned: when the game's thread would have sent them
+    // in the synchronous case, as it was held in Present until then.
+    bool xellDefer = false;
+    std::vector<std::pair<uint32_t, int>> xellDeferred;
     struct FfxApiResource ui = {};
     // Frame latency waitable object of our own, so the game's wait follows our presents instead of XeSS-FG's
     // presentation thread. FFX_XEFG_PACE=1 (default 0, no gain measured in CONTROL Resonant): released when the GPU has finished the presented frame, like
@@ -444,6 +453,36 @@ struct FgSwapChain final : IDXGISwapChain4 {
     IDXGISwapChain4* sc;
 
     FgSwapChain(ScState* s) : st(s), sc(s->proxy) { st->refs++; }
+
+    // FFX_XEFG_ASYNC=1: while XeSS-FG interpolates, the game's Present hands the frame to this thread, which calls
+    // the proxy's Present (where XeSS-FG holds the frame for its pacing) and does what follows it; the game's Present
+    // returns at once, and its next one waits until that is done (one frame in flight). The back buffer index the
+    // game asks for meanwhile is the one the proxy will have after that Present.
+    struct AsyncJob {
+        UINT sync = 0, flags = 0;
+        bool one = false, havePp = false;
+        DXGI_PRESENT_PARAMETERS pp = {};
+        uint32_t id = 0;
+        float blockMs = 0;
+        uint64_t first = 0, n = 0;
+    };
+    std::thread asyncThread;
+    std::mutex asyncLock;
+    std::condition_variable asyncCv;
+    bool asyncHave = false, asyncBusy = false, asyncQuit = false;
+    AsyncJob asyncJob;
+    HRESULT asyncHr = S_OK;
+    UINT asyncIndex = 0, asyncBuffers = 0;
+    bool asyncIndexValid = false;
+    unsigned asyncMismatch = 0;
+    uint64_t asyncLastCall = 0;
+    std::vector<float> asyncStats[3];   // the game's wait, its frame time, our thread's time in the proxy's Present
+    void AsyncWait();
+    void AsyncFlush();
+    void AsyncStop();
+    void AsyncRun();
+    HRESULT PresentNow(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp, bool one, uint32_t id, float blockMs,
+                       uint64_t first, uint64_t n);
 
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override;

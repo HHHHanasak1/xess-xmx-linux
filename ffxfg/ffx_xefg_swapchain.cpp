@@ -52,6 +52,7 @@ ULONG STDMETHODCALLTYPE FgSwapChain::Release()
     ULONG r = --ref;
     if (r == 0) {
         Log("FgSwapChain %p released by the game", (void*)this);
+        AsyncStop();
         {
             std::lock_guard<std::mutex> lk(st->lock);
             st->wrapper = nullptr;
@@ -78,13 +79,21 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::GetDevice(REFIID riid, void** p) { return
 // IDXGISwapChain
 HRESULT STDMETHODCALLTYPE FgSwapChain::Present(UINT sync, UINT flags)
 {
-    if (flags & DXGI_PRESENT_TEST)
+    if (flags & DXGI_PRESENT_TEST) {
+        AsyncWait();
         return sc->Present(sync, flags);
+    }
     return DoPresent(sync, flags, nullptr, false);
 }
 // the game's Present and Present1
 HRESULT FgSwapChain::DoPresent(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp, bool one)
 {
+    float asyncWaitMs = 0;
+    if (g_async) {
+        const uint64_t w0 = Qpc();
+        AsyncWait();   // the frame before is through the proxy's Present (one frame in flight)
+        asyncWaitMs = QpcMs(w0, Qpc());
+    }
 #ifdef FFXFG_DEBUG
     const uint64_t n = st->presents + 1;
     tr::g_seq++;
@@ -109,11 +118,84 @@ HRESULT FgSwapChain::DoPresent(UINT sync, UINT flags, const DXGI_PRESENT_PARAMET
         PollForget();
     uint32_t id = BeforePresent(st);
     g_ev.mult = std::min<int>(g_mult, (int)st->maxInterpolations + 1);
+#ifndef FFXFG_DEBUG
+    const uint64_t n = 0;
+#endif
+    // FFX_XEFG_ASYNC: while XeSS-FG interpolates, the proxy's Present goes to our thread (no dirty rectangles: their
+    // arrays are the game's and could change once this returns)
+    if (g_async && st->xefgEnabled && (!pp || (!pp->DirtyRectsCount && !pp->pScrollRect && !pp->pScrollOffset))) {
+        if (!asyncBuffers) {
+            DXGI_SWAP_CHAIN_DESC1 d = {};
+            asyncBuffers = SUCCEEDED(sc->GetDesc1(&d)) && d.BufferCount ? d.BufferCount : 2;
+            Log("FFX_XEFG_ASYNC: the proxy's Present runs on its own thread (%u buffers)", asyncBuffers);
+        }
+        const UINT cur = sc->GetCurrentBackBufferIndex();
+        std::lock_guard<std::mutex> lk(asyncLock);
+        // FFX_XEFG_TIMES, every 300 frames: how long the game waited for the frame before, its frame time (Present to
+        // Present), and how long our thread spent in the proxy's Present
+        const uint64_t now = Qpc();
+        if (g_times && asyncLastCall) {
+            asyncStats[0].push_back(asyncWaitMs);
+            asyncStats[1].push_back(QpcMs(asyncLastCall, now));
+        }
+        asyncLastCall = now;
+        if (g_times && asyncStats[0].size() >= 300) {
+            char s[3][96];
+            for (int k = 0; k < 3; k++) {
+                auto& v = asyncStats[k];
+                std::sort(v.begin(), v.end());
+                double sum = 0;
+                for (float x : v)
+                    sum += x;
+                snprintf(s[k], sizeof s[k], "mean %.2f p50 %.2f p90 %.2f", v.empty() ? 0.0 : sum / v.size(),
+                         v.empty() ? 0.0f : v[v.size() / 2], v.empty() ? 0.0f : v[v.size() * 9 / 10]);
+                v.clear();
+            }
+            Log("FFX_XEFG_ASYNC (ms): game waited %s | game frame %s | proxy Present %s", s[0], s[1], s[2]);
+        }
+        asyncJob = AsyncJob{sync, flags, one, pp != nullptr, pp ? *pp : DXGI_PRESENT_PARAMETERS{}, id, blockMs, first, n};
+        asyncIndex = (cur + 1) % asyncBuffers;
+        asyncIndexValid = true;
+        asyncHave = asyncBusy = true;
+        if (!asyncThread.joinable())
+            asyncThread = std::thread([this] { AsyncRun(); });
+        asyncCv.notify_all();
+        TR(tr::g_presRet = Qpc());   // the stack sampler: the game's frame starts here
+        return asyncHr;   // the last present's result: an error shows one frame late
+    }
+    if (g_async) {
+        std::lock_guard<std::mutex> lk(asyncLock);
+        asyncIndexValid = false;
+    }
+    return PresentNow(sync, flags, pp, one, id, blockMs, first, n);
+}
+
+// The proxy's Present and what follows it: on the game's thread, or on ours (FFX_XEFG_ASYNC)
+HRESULT FgSwapChain::PresentNow(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp, bool one, uint32_t id,
+                                float blockMs, uint64_t first, uint64_t n)
+{
+    (void)n;
     TR(tr::GpuMarkSignal(st->gpu1, st->queue, n); tr::Put(tr::PX_CALL, id, n));
     uint64_t span[3] = {};
     t_eclSpan = g_origEcl ? span : nullptr;
     t_pxImages = 0;   // the first real Present on this thread is the frame's image 0 (EvenBefore)
+    // FFX_XEFG_ASYNC: the game's XeLL markers wait meanwhile (ScState::xellDefer)
+    const bool onWorker = g_async && std::this_thread::get_id() == asyncThread.get_id();
+    if (onWorker) {
+        std::lock_guard<std::mutex> lk(st->lock);
+        st->xellDefer = true;
+    }
     HRESULT hr = one ? sc->Present1(sync, flags, pp) : sc->Present(sync, flags);
+    if (onWorker) {
+        std::vector<std::pair<uint32_t, int>> q;
+        {
+            std::lock_guard<std::mutex> lk(st->lock);
+            st->xellDefer = false;
+            q.swap(st->xellDeferred);
+        }
+        for (auto& m : q)
+            p_xellAddMarkerData(st->xell, m.first, (xell_latency_marker_type_t)m.second);
+    }
     t_pxImages = -1;
     t_eclSpan = nullptr;
     const uint64_t tEnd = Qpc();
@@ -129,11 +211,67 @@ HRESULT FgSwapChain::DoPresent(UINT sync, UINT flags, const DXGI_PRESENT_PARAMET
 #ifdef FFXFG_DEBUG
     tr::g_seq++;
     tr::Put(tr::GP_RET, (uint64_t)(QpcMs(tEnd, Qpc()) * 1000.0f), n, (uint16_t)std::min(blockMs * 100.0f, 65535.0f));
-    if (st->xefgEnabled)   // the stack sampler looks at frames with interpolation only
+    if (st->xefgEnabled && !g_async)   // the stack sampler looks at frames with interpolation only
         tr::g_presRet = Qpc();
     g_traceNext = n + 1;
 #endif
     return hr;
+}
+
+// FFX_XEFG_ASYNC: waits until the frame handed over has been through the proxy's Present
+void FgSwapChain::AsyncWait()
+{
+    std::unique_lock<std::mutex> lk(asyncLock);
+    asyncCv.wait(lk, [this] { return !asyncBusy; });
+}
+// before a resize or a mode change: the frame in flight first, and the index is the proxy's again
+void FgSwapChain::AsyncFlush()
+{
+    std::unique_lock<std::mutex> lk(asyncLock);
+    asyncCv.wait(lk, [this] { return !asyncBusy; });
+    asyncIndexValid = false;
+}
+// stops the thread (the swap chain goes): after the frame in flight
+void FgSwapChain::AsyncStop()
+{
+    {
+        std::unique_lock<std::mutex> lk(asyncLock);
+        asyncCv.wait(lk, [this] { return !asyncBusy; });
+        asyncQuit = true;
+        asyncIndexValid = false;
+    }
+    asyncCv.notify_all();
+    if (asyncThread.joinable())
+        asyncThread.join();
+}
+void FgSwapChain::AsyncRun()
+{
+    SetThreadDescription(GetCurrentThread(), L"ffx_xefg async present");
+    for (;;) {
+        AsyncJob j;
+        {
+            std::unique_lock<std::mutex> lk(asyncLock);
+            asyncCv.wait(lk, [this] { return asyncQuit || asyncHave; });
+            if (!asyncHave)
+                return;
+            j = asyncJob;
+            asyncHave = false;
+        }
+        const uint64_t p0 = Qpc();
+        const HRESULT hr = PresentNow(j.sync, j.flags, j.havePp ? &j.pp : nullptr, j.one, j.id, j.blockMs, j.first, j.n);
+        const float pms = QpcMs(p0, Qpc());
+        const UINT now = sc->GetCurrentBackBufferIndex();
+        {
+            std::lock_guard<std::mutex> lk(asyncLock);
+            if (g_times)
+                asyncStats[2].push_back(pms);
+            if (now != asyncIndex && asyncMismatch++ < 8)
+                Log("!! FFX_XEFG_ASYNC: back buffer %u after the Present, the game was told %u", now, asyncIndex);
+            asyncHr = hr;
+            asyncBusy = false;
+        }
+        asyncCv.notify_all();
+    }
 }
 // Takes the answers from the swap chain: the frame statistics and the color spaces asked about since the last
 // time. Returns how long that took (ms): it waits while a Present of the real swap chain is under way.
@@ -213,6 +351,7 @@ void FgSwapChain::Waited(const char* what, int id, uint64_t t0)
 HRESULT STDMETHODCALLTYPE FgSwapChain::GetBuffer(UINT i, REFIID riid, void** p) SC_FORWARD("GetBuffer", 1, sc->GetBuffer(i, riid, p))
 HRESULT STDMETHODCALLTYPE FgSwapChain::SetFullscreenState(BOOL f, IDXGIOutput* o)
 {
+    AsyncFlush();
     HRESULT hr;
     if (g_noExclusive) {
         st->fakeFullscreen = f;
@@ -250,6 +389,7 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* d)
 }
 HRESULT STDMETHODCALLTYPE FgSwapChain::ResizeBuffers(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl)
 {
+    AsyncFlush();
     PollForget();
     HRESULT hr = sc->ResizeBuffers(n, w, h, f, fl);
     Log("ResizeBuffers %u %ux%u fmt %d flags 0x%x -> 0x%08lx", n, w, h, (int)f, fl, (unsigned long)hr);
@@ -289,6 +429,7 @@ void FgSwapChain::Recheck()
 }
 HRESULT STDMETHODCALLTYPE FgSwapChain::ResizeTarget(const DXGI_MODE_DESC* m)
 {
+    AsyncFlush();
     PollForget();
     return sc->ResizeTarget(m);
 }
@@ -316,8 +457,10 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::GetHwnd(HWND* h) SC_FORWARD("GetHwnd", 12
 HRESULT STDMETHODCALLTYPE FgSwapChain::GetCoreWindow(REFIID riid, void** p) { return sc->GetCoreWindow(riid, p); }
 HRESULT STDMETHODCALLTYPE FgSwapChain::Present1(UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS* pp)
 {
-    if (flags & DXGI_PRESENT_TEST)
+    if (flags & DXGI_PRESENT_TEST) {
+        AsyncWait();
         return sc->Present1(sync, flags, pp);
+    }
     return DoPresent(sync, flags, pp, true);
 }
 BOOL STDMETHODCALLTYPE FgSwapChain::IsTemporaryMonoSupported() { return sc->IsTemporaryMonoSupported(); }
@@ -374,7 +517,15 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::SetMatrixTransform(const DXGI_MATRIX_3X2_
 HRESULT STDMETHODCALLTYPE FgSwapChain::GetMatrixTransform(DXGI_MATRIX_3X2_F* m) { return sc->GetMatrixTransform(m); }
 
 // IDXGISwapChain3
-UINT STDMETHODCALLTYPE FgSwapChain::GetCurrentBackBufferIndex() SC_FORWARD("GetCurrentBackBufferIndex", 2, sc->GetCurrentBackBufferIndex())
+UINT STDMETHODCALLTYPE FgSwapChain::GetCurrentBackBufferIndex()
+{
+    if (g_async) {   // a frame in flight: the index the proxy will have after its Present
+        std::lock_guard<std::mutex> lk(asyncLock);
+        if (asyncIndexValid)
+            return asyncIndex;
+    }
+    SC_FORWARD("GetCurrentBackBufferIndex", 2, sc->GetCurrentBackBufferIndex())
+}
 // As of the last Present call while XeSS-FG interpolates, like GetFrameStatistics: a color space the game asks
 // about for the first time goes to the swap chain, and is asked again at each Present from then on.
 HRESULT STDMETHODCALLTYPE FgSwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE c, UINT* s)
@@ -406,6 +557,7 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::CheckColorSpaceSupport(DXGI_COLOR_SPACE_T
 }
 HRESULT STDMETHODCALLTYPE FgSwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE c)
 {
+    AsyncWait();
     std::lock_guard<std::mutex> lk(st->hdrLock);
     // HDR10 once more while the real swap chain has it and XeSS-FG is not to know: nothing to pass on (a game
     // that sets its colour space every frame would wait for the real swap chain's lock twice each time)
@@ -493,6 +645,7 @@ void FgSwapChain::HdrAb()
 HRESULT STDMETHODCALLTYPE FgSwapChain::ResizeBuffers1(UINT n, UINT w, UINT h, DXGI_FORMAT f, UINT fl, const UINT* mask,
                                                       IUnknown* const* queues)
 {
+    AsyncFlush();
     PollForget();
     HRESULT hr = sc->ResizeBuffers1(n, w, h, f, fl, mask, queues);
     Log("ResizeBuffers1 %u %ux%u fmt %d -> 0x%08lx", n, w, h, (int)f, (unsigned long)hr);
@@ -505,5 +658,9 @@ HRESULT STDMETHODCALLTYPE FgSwapChain::ResizeBuffers1(UINT n, UINT w, UINT h, DX
 }
 
 // IDXGISwapChain4
-HRESULT STDMETHODCALLTYPE FgSwapChain::SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d) { return sc->SetHDRMetaData(t, n, d); }
+HRESULT STDMETHODCALLTYPE FgSwapChain::SetHDRMetaData(DXGI_HDR_METADATA_TYPE t, UINT n, void* d)
+{
+    AsyncWait();
+    return sc->SetHDRMetaData(t, n, d);
+}
 #undef SC_FORWARD

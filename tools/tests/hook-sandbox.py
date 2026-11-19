@@ -369,6 +369,16 @@ def main():
     r = run("neither", "XESS_LL=off IGDEXT_XELL_CAP=auto:3")
     ok("XESS_LL next to IGDEXT_XELL_CAP: the old name decides, and the hook says so",
        r["out"] == "" and any("decides" in l for l in r["log"]), r["out"])
+    for value in ("1", "on"):
+        r = run("neither", "XESS_ASYNC=" + value)
+        ok("XESS_ASYNC=%s -> FFX_XEFG_ASYNC=1 IGDEXT_XEFG_ASYNC=1" % value, r["out"] == " | FFX_XEFG_ASYNC=1 IGDEXT_XEFG_ASYNC=1", r["out"])
+    for value in ("0", "off"):
+        r = run("neither", "XESS_ASYNC=" + value)
+        ok("XESS_ASYNC=%s: nothing set" % value, r["out"] == "", r["out"])
+    r = run("neither", "XESS_ASYNC=2")
+    ok("XESS_ASYNC=2: refused, nothing set", r["out"] == "" and any("unknown value" in l for l in r["log"]), r["out"])
+    r = run("neither", "XESS_ASYNC=1 IGDEXT_XEFG_ASYNC=0")
+    ok("XESS_ASYNC next to IGDEXT_XEFG_ASYNC: that one decides for the shim", r["out"] == " | FFX_XEFG_ASYNC=1", r["out"])
     r = run("fsr-fg", "XESS=auto XESS_FG=3 XESS_LL=auto:2")
     ok("XESS_LL next to XESS=auto", r["out"] == old[("fsr-fg", "FSR=xess")] + " IGDEXT_XELL_CAP=auto:2", r["out"])
     layer_log = os.path.join(sb, "home", ".cache", "xess-xmx", "layer.log")

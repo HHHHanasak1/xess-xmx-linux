@@ -121,6 +121,7 @@ static BOOL CALLBACK InitOnce(PINIT_ONCE, PVOID, PVOID*)
     TR(g_validityNow = EnvInt("FFX_XEFG_VALIDITY", 1) != 0);
     g_oflow = EnvInt("FFX_XEFG_OFLOW", 0);
     g_times = EnvInt("FFX_XEFG_TIMES", 0) != 0;
+    g_async = EnvInt("FFX_XEFG_ASYNC", 0) != 0;
     if (GetEnvironmentVariableA("FFX_XEFG_CAP", env, MAX_PATH))
         g_capAuto = !_stricmp(env, "auto");
     else

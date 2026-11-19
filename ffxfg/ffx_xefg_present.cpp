@@ -66,7 +66,10 @@ static void XellFlush(ScState* st, ScState::XellFrame* f)
         uint8_t bit = (uint8_t)(1u << m);
         if ((f->wanted & bit) && !(f->sent & bit)) {
             f->slept = true;
-            p_xellAddMarkerData(st->xell, f->id, (xell_latency_marker_type_t)m);
+            if (st->xellDefer)
+                st->xellDeferred.emplace_back(f->id, m);   // FFX_XEFG_ASYNC: sent after the Present (ScState)
+            else
+                p_xellAddMarkerData(st->xell, f->id, (xell_latency_marker_type_t)m);
             f->sent |= bit;
         }
     }
