@@ -2,7 +2,10 @@
  *
  * Xe3 (Panther Lake, Wildcat Lake): the hardware takes the register count per kernel (INTERFACE_DESCRIPTOR_DATA
  * RegistersPerThread, which ANV derives from prog_data grf_used), so a kernel runs with the 128 or 256 GRF it was
- * compiled for.
+ * compiled for. The layer still compiles every kernel for 128 GRF there: a thread with 256 GRF leaves the EU room for
+ * fewer threads, and XeSS' 256-GRF SR kernels run 16-18 % faster at 128 GRF on an Arc B390 (Cyberpunk 2077 benchmark,
+ * XMX_LAYER_PROF=1; XeSS SR + FG 3.94 -> 3.72 ms per rendered frame) with the same output.
+ * XMX_LAYER_FORCE_GRF=256 gives the kernels their own register count again.
  * Xe2 (Lunar Lake, Battlemage): the register count is a mode of the engine (STATE_COMPUTE_MODE Large GRF Mode), which
  * an unpatched ANV never sets (patches/0003 does in the patched driver): every thread gets 128 GRF. The layer compiles
  * every kernel for 128 GRF there (cm-compile.sh CM_MAX_GRF=128). XeSS' SIMD16 kernels, the set XeSS uses on Xe2 and
@@ -28,7 +31,7 @@ struct xmx_gen {
 static inline const struct xmx_gen *
 xmx_gen_of(uint32_t id)
 {
-   static const struct xmx_gen xe3 = { "xe3", XMX_ISA_XE3, 0 }, xe2 = { "xe2", XMX_ISA_XE2, 128 };
+   static const struct xmx_gen xe3 = { "xe3", XMX_ISA_XE3, 128 }, xe2 = { "xe2", XMX_ISA_XE2, 128 };
    static const struct { const char *gen; uint16_t id; } ids[] = {
 #include "gpu_ids.inc"   /* { "xe3", 0xb080 }, ... */
    };
