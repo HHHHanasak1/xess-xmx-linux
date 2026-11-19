@@ -16,8 +16,8 @@
  *    on), surface k = the k-th pushed resource. The self-test also writes layer_canary, which vkwrap waits for.
  * On this project's patched driver (its prog_data is longer, layouts.h) the layer serves only the Vulkan path: the
  * driver injects a D3D12 game's kernels itself but has no use for XeSS' descriptor push.
- * GPUs served: Xe3 and Xe2 (gens.h); on Xe2 every kernel is compiled for 128 GRF, the register count an unpatched
- * driver gives its threads there. XMX_LAYER_FORCE_GRF=128 does the same on Xe3 (to compare both on one device).
+ * GPUs served: Xe3 and Xe2 (gens.h); every kernel is compiled for 128 GRF: on Xe2 the register count an unpatched
+ * driver gives its threads, on Xe3 the faster choice. XMX_LAYER_FORCE_GRF=256 gives Xe3 the kernels' own count.
  * Enabled with VK_LOADER_LAYERS_ENABLE=VK_LAYER_XESS_xmx (and VK_ADD_LAYER_PATH); log: XMX_LAYER_LOG=1 or a path. */
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -535,7 +535,7 @@ self_test(struct xdevice *d)
    d->ok = t && r == VK_SUCCESS;
    xlog("self-test %s: %s, template %s, pipeline from binary %d", d->ok ? "passed" : "FAILED", drv.driverInfo,
         t ? "round-trips" : "unusable", r);
-   if (d->ok && d->L == &d->Lp && d->gen->max_grf) {
+   if (d->ok && d->L == &d->Lp && !strcmp(d->gen->name, "xe2")) {
       /* the patched driver on Xe2 runs XeSS' Vulkan kernels itself, at their own 256 GRF (vkwrap's driver mode):
        * the layer's 128-GRF ones would only be slower there */
       d->ok = false;
@@ -1719,12 +1719,13 @@ x_CreateDevice(VkPhysicalDevice phys, const VkDeviceCreateInfo *ci_in, const VkA
    if (d->gen) {
       d->info.gen = d->gen->name;
       d->info.max_grf = d->gen->max_grf;
-      /* XMX_LAYER_FORCE_GRF=128: the Xe2 compile (128 GRF) on any served GPU, to compare it with 256 on Xe3 */
+      /* XMX_LAYER_FORCE_GRF=256: on Xe3, the kernels' own register count (up to 256), to compare it with the 128 GRF
+       * the layer compiles for; Xe2 has no 256-GRF threads on an unpatched driver. 128 is the default. */
       const char *fg = getenv("XMX_LAYER_FORCE_GRF");
-      if (fg && !strcmp(fg, "128"))
-         d->info.max_grf = 128;
-      else if (fg && fg[0])
-         xlog("XMX_LAYER_FORCE_GRF=%s ignored (only 128 is supported)", fg);
+      if (fg && !strcmp(fg, "256") && !strcmp(d->gen->name, "xe3"))
+         d->info.max_grf = 0;
+      else if (fg && fg[0] && strcmp(fg, "128"))
+         xlog("XMX_LAYER_FORCE_GRF=%s ignored (256 on Xe3 only; 128 is the default)", fg);
    }
    d->prof = xprof_enabled() && d->CreateQueryPool && d->CmdWriteTimestamp && d->GetQueryPoolResults &&
              p2.properties.limits.timestampComputeAndGraphics;

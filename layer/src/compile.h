@@ -8,8 +8,8 @@
 struct xmx_dev_info {
    uint32_t pci_id;      /* VkPhysicalDeviceProperties::deviceID */
    uint32_t grf_bytes;   /* 64 on Xe2 and later, 32 on Xe-HPG / Xe-LPG */
-   uint32_t max_grf;     /* 0: as the kernel's options ask (up to 256 GRF); 128: every kernel compiled for 128 GRF
-                          * (Xe2, see gens.h; XMX_LAYER_FORCE_GRF=128 on Xe3) */
+   uint32_t max_grf;     /* 0: as the kernel's options ask (up to 256 GRF; XMX_LAYER_FORCE_GRF=256 on Xe3); 128: every
+                          * kernel compiled for 128 GRF (Xe2 and Xe3, see gens.h) */
    const char *gen;      /* generation name (gens.h), part of the cache file name; NULL = "any" */
 };
 

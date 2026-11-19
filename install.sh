@@ -20,9 +20,10 @@
 #   writing a Proton update), nothing else touched.
 #   The session's driver: on Xe3 (Panther Lake, Wildcat Lake) and Xe2 (Lunar Lake, Battlemage) the package's
 #   unpatched Mesa 26.3 ANV (lib/mesa-stock-<version>/, picked with MESA=stock-<version>) with the Vulkan layer
-#   VK_LAYER_XESS_xmx (layer/) for the XMX kernels ("stock"; on Xe2 the layer compiles every kernel for 128 GRF, the
-#   register count an unpatched driver gives its threads there); on every other GPU (Xe-HPG: the layer does not serve
-#   it, its kernels need patches/0003's Large GRF mode) the patched driver lib/active names ("patched").
+#   VK_LAYER_XESS_xmx (layer/) for the XMX kernels ("stock"; the layer compiles every kernel for 128 GRF: on Xe2 the
+#   register count an unpatched driver gives its threads, on Xe3 the faster choice); on every other GPU (Xe-HPG: the
+#   layer does not serve it, its kernels need patches/0003's Large GRF mode) the patched driver lib/active names
+#   ("patched").
 #   XMX_DRIVER=stock or XMX_DRIVER=patched chooses instead and is kept in run/driver-mode for later runs (patched on
 #   Xe2: the kernels run at their own 256 GRF); XMX_DRIVER=auto goes back to the choice by GPU.
 set -u
@@ -50,7 +51,7 @@ for d in "$PKG"/lib/mesa-stock-*/; do
 ' "$STOCKV" "$v" | sort -V | tail -1)" = "$v" ]; } && STOCKV=$v
 done
 # the GPUs the layer serves: layer/gpu-ids.txt, the list compiled into the layer ("<xe3|xe2> <id>": Mesa 26.3's Panther
-# Lake, Wildcat Lake, Lunar Lake and Battlemage ids; on Xe2 the layer compiles every kernel for 128 GRF)
+# Lake, Wildcat Lake, Lunar Lake and Battlemage ids; the layer compiles every kernel for 128 GRF)
 served=""
 for dev in /sys/bus/pci/devices/*; do
   [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] || continue
@@ -146,7 +147,7 @@ if [ "${XMX_NO_ENV:-0}" != 1 ]; then
   echo "== environment: $ENVD/50-xess-xmx.conf (applies to Steam after a reboot / re-login)"
   echo "   Vulkan drivers: $(echo "$drivers" | tr ':' ' ')"
   if [ "$MODE" = stock ]; then
-    echo "   driver: Mesa ${STOCKV#stock-} unpatched ($PKG/lib/mesa-$STOCKV) + VK_LAYER_XESS_xmx (stock mode$(case "$served" in *xe2*) echo ", kernels at 128 GRF on Xe2" ;; esac))"
+    echo "   driver: Mesa ${STOCKV#stock-} unpatched ($PKG/lib/mesa-$STOCKV) + VK_LAYER_XESS_xmx (stock mode, kernels at 128 GRF)"
   else
     echo "   driver: the patched Mesa $(cat "$PKG/lib/active" 2>/dev/null) (patched mode)"
   fi

@@ -436,8 +436,8 @@ main(int argc, char **argv)
       gen = xmx_gen_of(0xb080);
    di.gen = gen->name;
    di.max_grf = gen->max_grf;
-   if (getenv("XMX_LAYER_FORCE_GRF") && !strcmp(getenv("XMX_LAYER_FORCE_GRF"), "128"))
-      di.max_grf = 128;
+   if (getenv("XMX_LAYER_FORCE_GRF") && !strcmp(getenv("XMX_LAYER_FORCE_GRF"), "256") && !strcmp(gen->name, "xe3"))
+      di.max_grf = 0;
    printf("3. kernels for %s (0x%04x), %u GRF cap\n", gen->name, di.pci_id, di.max_grf);
    for (int i = 3; i < argc; i++) {
       const int id = atoi(argv[i]);
