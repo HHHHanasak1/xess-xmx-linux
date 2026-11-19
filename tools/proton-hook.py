@@ -15,6 +15,9 @@
 #                           (IGDEXT_FORCE_FALLBACK=1)
 #   XESS_LL=off %command%   the low latency by a short name: off, on, auto:<ms> (IGDEXT_XELL_CAP=off, auto, auto:<ms>,
 #                           which the shim and the frame generation DLL read in the game)
+#   XESS_ASYNC=1 %command%  frame generation's Present on a thread of its own, the game's returns at once (one frame
+#                           in flight): for a game held in Present while the GPU idles (FFX_XEFG_ASYNC=1 for the FSR
+#                           routes, IGDEXT_XEFG_ASYNC=1 for a game's own XeSS-FG; docs/frame-generation.md)
 #   XESS_LOG=1 %command%    the shim's trace and the XeLL, XeSS-FG and ControlLib.dll logs (IGDEXT_TRACE=1
 #                           IGDEXT_XELL_LOG=1 IGDEXT_XEFG_LOG=1 XESS_FG_LOG=1)
 #   XESS_LOG=2 %command%    a whole report: also Proton's log (PROTON_LOG=1; it has the game's stderr, where the
@@ -82,8 +85,8 @@ LOCKS = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 SETTINGS = globals().get("SETTINGS", {})
 # what the launch options can say to this script, and the three that change what its routes do: for the log's first
 # line. A run with one of this script's own gets that line also when there is nothing else to say (OWN)
-OPTIONS = ("XESS", "XESS_FG", "XESS_VK", "XESS_LL", "XESS_LOG", "FSR", "FSR_FG", "FSR_VENDOR", "OFLOW_FG", "MESA",
-           "IGDEXT_XELL_CAP")
+OPTIONS = ("XESS", "XESS_FG", "XESS_VK", "XESS_LL", "XESS_ASYNC", "XESS_LOG", "FSR", "FSR_FG", "FSR_VENDOR", "OFLOW_FG",
+           "MESA", "IGDEXT_XELL_CAP")
 OWN = tuple(k for k in OPTIONS if k not in ("XESS_FG", "MESA", "IGDEXT_XELL_CAP"))
 XESS_OPT = "XESS=latest"   # the option the lines about a game's own XeSS name: main() makes it XESS=auto
 _log = None   # the hook's own log: opened by the first line of a run (hook_log), False when it cannot be written
@@ -731,6 +734,22 @@ def low_latency(s):
         say("XESS_LL=%s: IGDEXT_XELL_CAP=%s is set as well and decides" % (ll, cur))
 
 
+def async_present(s):
+    """XESS_ASYNC=1: frame generation's Present on a thread of its own, handed on as FFX_XEFG_ASYNC (the frame generation
+    DLL, the FSR routes and OFLOW_FG) and IGDEXT_XEFG_ASYNC (the shim, a game's own XeSS-FG). 0 / off: as without it.
+    A variable of the two that is set already decides for its part."""
+    v = os.environ.get("XESS_ASYNC", "").lower()
+    if v in ("", "0", "off"):
+        return
+    if v not in ("1", "on"):
+        say("XESS_ASYNC=%s: unknown value (1, on, 0, off); ignored" % v)
+        return
+    env = s.env if s else os.environ
+    for k in ("FFX_XEFG_ASYNC", "IGDEXT_XEFG_ASYNC"):
+        if env.get(k) is None:
+            SETTINGS[k] = "1"
+
+
 def logs(s):
     """XESS_LOG=1: the package's logs in the game's prefix. XESS_LOG=2, for a report: also Proton's log (the game's
     stderr goes there, and with it the patched driver's ANV_CM_DEBUG lines; the game runs slower), the layer's log as
@@ -794,6 +813,7 @@ def main():
         s.env["INTC_ALT_DRIVER_EXTENSIONS_PATH"] = ALT_EXT
     logs(s)
     low_latency(s)
+    async_present(s)
     if want == "dp4a":
         SETTINGS["IGDEXT_FORCE_FALLBACK"] = "1"
     elif want == "auto_off":

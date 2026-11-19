@@ -106,6 +106,24 @@ Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 2026-11-15. Separate runs, interleaved
   - **CPU-limited** (CPU held to ~2 W, 4–6 minutes): **76.1 ms -> 47.8 ms (−37%)** at 28.7 ms frame time.
   - **Render-thread-limited** (moving in a heavy scene, ~6 minutes): **105.5 ms -> 67.2 ms (−36%)** at ~42.1 ms frame time.
 
+### Present on a Thread of Its Own (`XESS_ASYNC`)
+
+XeSS-FG's `Present` shows a rendered frame's images one after another, spaced for even pacing, and returns only then: for most of a frame at 3x. A game that records its next frame only after `Present` returned then leaves the GPU idle meanwhile. With `XESS_ASYNC=1`, the game's `Present` hands the frame to a thread of its own, which calls XeSS-FG's `Present`, and returns at once; the next `Present` waits until that one is done, so one frame at most is in flight. Meanwhile the game is told the back buffer index the swap chain will have after that `Present`, and a resize, a fullscreen change or a colour space change waits for the frame in flight first. The XeLL markers the game sends during that `Present` go out once it has returned, as they would without the option.
+
+It works on every path: the Proton hook sets `FFX_XEFG_ASYNC=1` for the frame generation DLL (the FSR routes, `OFLOW_FG`) and `IGDEXT_XEFG_ASYNC=1` for the shim (a game's own XeSS-FG). It is off by default.
+
+Arc B390, SteamOS, 1920x1200, 144 Hz VRR, 3x, 2026-11-19, two runs each, interleaved:
+
+| Game | Without | `XESS_ASYNC=1` |
+|---|---|---|
+| Forza Horizon 6, built-in benchmark (`FSR_FG=inject`) | 106 fps, 102 and 97 stutters, the game's latency 86.0 ms | 109 fps, 29 and 36 stutters, 80.1 ms |
+| CONTROL Resonant (`FSR=xess`), 90 s at one spot | 32.2–32.6 ms a frame, p95 34.2–35.1 ms | 32.0–32.1 ms, p95 33.1–33.7 ms |
+| Resident Evil Requiem (`FSR_FG=xess`), 90 s at one spot | 31.0 ms, p95 32.6–33.5 ms | 30.7–31.4 ms, p95 32.7–33.6 ms |
+| Cyberpunk 2077, built-in benchmark (its own XeSS-FG) | 119.3 and 120.8 fps | 118.7 and 118.9 fps |
+
+* **Forza Horizon 6** is where it helps: with the frame generation DLL's `FFX_XEFG_TIMES=1`, 5% of the frames took 40 ms or more without it (their images bunch up: in such a frame the longest gap between two shown images is about 100 times the shortest), and none above 31 ms with it. The average frame time drops only from 25.9 to 25.1 ms: the rest of the GPU's idle time is in the game's own frame, not in `Present`.
+* **CONTROL Resonant, Resident Evil Requiem, Cyberpunk 2077** keep the GPU busy all the time (88% and more of its render engine): nothing to gain, and in Cyberpunk 2077, whose `Present` takes only 1–2 ms, the extra thread costs about 1%.
+
 **30 fps after enabling frame generation:** A game can pass a 33.3 ms (30 fps) frame cap to XeLL right after it enables frame generation, and clear it only when the pause menu is opened and closed (Wuthering Waves does). The shim's fix replaces any non-zero cap arriving within 1.5 s of enabling frame generation with the previous interval (`IGDEXT_XELL_LOG=1` logs `frame cap ... keeping` lines when this triggers). It is on by default for Wuthering Waves only; `IGDEXT_XELL_FIXCAP=1` applies it in any game.
 
 ---
@@ -311,6 +329,7 @@ These variables tune what the FSR routes and optical flow hand to XeSS. You can 
 | `FFX_XEFG_HUDLESS=0` | Ignore the game's HUD-less image and leave XeSS-FG UI composition off |
 | `FFX_XEFG_HDR10=1` | Tell XeSS-FG when the game's back buffer is HDR10 (PQ). By default it is not told and interpolates the PQ values as they are. Told, its network works on images in which 350 nits is white and everything brighter is one flat white |
 | `XESS_LL`, `IGDEXT_XELL_CAP` | The low latency's options, the same as for a game's own XeSS-FG ([section 2](#2-low-latency-with-frame-generation)) |
+| `XESS_ASYNC=1`, `FFX_XEFG_ASYNC=1` | XeSS-FG's `Present` on a thread of its own ([section 2](#present-on-a-thread-of-its-own-xess_async)) |
 | `FFX_XEFG_OFLOW_DIV=1..4` | Run optical flow at `1/n` of the display resolution (`1` to `4`, default `1`) |
 | `FFX_XEFG_CAP=auto\|<us>\|0` | Rendered frame interval in microseconds via XeLL: `auto` (default with `OFLOW_FG=1`), `<us>` fixed interval per rendered frame, or `0` (off) |
 | `FFX_XEFG_REFRESH=<Hz>` | Override the display refresh rate for `FFX_XEFG_CAP=auto` when Windows/Wine reports a wrong one (default from `EnumDisplaySettingsA`, or `144` Hz) |

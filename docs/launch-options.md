@@ -27,6 +27,7 @@ A Direct3D 12 (D3D12) game that ships XeSS 2.0.2.68 or newer needs no launch opt
 | `XESS_FG=<n> %command%` | Frame generation shows `<n>` frames per rendered frame, whatever the game's menu offers or selects; you still switch frame generation on and off in the menu. `2` to `4` are what Intel Graphics Software offers on Windows. `5` and `6` go beyond the 4x Intel supports; if the change cannot be verified, the game stays at 4x. `7` and `8` are **experimental** and not recommended due to high latency | A game that offers only 2x in its menu (such as Cyberpunk 2077), or setting the multiplier where FSR runs on XeSS. With `XESS=auto` in a game that has FSR 3.1+ upscaling and no frame generation an Intel GPU can use (such as Forza Horizon 6), it also adds XeSS frame generation: choose FSR upscaling in the game |
 | `OFLOW_FG=1 %command%` | Frame generation at 2x for a DX12 game from optical flow on the final image, without motion vectors from the game; the HUD is interpolated too. With `XESS_FG=3` or more it is **experimental** ([frame-generation.md](frame-generation.md#5-frame-generation-for-any-dx12-game-oflow_fg1)) | A DX12 game with neither XeSS nor FSR 3.1+ (such as Resident Evil 4 (2023), or Viewfinder with `-force-d3d12` after `%command%`) |
 | `XESS_LL=off %command%`, `XESS_LL=auto:<ms> %command%` | The low latency, which is on by default while frame generation runs. `off` turns it off. `auto:<ms>` keeps it on and starts each frame `<ms>` milliseconds earlier (later if negative), which gives more frame-rate headroom for a little more latency ([frame-generation.md](frame-generation.md#2-low-latency-with-frame-generation)) | The frame rate with frame generation is lower than expected, or the pacing is uneven; comparing latency and frame rate |
+| `XESS_ASYNC=1 %command%` | Frame generation's `Present` runs on a thread of its own: the game's `Present` returns at once, with one frame in flight. Fewer stutters and less latency where the game waits in `Present` while the GPU idles; no gain where the GPU is the limit ([frame-generation.md](frame-generation.md#present-on-a-thread-of-its-own-xess_async)) | A game with uneven frame pacing and stutters at a frame rate the GPU could beat, such as Forza Horizon 6 with `FSR_FG=inject` |
 | `XESS_LOG=1 %command%`, `XESS_LOG=2 %command%` | Logs for a bug report ([troubleshooting.md](troubleshooting.md#logs-for-a-bug-report)). `1`: the package's own logs in the game's prefix. `2`: also Proton's log with the driver's lines, and the layer's log; the game runs slower | Reporting a problem |
 
 **In the game's menu:** choose XeSS, and XeSS Frame Generation, when the menu has them. If it has no XeSS Frame Generation, choose FSR and FSR frame generation: with `XESS=auto` they run on XeSS. If the game has no frame generation an Intel GPU can use, choose FSR upscaling; `XESS_FG=<n>` next to `XESS=auto` then adds XeSS frame generation.
@@ -144,7 +145,7 @@ With `XESS=auto` there, the hook looks at every game you start and changes files
 
 These options are handled by the Proton hook, which needs the system-wide install ([install.md](install.md)):
 
-* `XESS`, `XESS_LL`, and `XESS_LOG`
+* `XESS`, `XESS_LL`, `XESS_ASYNC`, and `XESS_LOG`
 * `FSR`, `FSR_FG`, and `OFLOW_FG`
 * their modifiers `XESS_VK` and `FSR_VENDOR`
 
@@ -168,7 +169,7 @@ MESA=26.1 XESS_FG=3 /path/to/xess-xmx-linux/xmx-launch.sh %command%
 
 With the per-game install (or on a root-owned distribution Proton where `install.sh` could not install `user_settings.py`), the hook's options are not available:
 
-* Instead of `XESS=dp4a`, `XESS_LL`, and `XESS_LOG=1`, pass their underlying variables: `IGDEXT_FORCE_FALLBACK=1`, `IGDEXT_XELL_CAP=off` or `auto:<ms>`, and the `IGDEXT_*` log variables with `XESS_FG_LOG=1` ([dev/debugging.md](dev/debugging.md)).
+* Instead of `XESS=dp4a`, `XESS_LL`, `XESS_ASYNC=1`, and `XESS_LOG=1`, pass their underlying variables: `IGDEXT_FORCE_FALLBACK=1`, `IGDEXT_XELL_CAP=off` or `auto:<ms>`, `FFX_XEFG_ASYNC=1 IGDEXT_XEFG_ASYNC=1`, and the `IGDEXT_*` log variables with `XESS_FG_LOG=1` ([dev/debugging.md](dev/debugging.md)).
 * Instead of `FSR=xess` and `FSR_FG=xess`, run `tools/fsr-fg.sh` ([frame-generation.md](frame-generation.md)). Note that `tools/fsr-fg.sh all` only works on game folders that have the FSR frame generation DLL or the single `amd_fidelityfx_dx12.dll`. It refuses folders with only `amd_fidelityfx_upscaler_dx12.dll`.
 * `XESS=auto`, `FSR_FG=inject`, `OFLOW_FG`, and the D3D11 and Vulkan parts of `XESS=latest` have no alternative without the hook. For old D3D12 XeSS, replace the DLLs by hand ([games.md](games.md#replacing-the-files-manually-without-the-hook)).
 

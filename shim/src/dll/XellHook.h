@@ -23,6 +23,7 @@ static void XLog(const char* fmt, ...)
 // (the default), not off or a fixed cap
 inline bool g_capAuto = true;
 inline bool g_polls = true;   // IGDEXT_XELL_POLLS=0: the swap chain answers the game itself
+inline bool g_xefgAsync = false;   // IGDEXT_XEFG_ASYNC=1: XeSS-FG's Present on a thread of the shim (XefgAnswers.cpp)
 // Whether frame generation is on, from two places: XeLL's xellSetFgEnabled (g_mfg; missed when a game enables frame
 // generation before XellThread's hooks are in, 200 ms after the library maps) and XeSS-FG's own switch
 // xefgSwapChainSetEnabled (Hook_XefgSetEnabled). The newer call of the two decides (Wuthering Waves switches frame
