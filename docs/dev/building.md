@@ -12,7 +12,8 @@ enable.sh, disable.sh         per-prefix install / removal; xmx-launch.sh: Steam
 patches/                      Mesa 26.1.2 ANV: 0001 kernel injection and run-time compilation, 0002 debug tools,
                               0003 Large GRF (Xe-HPG, Xe2), 0005 sampler descriptor tables (FSR 4 on XMX);
                               patches/mesa-26.3/: the same for Mesa 26.3, plus 0006, a Jay crash fix for
-                              cooperative matrix shaders; patches/mesa-license/: Mesa's license statement and
+                              cooperative matrix shaders, and 0007, an upstream Jay fix for a GPU hang (the
+                              unpatched driver carries 0007 too); patches/mesa-license/: Mesa's license statement and
                               MIT text, which the release archive carries for the drivers
 layer/, xmx-stock.sh          VK_LAYER_XESS_xmx: the XMX kernels on an unpatched ANV (Xe3's and Xe2's session default; xmx-stock.sh:
                               the system's own, per game) and XeSS's Vulkan path (Xe3: every driver of the package; Xe2: unpatched)
@@ -250,7 +251,7 @@ distrobox enter <box> -- /path/to/package/tools/rebuild-driver.sh 26.3.1      # 
 
 There are two patch series: `patches/` for Mesa `26.1.2` and `patches/mesa-26.3/` for Mesa `26.3.1` (first contributed in [#19](https://github.com/HHHHanasak1/xess-xmx-linux/issues/19) for rc1); other versions require rebasing. Both build from the release tarballs on `archive.mesa3d.org` rather than git tags, because upstream deleted the `mesa-26.3.0-rc1` tag and its commit when `staging/26.3` was re-branched.
 
-To build patched Mesa `26.1.2` by hand (for `26.3.1`, use `mesa-26.3.1.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.1/` driver is the same `26.3.1` tarball built with the same Meson options and no patches):
+To build patched Mesa `26.1.2` by hand (for `26.3.1`, use `mesa-26.3.1.tar.xz` and `../patches/mesa-26.3/0*.patch` with the same Meson options; the unpatched `lib/mesa-stock-26.3.1/` driver is the same `26.3.1` tarball built with the same Meson options and only `../patches/mesa-26.3/0007-jay-avoid-lowering-helper-predication.patch`, an upstream fix):
 
 ```bash
 mkdir mesa && curl -sfL https://archive.mesa3d.org/mesa-26.1.2.tar.xz | tar -xJ -C mesa --strip-components=1
@@ -312,6 +313,10 @@ Handles CM kernels whose sampler is passed in a D3D12 descriptor table rather th
 ### `0006-anv-cmat-vars-before-jay.patch` (26.3.1 only)
 
 Fixes an upstream Mesa 26.3 bug (not part of the XMX feature). Cooperative matrix lowering (`brw_nir_lower_cmat`) leaves `function_temp` variables behind (in a compute shader of Cyberpunk 2077, dead stores into `ivec8` vectors) and runs no variable-to-SSA or dead-variable pass afterward. When those derefs reach Jay, `jay_emit_instr` hits `UNREACHABLE("All derefs should've been lowered")`. In a release build (`__builtin_unreachable`), execution jumps into whatever function the compiler placed next (`jay_emit_fb_write` when built with GCC 15; GCC 16 happened not to crash), crashing the game while compiling the shader. Patch `0006` runs `nir_lower_vars_to_ssa`, `nir_opt_dead_write_vars`, `nir_remove_dead_variables`, and `nir_opt_dce` right after `brw_nir_lower_cmat`.
+
+### `0007-jay-avoid-lowering-helper-predication.patch` (26.3.1, also in the unpatched driver)
+
+Fixes an upstream Mesa 26.3.1 GPU hang (not part of the XMX feature). With Jay, some fragment shaders hang the render engine: the game freezes, the kernel log shows `Engine reset: engine_class=rcs` and `Timedout job ... in <game>`, and the game then reports `E_OUTOFMEMORY` from `CommandList->Close()` while its memory use keeps growing. In Wuthering Waves this happens about 15 s after a loading screen ends in some areas, in every run. 26.3.1 carries upstream's "jay: Lower demote to terminate unless the shader uses derivatives" (`64141f32c75`, main `d445f7168f2`) without the commit that follows it in the same merge request, "jay: Avoid lowering helper predication in more cases" (main `b3b7c5e4974`); `0007` is that commit, backported to 26.3.1. A git bisect from 26.3.0 to 26.3.1 ended at `64141f32c75`, and on main the hang is gone from `b3b7c5e4974` on (its parent still hangs). Adapted to 26.3: `setup_exit_block()` in `jay_lower_helpers.c` keeps the 26.3.1 code, whose first branch is the case main now asserts, and `jay_alloc_def()` takes no bit size argument on 26.3. `0006` and `0007` are independent of each other and of the XMX patches. Drop `0007` once a 26.3.x release includes the fix.
 
 ---
 
