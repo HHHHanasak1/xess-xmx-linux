@@ -4,7 +4,8 @@ name: build
 #   igdext64.dll         (shim, MSVC, static runtime), ControlLib.dll, amd_fidelityfx_upscaler_dx12.dll,
 #                        amd_fidelityfx_framegeneration_dx12.dll and dxgi.dll (ffxfg/), libxess_dx11.dll
 #                        (dx11bridge/), vulkan-1.dll (vkwrap/)
-#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.1: unpatched),
+#   libvulkan_intel.so   (Mesa ANV with patches/*.patch applied, Arch Linux toolchain; stock-26.3.1: without the XMX
+#                        patches, only the upstream fix 0007),
 #                        the forwarding ICD (icd/) and the bundled libraries (tools/build-deps.sh)
 #   libVkLayer_xess_xmx.so (layer/, the Vulkan layer for an unpatched ANV)
 # plus syntax checks of the scripts and a run of the install scripts and of the Proton hook in a sandbox
@@ -234,11 +235,12 @@ jobs:
             mesa_sha256: 4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961
             patches: patches/mesa-26.3
             arch_snapshot: 2026/10/14
-          # unpatched (lib/mesa-stock-26.3.1/): Xe3's and Xe2's default driver, with the Vulkan layer for the XMX kernels
+          # without the XMX patches (lib/mesa-stock-26.3.1/): Xe3's and Xe2's default driver, with the Vulkan layer for
+          # the XMX kernels. It carries only 0007, an upstream Mesa fix for a GPU hang that 26.3.1 lacks.
           - name: stock-26.3.1
             version: 26.3.1
             mesa_sha256: 4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961
-            patches: ""
+            patches: patches/mesa-26.3/0007-jay-avoid-lowering-helper-predication.patch
             arch_snapshot: 2026/10/14
     env:
       MESA_VERSION: ${{ matrix.version || matrix.name }}
@@ -273,7 +275,9 @@ jobs:
       - name: apply patches
         run: |
           cd mesa
-          [ -z "$PATCHES" ] || git -c user.name=ci -c user.email=ci@localhost am ../$PATCHES/0*.patch
+          # PATCHES: a folder (every 0*.patch in it) or a single patch file
+          if [ -d "../$PATCHES" ]; then set -- ../$PATCHES/0*.patch; else set -- "../$PATCHES"; fi
+          [ -z "$PATCHES" ] || git -c user.name=ci -c user.email=ci@localhost am "$@"
       - name: configure
         run: |
           cd mesa
