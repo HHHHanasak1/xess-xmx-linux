@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: peigongdsd <peigong2013@outlook.com>
+Date: Wed, 11 Nov 2026 13:07:30 +0000
+Subject: [PATCH] anv: select compute register mode from the compiled register count
+
+Generated-by: LLM
+
+---
+diff --git a/src/intel/vulkan/genX_cm.c b/src/intel/vulkan/genX_cm.c
+--- a/src/intel/vulkan/genX_cm.c
++++ b/src/intel/vulkan/genX_cm.c
+@@ -375,6 +375,8 @@
+       cm.LargeGRFModeMask = true;
+    }
+    cmd_buffer->state.compute.cm_large_grf = enable;
++   if (getenv("INTEL_DG2_GRF_TRACE"))
++      fprintf(stderr, "INTEL_LARGE_GRF_MODE enable=%u\n", enable);
+ #endif
+ }
+ 
+@@ -400,7 +402,6 @@
+ 
+    /* Large GRF Mode on for 256-GRF CM kernels, off again for everything else (see
+     * genX(cmd_buffer_set_cm_large_grf)); a no-op unless the mode actually changes. */
+-   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->uses_cm_kernel &&
+-                                                 prog_data->base.grf_used > 128);
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->base.grf_used > 128);
+    return false;
+ }
+diff --git a/src/intel/vulkan/genX_cmd_compute.c b/src/intel/vulkan/genX_cmd_compute.c
+--- a/src/intel/vulkan/genX_cmd_compute.c
++++ b/src/intel/vulkan/genX_cmd_compute.c
+@@ -578,8 +578,7 @@
+    const struct intel_cs_dispatch_info dispatch =
+       brw_cs_get_dispatch_info(devinfo, prog_data, NULL);
+ 
+-   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->uses_cm_kernel &&
+-                                                 prog_data->base.grf_used > 128);
++   genX(cmd_buffer_set_cm_large_grf)(cmd_buffer, prog_data->base.grf_used > 128);
+ 
+    uint64_t indirect_addr64 = anv_address_physical(indirect_addr);
+ 

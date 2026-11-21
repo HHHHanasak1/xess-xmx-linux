@@ -1,5 +1,7 @@
 # XeSS XMX on Linux (Proton) for Intel Arc: Xe-HPG, Xe2, Xe3
 
+This fork also carries a default-on DG2 compute register-allocation policy for Mesa 26.3. See [the scope, opt-out and tests](docs/dev/dg2-large-grf.md).
+
 Run Intel **XeSS** super resolution (upscaling) and **XeSS frame generation** inside Steam Proton games on the GPU's **XMX** (Xe Matrix Extensions, hardware matrix units) engines. Under stock Wine and Proton, XeSS falls back to generic **DP4a** (8-bit integer dot-product instructions) shaders and caps frame generation at 2x. This package runs the native XMX kernels and multi-frame generation without a Windows driver and without modifying Proton or vkd3d-proton (Proton's Direct3D 12 to Vulkan translation layer).
 
 ## Supported GPUs

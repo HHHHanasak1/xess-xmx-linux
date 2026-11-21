@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: peigongdsd <peigong2013@outlook.com>
+Date: Wed, 11 Nov 2026 13:07:30 +0000
+Subject: [PATCH] brw: allow selective SIMD32 compute allocation in DG2 large GRF mode
+
+Generated-by: LLM
+
+---
+diff --git a/src/intel/compiler/brw/brw_compiler.h b/src/intel/compiler/brw/brw_compiler.h
+--- a/src/intel/compiler/brw/brw_compiler.h
++++ b/src/intel/compiler/brw/brw_compiler.h
+@@ -66,6 +66,8 @@
+ 
+    struct brw_reg_set reg_set;
+    struct brw_reg_set reg_set_debug;
++   struct brw_reg_set reg_set_dg2_large;
++   bool dg2_large_grf_enabled;
+ 
+    void (*shader_debug_log)(void *, unsigned *id, const char *str, ...) PRINTFLIKE(3, 4);
+    void (*shader_perf_log)(void *, unsigned *id, const char *str, ...) PRINTFLIKE(3, 4);
+@@ -245,7 +247,8 @@
+ 
+    enum intel_code_motion code_motion:2;
+ 
+-   uint32_t padding:19;
++   bool dg2_large_grf:1;
++   uint32_t padding:18;
+ };
+ 
+ /**
+diff --git a/src/intel/compiler/brw/brw_compiler.c b/src/intel/compiler/brw/brw_compiler.c
+--- a/src/intel/compiler/brw/brw_compiler.c
++++ b/src/intel/compiler/brw/brw_compiler.c
+@@ -89,6 +89,8 @@
+    assert(devinfo->ver >= 9);
+ 
+    compiler->devinfo = devinfo;
++   compiler->dg2_large_grf_enabled = intel_device_info_is_dg2(devinfo) &&
++      debug_get_bool_option("INTEL_DG2_LARGE_GRF", true);
+ 
+    brw_init_isa_info(&compiler->isa, devinfo);
+ 
+diff --git a/src/intel/compiler/brw/brw_shader.h b/src/intel/compiler/brw/brw_shader.h
+--- a/src/intel/compiler/brw/brw_shader.h
++++ b/src/intel/compiler/brw/brw_shader.h
+@@ -208,6 +208,10 @@
+ 
+    /* Whether we've seen an RT write already */
+    bool seen_rt_write;
++
++   bool dg2_large_grf_eligible = false;
++   bool dg2_large_grf = false;
++   bool uses_dg2_large_grf() const { return dg2_large_grf; }
+ 
+    unsigned grf_used;
+    bool spilled_any_registers;
+diff --git a/src/intel/compiler/brw/brw_shader.cpp b/src/intel/compiler/brw/brw_shader.cpp
+--- a/src/intel/compiler/brw/brw_shader.cpp
++++ b/src/intel/compiler/brw/brw_shader.cpp
+@@ -760,6 +760,11 @@
+    restore_instruction_order(s, orders[best_perf_mode]);
+    s.shader_stats.scheduler_mode = scheduler_mode_name[best_perf_mode];
+    allocated = brw_assign_regs(s, false, spill_all);
++   if (!allocated && s.dg2_large_grf_eligible) {
++      s.dg2_large_grf = true;
++      s.performance_analysis.invalidate(BRW_DEPENDENCY_EVERYTHING);
++      allocated = brw_assign_regs(s, false, spill_all);
++   }
+ 
+    if (!allocated) {
+       /* Try each remaining scheduling heuristic to see if it can
+diff --git a/src/intel/compiler/brw/brw_reg_allocate.cpp b/src/intel/compiler/brw/brw_reg_allocate.cpp
+--- a/src/intel/compiler/brw/brw_reg_allocate.cpp
++++ b/src/intel/compiler/brw/brw_reg_allocate.cpp
+@@ -76,14 +76,11 @@
+    ralloc_free(hw_reg_mapping);
+ }
+ 
+-extern "C" void
+-brw_alloc_reg_sets(struct brw_compiler *compiler, int debug)
++static void
++brw_alloc_one_reg_set(struct brw_compiler *compiler, int debug,
++                      int base_reg_count, struct brw_reg_set *reg_set)
+ {
+    const struct intel_device_info *devinfo = compiler->devinfo;
+-   int base_reg_count = (devinfo->ver < 30 || INTEL_DEBUG(DEBUG_NO_VRT)) ?
+-                        BRW_MAX_GRF :
+-                        MIN2(XE3_MAX_GRF / reg_unit(devinfo),
+-                             debug_vrt_max_reg_count(compiler, debug));
+ 
+    /* The registers used to make up almost all values handled in the compiler
+     * are a scalar value occupying a single register (or 2 registers in the
+@@ -126,14 +123,25 @@
+ 
+    ra_set_finalize(regs, NULL);
+ 
+-   struct brw_reg_set *reg_set = debug ?
+-                                 &compiler->reg_set_debug :
+-                                 &compiler->reg_set;
+    reg_set->regs = regs;
+    for (unsigned i = 0; i < ARRAY_SIZE(reg_set->classes); i++)
+       reg_set->classes[i] = NULL;
+    for (int i = 0; i < REG_CLASS_COUNT; i++)
+       reg_set->classes[class_sizes[i] - 1] = classes[i];
++}
++
++extern "C" void
++brw_alloc_reg_sets(struct brw_compiler *compiler, int debug)
++{
++   const struct intel_device_info *devinfo = compiler->devinfo;
++   int base_reg_count = (devinfo->ver < 30 || INTEL_DEBUG(DEBUG_NO_VRT)) ?
++                        BRW_MAX_GRF :
++                        MIN2(XE3_MAX_GRF / reg_unit(devinfo),
++                             debug_vrt_max_reg_count(compiler, debug));
++   brw_alloc_one_reg_set(compiler, debug, base_reg_count,
++                         debug ? &compiler->reg_set_debug : &compiler->reg_set);
++   if (!debug && compiler->dg2_large_grf_enabled)
++      brw_alloc_one_reg_set(compiler, 0, 256, &compiler->reg_set_dg2_large);
+ }
+ 
+ static int
+@@ -846,8 +854,9 @@
+                                 payload_last_use_ip);
+ 
+    assert(g == NULL);
+-   brw_reg_set const *reg_set = debug_limit_registers ?
+-                                &compiler->reg_set_debug :
++   brw_reg_set const *reg_set = fs->uses_dg2_large_grf() ?
++                                &compiler->reg_set_dg2_large :
++                                debug_limit_registers ? &compiler->reg_set_debug :
+                                 &compiler->reg_set;
+    g = ra_alloc_interference_graph(reg_set->regs, node_count);
+    ralloc_steal(mem_ctx, g);
+diff --git a/src/intel/compiler/brw/brw_opt_bank_conflicts.cpp b/src/intel/compiler/brw/brw_opt_bank_conflicts.cpp
+--- a/src/intel/compiler/brw/brw_opt_bank_conflicts.cpp
++++ b/src/intel/compiler/brw/brw_opt_bank_conflicts.cpp
+@@ -480,7 +480,7 @@
+    partitioning
+    shader_reg_partitioning(const brw_shader *v)
+    {
+-      partitioning p(BRW_MAX_GRF);
++      partitioning p(v->uses_dg2_large_grf() ? 256 : BRW_MAX_GRF);
+ 
+       foreach_block_and_inst(block, brw_inst, inst, v->cfg) {
+          if (is_grf(inst->dst))
+diff --git a/src/intel/compiler/brw/brw_analysis_performance.cpp b/src/intel/compiler/brw/brw_analysis_performance.cpp
+--- a/src/intel/compiler/brw/brw_analysis_performance.cpp
++++ b/src/intel/compiler/brw/brw_analysis_performance.cpp
+@@ -66,6 +66,7 @@
+    unsigned
+    num_grf_dependency_ids(const brw_shader *s) {
+       return (!s->grf_used ? s->alloc.count :
++              s->uses_dg2_large_grf() ? 256 :
+               s->devinfo->ver >= 30 ? XE3_MAX_GRF :
+               s->devinfo->ver >= 20 ? XE2_MAX_GRF :
+               BRW_MAX_GRF);
+@@ -1060,7 +1061,9 @@
+ 
+          return 32 / MAX2(3, intel_register_blocks(s->devinfo, grf_used) + 1);
+       } else {
+-         return s->devinfo->num_thread_per_eu;
++         return s->uses_dg2_large_grf() ?
++            MAX2(1, s->devinfo->num_thread_per_eu / 2) :
++            s->devinfo->num_thread_per_eu;
+       }
+    }
+ 
+diff --git a/src/intel/compiler/brw/brw_compile_cs.cpp b/src/intel/compiler/brw/brw_compile_cs.cpp
+--- a/src/intel/compiler/brw/brw_compile_cs.cpp
++++ b/src/intel/compiler/brw/brw_compile_cs.cpp
+@@ -218,6 +218,14 @@
+          .archiver                = params->archiver,
+       };
+       v[simd] = std::make_unique<brw_shader>(&shader_params);
++      const uint64_t workgroup_size = uint64_t(nir->info.workgroup_size[0]) *
++         nir->info.workgroup_size[1] * nir->info.workgroup_size[2];
++      v[simd]->dg2_large_grf_eligible = compiler->dg2_large_grf_enabled &&
++         key->base.dg2_large_grf && !nir->info.internal &&
++         dispatch_width == 32 && !nir->info.workgroup_size_variable &&
++         pressure[simd] > 128 &&
++         DIV_ROUND_UP(workgroup_size, dispatch_width) <=
++            devinfo->max_cs_workgroup_threads / 2;
+ 
+       const bool allow_spilling = simd == 0 ||
+          (!simd_state.compiled[simd - 1] && !brw_simd_should_compile(simd_state, simd - 1)) ||
+@@ -274,12 +282,21 @@
+          assert(v[simd]);
+          to_binary_params.shaders[simd] = v[simd].get();
+          num_variants++;
++         if (getenv("INTEL_DG2_GRF_TRACE"))
++            fprintf(stderr, "DG2_GRF_PROBE budget=%u simd=%u grf=%u spills=%u fills=%u scratch=%u\n",
++                    v[simd]->uses_dg2_large_grf() ? 256 : 128,
++                    8u << simd, v[simd]->grf_used,
++                    v[simd]->shader_stats.spill_count,
++                    v[simd]->shader_stats.fill_count,
++                    prog_data->base.total_scratch);
+          prog_data->base.grf_used = MAX2(prog_data->base.grf_used,
+                                          v[simd]->grf_used);
+       }
+    }
+ 
+    const unsigned *assembly = brw_to_binary(&to_binary_params);
++   if (getenv("INTEL_DG2_GRF_TRACE"))
++      fprintf(stderr, "DG2_GRF_PROBE code_bytes=%u\n", prog_data->base.program_size);
+ 
+    for (unsigned simd = 0; simd < 3; simd++) {
+       if (prog_data->prog_mask & (1u << simd))
